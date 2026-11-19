@@ -23,8 +23,9 @@ Handed from 1b to 1c (the header model holds what they need; the decode loop dec
   owner);
 - the tile-part order rules (TPsot in sequence, OpenJPEG's TNsot correction) and the `Psot = 0` data
   length (`psot0_data_length`), applied as tile-parts are read;
-- the quantization count of each tile-component (`resolve_tile_component`, DP-6) and the working memory
-  of each tile once its headers are in;
+- each tile's parameters with precedence applied and the quantization count of each tile-component
+  checked (`resolve_tile`, every component in one pass; DP-6), and the working memory of each tile once its
+  headers are in;
 - POC with changes in both the main header and a tile's: OpenJPEG appends the tile's changes to the main
   header's, the standard has the tile's replace them; the model keeps both lists;
 - the per-item figures of the working-memory estimate, against measured high-water marks.

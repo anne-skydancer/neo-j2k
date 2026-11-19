@@ -78,7 +78,7 @@ host that holds every byte of the file already treats it as damage (plan audit D
 (`allocate` with an alignment, `release` with the size, `user`; not `malloc` and `free`, which debug and
 leak-checking headers define as macros; `struct_size` first, as every growing structure of
 neo-j2k's own). Everything the codec allocates for itself comes from it, the codec object included: one
-block for the decoder and one arena block for an SL texture's header (2,296 bytes for a 32 x 32
+block for the decoder and one arena block for an SL texture's header (2,312 bytes for a 32 x 32
 texture). What the API hands to the caller comes from the C runtime's heap, as OpenJPEG's does, because
 the functions that destroy it take no codec: the image of `nj2k_read_header()`, streams, the codestream
 information. A failed allocation is `NJ2K_E_NO_MEMORY`, and the codec can still be destroyed
@@ -103,12 +103,16 @@ buffers from it (plan P2a). OpenJPEG sizes the image differently when the factor
 ## What stage 1b implements
 
 - Streams (`nj2k_stream_*`, file streams included) with OpenJPEG's semantics, except that a read function
-  returning 0 ends the stream (OpenJPEG would call it for ever).
+  returning 0 ends the stream (OpenJPEG would call it for ever). A JP2 file is read only from a stream that
+  gives its length (`nj2k_stream_set_user_data_length`; file streams do when the file has one): without
+  it a box's own length is all there is to go by, so no box is read (`NJ2K_E_UNSUPPORTED`), as OpenJPEG
+  reads none. A codestream's header needs no length: a marker segment holds at most 64 KiB.
 - The decoder: creation (J2K and JP2/JPH formats; `NJ2K_CODEC_JPT` and the others give `NULL`), message
   handlers (a message is formatted only when a handler takes it), `nj2k_setup_decoder` (before the
   header), strict mode, limits, the reduce policy, `nj2k_read_header`, `nj2k_set_decoded_resolution_factor`
   (before the header the factor is kept and the call returns false, as OpenJPEG's, with `NJ2K_E_STATE`),
-  `nj2k_set_decoded_components`, `nj2k_get_decoded_dimensions`, `nj2k_get_cstr_info` and
+  `nj2k_set_decoded_components` (a refused selection keeps the earlier one, as OpenJPEG's; repeated calls
+  reuse the same memory), `nj2k_get_decoded_dimensions`, `nj2k_get_cstr_info` and
   `nj2k_destroy_cstr_info`.
 - The header model (`src/header.h`): the main header and the tile-part headers, read once into the
   arena, owning their bytes (PPM and PPT data included), with OpenJPEG's checks and messages; marker
