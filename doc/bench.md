@@ -22,8 +22,14 @@ nj2k_bench --a oracle --a "lib:C:/Program Files/Vulkanstorm-Release/openjp2.dll=
 - **Time-boxed, never waiting.** `--budget-min` (15 by default) caps the run; it never waits for a quiet
   machine. It records the load it ran under: total and other processes' CPU, and the compilers, linkers,
   benches and viewers it saw. The summary says when the box cut the run short.
+- **Only the viewer's work is timed.** A timed round runs the request, its checks and its 8-bit copy, with
+  message handlers that ignore the messages, as the viewer's do. The identity checksum (an FNV hash of every
+  sample and of the 8-bit copy) and the heap counts come from untimed rounds before; hashing a 32² image
+  costs about 10-17 µs, a third of the request.
+- **One thread.** OpenJPEG starts a thread pool when `OPJ_NUM_THREADS` is set; the bench clears it at start
+  and the summary says what it held.
 - **Clock:** the TSC (nominal cycles), calibrated against `steady_clock` at start. Pin the thread with
-  `--pin`.
+  `--pin`. Every decoder needs its own name (`lib:<path>=<name>`): the rows are kept by name.
 - **Heap calls:** the counting oracle module (`nj2k_oracle_counting`, OpenJPEG's allocation entry points
   counted) gives OpenJPEG's calls per request; neo-j2k's come from its allocator hook from stage 1c, where
   the gate is zero after warm-up.

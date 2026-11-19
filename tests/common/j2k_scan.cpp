@@ -3,14 +3,29 @@
 #include "j2k_scan.h"
 
 #include <algorithm>
+#include <cmath>
 
 namespace nj2k::test {
 
 namespace {
 
 constexpr std::uint16_t SOC = 0xFF4F, SIZ = 0xFF51, COD = 0xFF52, COC = 0xFF53, TLM = 0xFF55, PLM = 0xFF57,
-                        PLT = 0xFF58, QCC = 0xFF5D, POC = 0xFF5F, PPM = 0xFF60, PPT = 0xFF61, COM = 0xFF64,
-                        SOT = 0xFF90, SOD = 0xFF93, EOC = 0xFFD9;
+                        PLT = 0xFF58, QCD = 0xFF5C, QCC = 0xFF5D, RGN = 0xFF5E, POC = 0xFF5F, PPM = 0xFF60,
+                        PPT = 0xFF61, CRG = 0xFF63, COM = 0xFF64, CAP = 0xFF50, CPF = 0xFF59, MCT = 0xFF74,
+                        MCC = 0xFF75, MCO = 0xFF77, CBD = 0xFF78, SOT = 0xFF90, SOD = 0xFF93, EOC = 0xFFD9;
+
+// The markers OpenJPEG reads in a main header after SIZ (j2k.c, j2k_memory_marker_handler_tab:
+// the ones whose states include J2K_STATE_MH).
+bool main_header_marker(std::uint16_t m)
+{
+    switch (m) {
+    case COD: case COC: case RGN: case QCD: case QCC: case POC: case TLM: case PLM: case PPM: case CRG:
+    case COM: case MCT: case CBD: case CAP: case CPF: case MCC: case MCO:
+        return true;
+    default:
+        return false;
+    }
+}
 
 struct Reader {
     std::span<const std::uint8_t> b;
@@ -33,6 +48,73 @@ bool fail(std::string* why, const char* text)
 std::uint64_t ceil_div(std::uint64_t a, std::uint64_t b)
 {
     return b ? (a + b - 1) / b : 0;
+}
+
+// COD: Scod, progression, layers (2 bytes), MCT, then SPcod: levels, xcb, ycb, style, transform and,
+// when Scod & 1, one precinct byte per resolution. false when the segment is too short.
+bool read_cod(std::span<const std::uint8_t> body, Coding& c)
+{
+    if (body.size() < 10) {
+        return false;
+    }
+    c.is_cod = true;
+    c.layers = std::uint16_t(body[2] << 8 | body[3]);
+    c.levels = body[5];
+    c.xcb = body[6];
+    c.ycb = body[7];
+    c.precincts.clear();
+    if (body[0] & 1) {
+        c.precincts.assign(body.begin() + 10, body.end());
+    }
+    return true;
+}
+
+// COC: Ccoc (two bytes past 256 components), Scoc, then SPcoc as in COD.
+bool read_coc(std::span<const std::uint8_t> body, std::uint16_t csiz, Coding& c)
+{
+    const std::size_t at = csiz >= 257 ? 2 : 1;  // Scoc
+    if (body.size() < at + 6) {
+        return false;
+    }
+    c.is_cod = false;
+    c.levels = body[at + 1];
+    c.xcb = body[at + 2];
+    c.ycb = body[at + 3];
+    c.precincts.clear();
+    if (body[at] & 1) {
+        c.precincts.assign(body.begin() + static_cast<std::ptrdiff_t>(at + 6), body.end());
+    }
+    return true;
+}
+
+// Precincts and code-blocks one coding makes in one tile-component of tw x th, over every
+// resolution (an estimate that only errs high).
+struct Structures {
+    double precincts = 0, codeblocks = 0;
+};
+
+Structures structures(const Coding& c, std::uint64_t tw, std::uint64_t th)
+{
+    Structures s;
+    for (int res = 0; res <= c.levels; ++res) {
+        const int shift = std::min(c.levels - res, 62);
+        const double rw = double(ceil_div(tw, 1ull << shift)), rh = double(ceil_div(th, 1ull << shift));
+        int ppx = 15, ppy = 15;
+        if (std::size_t(res) < c.precincts.size()) {
+            ppx = c.precincts[std::size_t(res)] & 15;
+            ppy = c.precincts[std::size_t(res)] >> 4;
+        }
+        s.precincts += (std::ceil(rw / std::ldexp(1.0, ppx)) + 1) * (std::ceil(rh / std::ldexp(1.0, ppy)) + 1);
+        // A code-block never crosses a precinct, so its size is clipped to the precinct's in the
+        // band, which above resolution 0 is half the resolution's. The bands of a resolution:
+        // LL at resolution 0, HL, LH and HH above it, each about half its size.
+        const int bx = std::max(0, std::min(c.xcb + 2, res ? ppx - 1 : ppx));
+        const int by = std::max(0, std::min(c.ycb + 2, res ? ppy - 1 : ppy));
+        const double bw = res ? std::ceil(rw / 2) : rw, bh = res ? std::ceil(rh / 2) : rh;
+        s.codeblocks += (res ? 3.0 : 1.0) * (std::ceil(bw / std::ldexp(1.0, bx)) + 1) *
+                        (std::ceil(bh / std::ldexp(1.0, by)) + 1);
+    }
+    return s;
 }
 
 }  // namespace
@@ -78,8 +160,16 @@ std::optional<MainHeader> parse_main_header(std::span<const std::uint8_t> bytes,
             return std::nullopt;
         }
         const std::size_t body = pos + 4, blen = len - 2u;
+        const auto seg = bytes.subspan(body, blen);
+        // SIZ first, then the markers OpenJPEG reads in a main header
+        if (siz ? !main_header_marker(marker) : marker != SIZ) {
+            mh.unknown_marker = true;
+        }
         switch (marker) {
         case SIZ:
+            if (siz) {
+                break;  // a second SIZ: OpenJPEG refuses it (marked above)
+            }
             if (blen < 38) {
                 fail(why, "short SIZ");
                 return std::nullopt;
@@ -106,34 +196,33 @@ std::optional<MainHeader> parse_main_header(std::span<const std::uint8_t> bytes,
             }
             siz = true;
             break;
-        case COD:
-            if (blen < 10) {
+        case COD: {
+            Coding c;
+            if (!read_cod(seg, c)) {
                 fail(why, "short COD");
                 return std::nullopt;
             }
             mh.scod = bytes[body];
             mh.progression = bytes[body + 1];
-            mh.layers = r.u16(body + 2);
+            mh.layers = c.layers;
             mh.mct = bytes[body + 4];
-            mh.levels = bytes[body + 5];
-            mh.cblk_w_exp = bytes[body + 6];
-            mh.cblk_h_exp = bytes[body + 7];
+            mh.levels = c.levels;
+            mh.cblk_w_exp = c.xcb;
+            mh.cblk_h_exp = c.ycb;
             mh.cblk_style = bytes[body + 8];
             mh.transform = bytes[body + 9];
-            mh.precincts.clear();
-            if (mh.scod & 1) {
-                for (std::size_t i = 10; i < blen; ++i) {
-                    mh.precincts.push_back(bytes[body + i]);
-                }
-            }
+            mh.precincts = c.precincts;
+            mh.codings.push_back(std::move(c));
             cod = true;
             break;
+        }
         case COC: {
             mh.has_coc = true;
-            const std::size_t at = mh.csiz >= 257 ? 3 : 2;  // Ccoc takes two bytes past 256 components
-            if (blen > at) {
-                const int res = bytes[body + at] + 1;
+            Coding c;
+            if (siz && read_coc(seg, mh.csiz, c)) {
+                const int res = c.levels + 1;
                 coc_min = coc_min ? std::min(coc_min, res) : res;
+                mh.codings.push_back(std::move(c));
             }
             break;
         }
@@ -186,6 +275,7 @@ std::vector<TilePart> scan_tile_parts(std::span<const std::uint8_t> bytes, const
             if (len < 2 || !r.has(p + 2, len)) {
                 break;
             }
+            const auto seg = bytes.subspan(p + 4, len - 2u);
             if (m == PPT) {
                 tp.has_ppt = true;
             } else if (m == PLT && len >= 3) {
@@ -199,11 +289,18 @@ std::vector<TilePart> scan_tile_parts(std::span<const std::uint8_t> bytes, const
                         v = 0;
                     }
                 }
+            } else if (m == COD || m == COC) {
+                // a tile's COD and COC replace the main header's for that tile (OpenJPEG reads
+                // them in any tile-part header, and a later one replaces an earlier one)
+                Coding c;
+                if (m == COD ? read_cod(seg, c) : read_coc(seg, mh.csiz, c)) {
+                    tp.codings.push_back(std::move(c));
+                }
             }
             p += 2u + len;
         }
         if (!sod) {
-            break;
+            break;  // a cut header: OpenJPEG stops there too
         }
         if (tp.psot) {
             tp.end = std::min<std::size_t>(tp.sot + tp.psot, bytes.size());
@@ -258,7 +355,7 @@ std::optional<std::vector<std::size_t>> layer_boundaries(std::span<const std::ui
         return std::nullopt;
     }
     const auto tps = scan_tile_parts(bytes, *mh);
-    if (tps.size() != 1) {
+    if (tps.size() != 1 || !tps[0].codings.empty()) {
         return std::nullopt;
     }
     const auto starts = packet_starts(bytes, *mh, tps[0]);
@@ -273,7 +370,8 @@ std::optional<std::vector<std::size_t>> layer_boundaries(std::span<const std::ui
     return out;
 }
 
-bool within_limits(const MainHeader& mh, int reduce, const Limits& limits, std::string* why)
+bool within_limits(const MainHeader& mh, std::span<const TilePart> tile_parts, int reduce, const Limits& limits,
+                   std::string* why)
 {
     if (reduce < 0 || reduce > 31) {
         return fail(why, "reduce out of range");
@@ -285,9 +383,6 @@ bool within_limits(const MainHeader& mh, int reduce, const Limits& limits, std::
     if (mh.csiz > limits.max_components) {
         return fail(why, "too many components");
     }
-    if (mh.layers == 0 || mh.layers > limits.max_layers) {
-        return fail(why, "too many layers");
-    }
     const std::uint64_t w = ceil_div(mh.width(), 1ull << reduce), h = ceil_div(mh.height(), 1ull << reduce);
     if (w > limits.max_side || h > limits.max_side) {
         return fail(why, "too large at the decoded level");
@@ -295,23 +390,41 @@ bool within_limits(const MainHeader& mh, int reduce, const Limits& limits, std::
     if (w * h * mh.csiz > limits.max_samples) {
         return fail(why, "too many samples at the decoded level");
     }
-    // packets of the main COD: layers x components x tiles x precincts, summed over resolutions
-    double precincts = 0;  // double: an estimate that must not wrap on hostile values
+    // The worst of every COD and COC, wherever it stands, as if it applied to every tile and
+    // component: the layers of any COD, the structures of any coding in a tile of full size.
+    std::vector<const Coding*> codings;
+    for (const auto& c : mh.codings) {
+        codings.push_back(&c);
+    }
+    for (const auto& tp : tile_parts) {
+        for (const auto& c : tp.codings) {
+            codings.push_back(&c);
+        }
+    }
+    std::uint32_t layers = 0;
+    Structures worst;
     const std::uint64_t tw = std::min<std::uint64_t>(mh.xtsiz, mh.width());
     const std::uint64_t th = std::min<std::uint64_t>(mh.ytsiz, mh.height());
-    for (int res = 0; res <= mh.levels; ++res) {
-        const int shift = mh.levels - res;
-        const std::uint64_t rw = ceil_div(tw, 1ull << std::min(shift, 62));
-        const std::uint64_t rh = ceil_div(th, 1ull << std::min(shift, 62));
-        int ppx = 15, ppy = 15;
-        if ((mh.scod & 1) && std::size_t(res) < mh.precincts.size()) {
-            ppx = mh.precincts[res] & 15;
-            ppy = mh.precincts[res] >> 4;
+    for (const Coding* c : codings) {
+        if (c->is_cod) {
+            if (c->layers == 0) {
+                return fail(why, "no layers");
+            }
+            layers = std::max<std::uint32_t>(layers, c->layers);
         }
-        precincts += double(ceil_div(rw, 1ull << ppx) + 1) * double(ceil_div(rh, 1ull << ppy) + 1);
+        const Structures s = structures(*c, tw, th);
+        worst.precincts = std::max(worst.precincts, s.precincts);
+        worst.codeblocks = std::max(worst.codeblocks, s.codeblocks);
     }
-    if (precincts * mh.layers * mh.csiz * double(tiles) > double(limits.max_packets)) {
+    if (layers == 0 || layers > limits.max_layers) {
+        return fail(why, "too many layers");
+    }
+    const double per_tile = double(mh.csiz) * double(tiles);
+    if (worst.precincts * layers * per_tile > double(limits.max_packets)) {
         return fail(why, "too many packets");
+    }
+    if (worst.codeblocks * per_tile > double(limits.max_codeblocks)) {
+        return fail(why, "too many code-blocks");
     }
     return true;
 }

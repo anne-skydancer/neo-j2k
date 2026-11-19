@@ -63,4 +63,17 @@ std::optional<std::uint64_t> parse_hex64(std::string_view s);
 // Monotonic wall time in nanoseconds.
 std::uint64_t now_ns() noexcept;
 
+// Keeps work whose result nothing reads (the viewer's 8-bit copy in a timed round) from being
+// optimised away: the bytes escape into another translation unit.
+void keep_alive(const void* data, std::size_t n) noexcept;
+
+// An environment variable's value, "" when it is not set.
+std::string env_value(const char* name);
+
+// OpenJPEG starts worker threads when OPJ_NUM_THREADS is set (opj_j2k_create_decompress and
+// opj_j2k_create_compress read it), which would make timings and heap counts include its pool and
+// run its threaded paths where no ThreadSanitizer looks. The tests, tools, fuzz targets and the
+// bench clear it before any OpenJPEG codec exists; this returns the value it had ("" when unset).
+std::string single_thread_openjpeg();
+
 }  // namespace nj2k::test

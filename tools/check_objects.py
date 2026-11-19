@@ -8,14 +8,20 @@
   .fini_array/.dtors (ELF).
   So nothing of the library runs before main() or before a host's CPU check, and nothing is shared
   between decoders behind the caller's back (plan section 2.5; api.md section 2.2).
+- No link-time code generation: no MSVC /GL (LTCG) object, no LLVM bitcode, no GCC LTO sections
+  (.gnu.lto_*). Microsoft advises against shipping /GL objects, and GCC LTO objects only link with
+  the GCC that wrote them (plan section 2.5).
 - The object of nj2k_cpu_supported() holds no instruction beyond baseline x86-64 (no VEX or EVEX
-  encoding, no BMI, LZCNT, POPCNT, MOVBE, SSSE3 or SSE4): it must run on any x86-64 processor.
+  encoding, no BMI, LZCNT, POPCNT, MOVBE, SSE3, SSSE3, SSE4, LAHF/SAHF in 64-bit mode or
+  CMPXCHG16B): it must run on any x86-64 processor. With --baseline-library, every object of the
+  library is held to the same (the scalar build, NJ2K_SIMD=SCALAR).
 
 usage: check_objects.py --library neoj2k_static.lib|libneoj2k.a [--cpu-check-objects OBJ...]
+                        [--baseline-library]
        check_objects.py --selftest
 
-Archives and objects are read by this script (ar, COFF, ELF64); only the disassembly of the CPU-check
-object uses a tool: dumpbin (Windows) or objdump (elsewhere).
+Archives and objects are read by this script (ar, COFF, ELF64); only the disassembly uses a tool:
+dumpbin (Windows) or objdump (elsewhere).
 """
 import argparse
 import glob
@@ -30,6 +36,8 @@ COFF_FORBIDDEN = (".data", ".bss", ".tls", ".CRT$XC", ".CRT$XI", ".CRT$XP", ".CR
 ELF_FORBIDDEN = (".data", ".bss", ".tdata", ".tbss", ".init_array", ".fini_array", ".ctors", ".dtors",
                  ".preinit_array")
 ELF_ALLOWED = (".data.rel.ro",)  # read-only after relocation
+ELF_LTO = (".gnu.lto_",)  # GCC's LTO bytecode
+LLVM_BITCODE = (b"BC\xc0\xde", b"\xde\xc0\x17\x0b")  # raw and wrapped LLVM bitcode (Clang -flto, clang-cl /GL)
 
 
 def ar_members(data):
@@ -122,8 +130,13 @@ def elf_sections(obj):
 
 def problems_in(name, obj):
     found = []
+    if obj[:4] in LLVM_BITCODE:
+        return ["%s: LLVM bitcode (link-time code generation): the static library must not use LTO" % name]
     if obj[:4] == b"\x7fELF":
         sections, symbols = elf_sections(obj)
+        lto = sorted(set(sec for _, sec, _ in sections if sec.startswith(ELF_LTO)))
+        if lto:
+            found.append("%s: GCC LTO sections (%s): the static library must not use LTO" % (name, ", ".join(lto[:3])))
         forbidden = lambda s: s.startswith(ELF_FORBIDDEN) and not s.startswith(ELF_ALLOWED)
     else:
         parsed = coff_sections(obj)
@@ -143,14 +156,29 @@ def problems_in(name, obj):
 
 NOT_VEX_V = {"verr", "verw", "vmcall", "vmclear", "vmfunc", "vmlaunch", "vmptrld", "vmptrst", "vmread",
              "vmresume", "vmwrite", "vmxoff", "vmxon"}
-NEWER = {"andn", "bextr", "blsi", "blsmsk", "blsr", "bzhi", "mulx", "pdep", "pext", "rorx", "sarx", "shlx",
-         "shrx", "lzcnt", "tzcnt", "movbe", "popcnt", "pshufb", "phaddw", "phaddd", "pmaddubsw", "pmulhrsw",
-         "palignr", "pabsb", "pabsw", "pabsd", "pblendw", "blendps", "blendpd", "blendvps", "blendvpd",
-         "pblendvb", "dpps", "dppd", "extractps", "insertps", "pextrb", "pextrd", "pextrq", "pinsrb", "pinsrd",
-         "pinsrq", "pmaxsb", "pmaxsd", "pmaxud", "pmaxuw", "pminsb", "pminsd", "pminud", "pminuw", "pmovsxbw",
-         "pmovzxbw", "pmuldq", "pmulld", "ptest", "roundps", "roundpd", "roundss", "roundsd", "packusdw",
-         "pcmpeqq", "pcmpgtq", "crc32", "pcmpestri", "pcmpistri", "pclmulqdq", "aesenc", "adcx", "adox", "rdrand",
-         "rdseed", "sha1rnds4", "sha256rnds2"}
+NEWER = {
+    # BMI1, BMI2, LZCNT, MOVBE, POPCNT
+    "andn", "bextr", "blsi", "blsmsk", "blsr", "bzhi", "mulx", "pdep", "pext", "rorx", "sarx", "shlx", "shrx",
+    "lzcnt", "tzcnt", "movbe", "popcnt",
+    # SSE3
+    "movddup", "movshdup", "movsldup", "lddqu", "haddps", "haddpd", "hsubps", "hsubpd", "addsubps", "addsubpd",
+    "fisttp", "monitor", "mwait",
+    # SSSE3
+    "pshufb", "phaddw", "phaddd", "phaddsw", "phsubw", "phsubd", "phsubsw", "pmaddubsw", "pmulhrsw", "palignr",
+    "pabsb", "pabsw", "pabsd", "psignb", "psignw", "psignd",
+    # SSE4.1
+    "pblendw", "blendps", "blendpd", "blendvps", "blendvpd", "pblendvb", "dpps", "dppd", "mpsadbw", "phminposuw",
+    "extractps", "insertps", "pextrb", "pextrd", "pextrq", "pinsrb", "pinsrd", "pinsrq", "pmaxsb", "pmaxsd",
+    "pmaxud", "pmaxuw", "pminsb", "pminsd", "pminud", "pminuw", "pmovsxbw", "pmovsxbd", "pmovsxbq", "pmovsxwd",
+    "pmovsxwq", "pmovsxdq", "pmovzxbw", "pmovzxbd", "pmovzxbq", "pmovzxwd", "pmovzxwq", "pmovzxdq", "pmuldq",
+    "pmulld", "ptest", "roundps", "roundpd", "roundss", "roundsd", "packusdw", "pcmpeqq", "movntdqa",
+    # SSE4.2, CLMUL, AES, SHA, ADX, RDRAND, RDSEED
+    "pcmpgtq", "crc32", "pcmpestri", "pcmpestrm", "pcmpistri", "pcmpistrm", "pclmulqdq", "aesenc", "aesenclast",
+    "aesdec", "aesdeclast", "aesimc", "aeskeygenassist", "sha1rnds4", "sha1nexte", "sha1msg1", "sha1msg2",
+    "sha256rnds2", "sha256msg1", "sha256msg2", "adcx", "adox", "rdrand", "rdseed",
+    # missing from the first x86-64 processors: LAHF/SAHF in 64-bit mode, CMPXCHG16B
+    "lahf", "sahf", "cmpxchg16b",
+}
 DUMPBIN_INSN = re.compile(r"^\s*[0-9A-Fa-f]+:\s+((?:[0-9A-Fa-f]{2}\s)+)\s*(\S+)")
 OBJDUMP_INSN = re.compile(r"^\s*[0-9a-f]+:\s+(?:[0-9a-f]{2}\s)+\s*(\S+)")
 
@@ -182,10 +210,21 @@ def find_dumpbin():
     return None
 
 
-def check_cpu_object(path):
+def is_elf(path):
+    """An ELF object, or an archive whose first object is one (GNU ar); otherwise COFF."""
     with open(path, "rb") as f:
-        head = f.read(4)
-    if head == b"\x7fELF":
+        data = f.read(1 << 20)
+    if data[:4] == b"\x7fELF":
+        return True
+    if data[:8] == b"!<arch>\n":
+        members = ar_members(data)
+        return bool(members) and members[0][1][:4] == b"\x7fELF"
+    return False
+
+
+def check_cpu_object(path):
+    """An object, or a whole archive (dumpbin and objdump disassemble every member)."""
+    if is_elf(path):
         tool = shutil.which("objdump")
         if not tool:
             return ["objdump not found: cannot disassemble " + path]
@@ -203,6 +242,25 @@ def check_cpu_object(path):
     return ["%s: needs a newer processor: %s" % (path, line) for line in found]
 
 
+def tiny_elf(section_names):
+    """A minimal little-endian ELF64 relocatable object with empty sections of these names (selftest)."""
+    all_names = [".shstrtab"] + list(section_names)
+    strtab, offsets = b"\0", []
+    for n in all_names:
+        offsets.append(len(strtab))
+        strtab += n.encode("ascii") + b"\0"
+    shoff = 64 + len(strtab)
+    shoff += (-shoff) % 8
+    header = bytearray(64)
+    header[:7] = b"\x7fELF\x02\x01\x01"
+    struct.pack_into("<HHIQQQIHHHHHH", header, 16, 1, 62, 1, 0, 0, shoff, 0, 64, 0, 0, 64, len(all_names) + 1, 1)
+    out = bytes(header) + strtab + bytes(shoff - 64 - len(strtab)) + bytes(64)
+    out += struct.pack("<IIQQQQIIQQ", offsets[0], 3, 0, 0, 64, len(strtab), 0, 0, 1, 0)
+    for off in offsets[1:]:
+        out += struct.pack("<IIQQQQIIQQ", off, 1, 0, 0, 0, 0, 0, 0, 1, 0)
+    return out
+
+
 def selftest():
     ok = ["  0000000000000000: 48 83 EC 28        sub         rsp,28h",
           "  0000000000000007: 0F A2              cpuid",
@@ -212,9 +270,16 @@ def selftest():
     assert newer_instructions(ok, DUMPBIN_INSN, 2) == ([], 3)
     assert len(newer_instructions(bad, DUMPBIN_INSN, 2)[0]) == 2
     obj_ok = ["   0:\t0f a2                \tcpuid", "   2:\t0f 01 d0             \txgetbv"]
-    obj_bad = ["   0:\tc5 fd 6f 07          \tvmovdqa (%rdi),%ymm0"]
+    obj_bad = ["   0:\tc5 fd 6f 07          \tvmovdqa (%rdi),%ymm0",
+               "   4:\tf2 0f 12 c1          \tmovddup %xmm1,%xmm0",
+               "   8:\t9f                   \tlahf"]
     assert newer_instructions(obj_ok, OBJDUMP_INSN, 1) == ([], 2)
-    assert len(newer_instructions(obj_bad, OBJDUMP_INSN, 1)[0]) == 1
+    assert len(newer_instructions(obj_bad, OBJDUMP_INSN, 1)[0]) == 3
+    # an ELF object with a GCC LTO section, and LLVM bitcode, are refused; a plain one passes
+    assert problems_in("plain.o", tiny_elf([".text", ".rodata"])) == []
+    assert problems_in("lto.o", tiny_elf([".text", ".gnu.lto_.symtab.0"]))
+    assert problems_in("x.o", b"BC\xc0\xde" + bytes(60))
+    assert problems_in("x.obj", b"\xde\xc0\x17\x0b" + bytes(60))
     print("check_objects: selftest passed")
     return 0
 
@@ -223,6 +288,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--library")
     ap.add_argument("--cpu-check-objects", nargs="*", default=[])
+    ap.add_argument("--baseline-library", action="store_true",
+                    help="hold every object of the library to baseline x86-64 (the scalar build)")
     ap.add_argument("--selftest", action="store_true")
     a = ap.parse_args()
     if a.selftest:
@@ -235,12 +302,15 @@ def main():
         problems += problems_in(name, obj)
     for obj in a.cpu_check_objects:
         problems += check_cpu_object(obj)
+    if a.baseline_library:
+        problems += check_cpu_object(a.library)
     for p in problems:
         print("check_objects: " + p, file=sys.stderr)
     if problems:
         return 1
-    print("check_objects: %d objects without global state or initialisers; CPU check baseline x86-64 (%d objects)" %
-          (len(members), len(a.cpu_check_objects)))
+    print("check_objects: %d objects without global state, initialisers or LTO; baseline x86-64: the CPU check "
+          "(%d objects)%s" % (len(members), len(a.cpu_check_objects),
+                              " and every object of the library" if a.baseline_library else ""))
     return 0
 
 

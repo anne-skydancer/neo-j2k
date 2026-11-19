@@ -6,6 +6,7 @@
 #include <cctype>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 
@@ -185,6 +186,43 @@ std::uint64_t now_ns() noexcept
 {
     return static_cast<std::uint64_t>(
         std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
+}
+
+void keep_alive(const void* data, std::size_t n) noexcept
+{
+    static volatile std::uint8_t sink;
+    if (n) {
+        sink = static_cast<const std::uint8_t*>(data)[n - 1];
+    }
+}
+
+std::string env_value(const char* name)
+{
+    std::string out;
+#if defined(_WIN32)
+    char* value = nullptr;
+    std::size_t len = 0;
+    if (_dupenv_s(&value, &len, name) == 0 && value) {
+        out = value;
+        std::free(value);
+    }
+#else
+    if (const char* value = std::getenv(name)) {
+        out = value;
+    }
+#endif
+    return out;
+}
+
+std::string single_thread_openjpeg()
+{
+    std::string old = env_value("OPJ_NUM_THREADS");
+#if defined(_WIN32)
+    _putenv_s("OPJ_NUM_THREADS", "");  // an empty value removes the variable
+#else
+    unsetenv("OPJ_NUM_THREADS");
+#endif
+    return old;
 }
 
 }  // namespace nj2k::test

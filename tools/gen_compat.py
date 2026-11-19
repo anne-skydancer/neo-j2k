@@ -52,7 +52,9 @@ HEADER = """/*
 
 #include "neoj2k.h"
 
-/* The OpenJPEG API level this mirrors (opj_config.h); neo-j2k's own is NJ2K_VERSION_*. */
+/* The OpenJPEG API level this mirrors (opj_config.h); neo-j2k's own is NJ2K_VERSION_*, and
+ * opj_version() returns it: it changes with every neo-j2k release, so a host that keys a cache of
+ * decoded images on it keys it on its own decoder-output version instead (doc/api.md). */
 #define OPJ_VERSION_MAJOR 2
 #define OPJ_VERSION_MINOR 5
 #define OPJ_VERSION_BUILD 4

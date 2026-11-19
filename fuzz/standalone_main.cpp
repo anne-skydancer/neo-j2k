@@ -2,8 +2,9 @@
 // Copyright (c) 2026, Anne Skydancer (neo-j2k)
 //
 // A driver for fuzz targets built without libFuzzer: runs LLVMFuzzerTestOneInput once per file
-// named on the command line (folders are walked), so every compiler and platform replays the seed
-// corpus and the regression inputs as an ordinary test.
+// named on the command line (folders are walked, their Markdown notes skipped), so every compiler
+// and platform replays the seed corpus and the regression inputs as an ordinary test.
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -11,6 +12,7 @@
 #include <vector>
 
 #include "common.h"
+#include "fuzz_common.h"
 
 extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size);
 
@@ -22,10 +24,11 @@ int main(int argc, char** argv)
         std::error_code ec;
         if (std::filesystem::is_directory(argv[i], ec)) {
             for (const auto& e : std::filesystem::recursive_directory_iterator(argv[i], ec)) {
-                if (e.is_regular_file()) {
+                if (e.is_regular_file() && e.path().extension() != ".md") {
                     files.push_back(e.path());
                 }
             }
+            std::sort(files.begin(), files.end());
         } else {
             files.emplace_back(argv[i]);
         }
@@ -39,6 +42,10 @@ int main(int argc, char** argv)
             ++inputs;
         }
     }
-    std::printf("replayed %zu inputs\n", inputs);
+    std::printf("replayed %zu inputs, %zu reached the code under test\n", inputs, nj2k::fuzz::exercised());
+    if (inputs && !nj2k::fuzz::exercised()) {
+        std::fprintf(stderr, "no input got past the target's filters and guards: the replay tested nothing\n");
+        return 1;
+    }
     return inputs ? 0 : 2;
 }

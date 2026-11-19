@@ -1792,14 +1792,17 @@ NJ2K_API int NJ2K_CALLCONV nj2k_get_num_cpus(void);
 ==========================================================
 */
 
-/** The longest string nj2k_engine_string() returns, without its terminator. A texture cache
- * that stores the engine name in a 32-byte field (the viewer's) can hold it. */
+/** The longest string nj2k_engine_string() returns, without its terminator: it fits a 32-byte
+ * field, such as the one the viewer's texture cache keeps the decoder's name in. */
 #define NJ2K_ENGINE_STRING_MAX 31
 
 /**
- * The decoder's name and the version of its decoded output, "neo-j2k MAJOR.MINOR". A
+ * The decoder's name and release line, "neo-j2k MAJOR.MINOR", for logs and an About box. A
  * compile-time constant of at most NJ2K_ENGINE_STRING_MAX characters; safe to call before
- * main() and from any thread.
+ * main() and from any thread. It names no version of the decoded output, and neither does
+ * nj2k_version() (opj_version() through the compatibility header), which changes with every
+ * release: a host that caches decoded images keys the cache on its own decoder-output version,
+ * bumped when the pixels can change (owner decision D13).
  */
 NJ2K_API const char * NJ2K_CALLCONV nj2k_engine_string(void);
 

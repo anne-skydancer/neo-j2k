@@ -14,9 +14,17 @@
 #include <cstring>
 #include <vector>
 
-#include "decoder.h"
+#include "fuzz_common.h"
 
 namespace {
+
+// The known-defect check of OD-4 (tests/CMakeLists.txt, AddressSanitizer builds only) replays its
+// input with this set and expects the overflow report; nothing else sets it.
+bool unguarded()
+{
+    static const bool on = nj2k::test::env_value("NJ2K_FUZZ_UNGUARDED") == "1";
+    return on;
+}
 
 struct Sink {
     std::vector<std::uint8_t> bytes;
@@ -60,6 +68,7 @@ void quiet(const char*, void*) {}
 
 extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size)
 {
+    nj2k::fuzz::fuzz_setup();
     if (size < 12) {
         return 0;
     }
@@ -77,9 +86,9 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
         --numres;
     }
     // OpenJPEG's MQ encoder writes past the code-block buffer when every pass is terminated
-    // (TERMALL) on samples deeper than 8 bits (oracle defect O-4, doc/oracle.md): kept away from
+    // (TERMALL) on samples deeper than 8 bits (oracle defect OD-4, doc/oracle.md): kept away from
     // the oracle until neo-j2k's bounded encoder (stage 6a) takes this target over
-    if ((mode & 4) && prec > 8) {
+    if ((mode & 4) && prec > 8 && !unguarded()) {
         return 0;
     }
 
@@ -149,6 +158,7 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
     opj_stream_destroy(st);
     opj_destroy_codec(enc);
     if (encoded) {
+        ++nj2k::fuzz::exercised();
         static const auto oracle = nj2k::test::make_oracle_backend();
         nj2k::test::Request rq;
         rq.data = sink.bytes.data();

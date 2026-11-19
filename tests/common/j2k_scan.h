@@ -2,8 +2,9 @@
 // Copyright (c) 2026, Anne Skydancer (neo-j2k)
 //
 // A minimal codestream reader for the tests and tools: the main header's SIZ and COD facts, the
-// tile-parts, and packet boundaries from SOP markers or PLT. It never decodes; it lets the tests
-// pick cut points and keep known resource bombs away from the oracle.
+// tile-parts, the coding parameters of every COD and COC marker, and packet boundaries from SOP
+// markers or PLT. It never decodes; it lets the tests pick cut points and keep known resource bombs
+// away from the oracle.
 #pragma once
 
 #include <cstddef>
@@ -15,21 +16,37 @@
 
 namespace nj2k::test {
 
+// The coding parameters of one COD or COC marker segment: what sizes the decoder's code-block and
+// precinct structures and its packet walk.
+struct Coding {
+    bool is_cod = false;               // COD (it sets the layers) or COC
+    std::uint16_t layers = 0;          // COD only
+    std::uint8_t levels = 0;           // decomposition levels: resolutions less one
+    std::uint8_t xcb = 0, ycb = 0;     // code-block size exponents less 2, as coded
+    std::vector<std::uint8_t> precincts;  // PPx | PPy << 4 per resolution, when the marker gives them
+};
+
 struct MainHeader {
     std::uint32_t xsiz = 0, ysiz = 0, xosiz = 0, yosiz = 0;
     std::uint32_t xtsiz = 0, ytsiz = 0, xtosiz = 0, ytosiz = 0;
     std::uint16_t rsiz = 0;
     std::uint16_t csiz = 0;
     std::vector<std::uint8_t> ssiz, xrsiz, yrsiz;
-    // COD
+    // COD (the last one: OpenJPEG lets a later COD of the main header replace an earlier one)
     std::uint8_t scod = 0, progression = 0, mct = 0, levels = 0, cblk_w_exp = 0, cblk_h_exp = 0, cblk_style = 0,
                  transform = 0;
     std::uint16_t layers = 0;
     std::vector<std::uint8_t> precincts;  // PPx | PPy << 4 per resolution, when Scod & 1
+    // every COD and COC of the main header, in order
+    std::vector<Coding> codings;
     // the fewest resolutions of any component in the main header (COD, COC)
     int min_resolutions = 0;
     bool has_coc = false, has_qcc = false, has_poc = false, has_ppm = false, has_tlm = false, has_plm = false,
          has_com = false;
+    // A marker OpenJPEG does not read in a main header. It skips an unknown marker by scanning for
+    // the next marker it knows, ignoring the length, so what follows may differ from what the
+    // lengths say (this reader follows them); a known marker out of place makes it fail.
+    bool unknown_marker = false;
     std::size_t end = 0;  // offset of the first SOT: the main header's end
     std::uint64_t tiles_x() const noexcept;
     std::uint64_t tiles_y() const noexcept;
@@ -50,9 +67,11 @@ struct TilePart {
     std::uint8_t tpsot = 0, tnsot = 0;
     bool has_ppt = false, has_plt = false;
     std::vector<std::uint32_t> plt;  // packet lengths, in order, when PLT is present
+    std::vector<Coding> codings;     // the COD and COC markers of the tile-part header
 };
 
-// Every tile-part, following Psot (Psot = 0: to the end, less an EOC).
+// Every tile-part, following Psot (Psot = 0: to the end, less an EOC), as OpenJPEG does: after a
+// tile-part it reads a SOT or the end, nothing else.
 std::vector<TilePart> scan_tile_parts(std::span<const std::uint8_t> bytes, const MainHeader& mh);
 
 // Packet start offsets of a stream with one tile-part, from SOP markers or else from PLT;
@@ -64,16 +83,23 @@ std::optional<std::vector<std::size_t>> packet_starts(std::span<const std::uint8
 // packets can be located: every prefix that ends there holds exactly the first k layers.
 std::optional<std::vector<std::size_t>> layer_boundaries(std::span<const std::uint8_t> bytes);
 
-// Resource limits the tests apply before they hand a stream to the oracle, which has none (a
-// 102-byte header commits 779 MB in OpenJPEG: fork audit S2, S3). Stage 1b's profiles replace it.
+// Resource limits the tests apply before they hand a stream to the oracle, which has none of its
+// own (a 102-byte header commits 779 MB in OpenJPEG 2.5.4: fork audit S2, S3). Stage 1b's profiles
+// replace it. Every count takes the worst case of every COD and COC, of the main header and of
+// every tile-part header, as if it applied to every tile and component.
 struct Limits {
     std::uint64_t max_tiles = 1024;
     std::uint32_t max_components = 8;
     std::uint32_t max_layers = 64;
     std::uint64_t max_side = 16384;          // at the decoded level
     std::uint64_t max_samples = 1ull << 28;  // all components at the decoded level
-    std::uint64_t max_packets = 1ull << 20;  // layers x precincts x components x tiles (main COD)
+    std::uint64_t max_packets = 1ull << 20;  // layers x precincts x components x tiles
+    // code-blocks of every resolution: OpenJPEG builds the code-block and precinct structures of
+    // the full resolution whatever the reduce factor (tcd.c), so a 119-byte header asks for 416 MB
+    // at a 64 x 64 output
+    std::uint64_t max_codeblocks = 1ull << 22;
 };
-bool within_limits(const MainHeader& mh, int reduce, const Limits& limits, std::string* why = nullptr);
+bool within_limits(const MainHeader& mh, std::span<const TilePart> tile_parts, int reduce, const Limits& limits,
+                   std::string* why = nullptr);
 
 }  // namespace nj2k::test

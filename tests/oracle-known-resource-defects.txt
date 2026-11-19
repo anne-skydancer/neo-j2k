@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: BSD-2-Clause
+# Copyright (c) 2026, Anne Skydancer (neo-j2k)
+#
+# Known resource defects of the oracle (oracle/PIN), checked through the counting oracle module:
+#   <file in tests/known-defects> <mode> <reduce> <MiB, at least>
+# nj2k_diff resources fails when a listed request asks the heap for less, so the list follows the
+# pin. Each entry names its finding in doc/oracle.md.
+#
+# OD-3: a tile-part's declared length is allocated before it is read (opj_j2k_read_sod): the
+# 782-byte texture sl_32_rgb_97.j2k with Psot = 1 GiB, through the viewer's request.
+od3-psot-1g.j2k viewer 0 1000
+# OD-5: the code-block and precinct structures of every resolution are built whatever the reduce
+# factor: a 119-byte 2048 x 2048 RGBA header with 4 x 4 code-blocks, at reduce 5 (64 x 64 out).
+od5-fullres-cblk4-2048-rgba.j2k viewer 5 300

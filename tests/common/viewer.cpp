@@ -2,8 +2,9 @@
 // Copyright (c) 2026, Anne Skydancer (neo-j2k)
 //
 // The viewer rules the replay follows, re-stated from their behaviour in the viewer's release line
-// (indra/llimage/llimagej2c.cpp calcDataSizeJ2C, indra/llimagej2coj/llj2creduce.h and
-// llj2cdecodeguard.h). Only behaviour is reproduced here; no viewer code is copied.
+// (indra/llimage/llimagej2c.cpp calcDataSizeJ2C, indra/llimagej2coj/llimagej2coj.cpp getMetadata,
+// llj2creduce.h and llj2cdecodeguard.h). Only behaviour is reproduced here; no viewer code is
+// copied.
 #include <algorithm>
 #include <cmath>
 
@@ -48,6 +49,17 @@ std::int64_t data_size_j2c(int w, int h, int discard)
     return bits / 8 + header_bytes;
 }
 
+int grid_side(std::uint64_t tiles, std::uint32_t tile_size) noexcept
+{
+    // S32(tilesW * tileDimX), the product of two U32 values
+    return static_cast<int>(static_cast<std::uint32_t>(tiles * tile_size));
+}
+
+bool components_supported(std::uint64_t components) noexcept
+{
+    return components >= 1 && components <= kMaxComponents;
+}
+
 int reduce_factor(int requested_discard, int resolutions, int width, int height, int max_image_size)
 {
     if (resolutions <= 0 || requested_discard < resolutions || requested_discard > 30) {
@@ -61,8 +73,8 @@ int reduce_factor(int requested_discard, int resolutions, int width, int height,
 
 bool decode_allowed(std::uint64_t width, std::uint64_t height, std::uint64_t components, unsigned reduce)
 {
-    constexpr std::uint64_t max_components = 8, max_side = 16384, max_bytes = 1ull << 30, bytes_per_sample = 4;
-    if (components < 1 || components > max_components || reduce > 31) {
+    constexpr std::uint64_t max_side = 16384, max_bytes = 1ull << 30, bytes_per_sample = 4;
+    if (!components_supported(components) || reduce > 31) {
         return false;
     }
     const std::uint64_t w = (width + (1ull << reduce) - 1) >> reduce;

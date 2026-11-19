@@ -3,7 +3,8 @@
 //
 // Fuzz target: header parsing only. The test scanner (j2k_scan) reads the main header, the
 // tile-parts and the packet positions, and the oracle reads the main header and its codestream
-// information, non-strict, as the viewer's metadata pass does. Stage 1b points it at neo-j2k's
+// information, non-strict, as the viewer's metadata pass does, behind the header filter only (no
+// samples are allocated here, so large images are read too). Stage 1b points it at neo-j2k's
 // header model.
 #include <openjpeg.h>
 
@@ -60,16 +61,20 @@ void quiet(const char*, void*) {}
 
 extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size)
 {
+    nj2k::fuzz::fuzz_setup();
     const std::span<const std::uint8_t> bytes(data, size);
     if (const auto mh = nj2k::test::parse_main_header(bytes)) {
-        for (const auto& tp : nj2k::test::scan_tile_parts(bytes, *mh)) {
+        const auto tps = nj2k::test::scan_tile_parts(bytes, *mh);
+        for (const auto& tp : tps) {
             (void)nj2k::test::packet_starts(bytes, *mh, tp);
         }
         (void)nj2k::test::layer_boundaries(bytes);
+        (void)nj2k::test::within_limits(*mh, tps, 0, nj2k::test::Limits{});
     }
-    if (size == 0 || !nj2k::fuzz::oracle_may_decode(bytes, 0)) {
+    if (size == 0 || !nj2k::fuzz::oracle_may_read_header(bytes)) {
         return 0;
     }
+    ++nj2k::fuzz::exercised();
     opj_dparameters_t params;
     opj_set_default_decoder_parameters(&params);
     params.flags |= OPJ_DPARAMETERS_DUMP_FLAG;

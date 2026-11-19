@@ -80,8 +80,10 @@ NJ2K_API NJ2K_BOOL NJ2K_CALLCONV nj2k_has_thread_support(void)
     return NJ2K_FALSE;
 }
 
-// The operating system's count of logical processors, as OpenJPEG reports it (no standard library
-// here: <thread> brings MSVC's STL a writable global into the object).
+// The operating system's count of logical processors: on Windows those of every processor group
+// (OpenJPEG's GetSystemInfo counts the calling thread's group only, which differs above 64 logical
+// processors), elsewhere the online ones, as OpenJPEG. No standard library here: <thread> brings
+// MSVC's STL a writable global into the object.
 NJ2K_API int NJ2K_CALLCONV nj2k_get_num_cpus(void)
 {
 #if defined(_WIN32)

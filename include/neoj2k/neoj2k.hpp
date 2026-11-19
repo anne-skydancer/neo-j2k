@@ -57,15 +57,21 @@ using CodestreamInfo = std::unique_ptr<nj2k_codestream_info_v2_t, CodestreamInfo
 [[nodiscard]] inline bool cpu_supported() noexcept { return nj2k_cpu_supported() != 0; }
 
 // An input stream over borrowed bytes. The reader must outlive the stream it makes; the bytes are
-// never copied by the reader.
+// never copied by the reader. It serves one stream at a time: the streams of one reader share its
+// read position, and making a stream rewinds it.
 class MemoryReader {
 public:
     explicit MemoryReader(std::span<const std::uint8_t> bytes) noexcept : bytes_(bytes) {}
     MemoryReader(const MemoryReader&) = delete;
     MemoryReader& operator=(const MemoryReader&) = delete;
 
-    [[nodiscard]] Stream make_stream(std::size_t buffer_size = NJ2K_J2K_STREAM_CHUNK_SIZE) noexcept
+    // buffer_size 0 sizes the stream's buffer to the bytes (at least 1) rather than to the 1 MB
+    // chunk of a file stream, so a small texture gets a small buffer
+    [[nodiscard]] Stream make_stream(std::size_t buffer_size = 0) noexcept
     {
+        if (buffer_size == 0) {
+            buffer_size = bytes_.empty() ? 1 : bytes_.size();
+        }
         Stream stream(nj2k_stream_create(buffer_size, NJ2K_TRUE));
         if (!stream) {
             return stream;

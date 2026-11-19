@@ -16,6 +16,9 @@ owner's fork (https://github.com/anne-skydancer/openjpeg):
 - `oracle/patches/` (patches to those sources).
 
 Each of these files keeps OpenJPEG's copyright notice; `oracle/openjp2/LICENSE` is OpenJPEG's licence.
+`LICENSE.OpenJPEG` carries that licence and the notices of the ported files for the built libraries:
+the install puts it, with `LICENSE` and this file, in `share/licenses/neoj2k`, and binary
+distributions ship them.
 
 ## Test data
 

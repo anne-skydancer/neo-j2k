@@ -134,11 +134,13 @@ private:
 
 std::unique_ptr<Backend> make_oracle_backend()
 {
+    (void)single_thread_openjpeg();
     return std::make_unique<OracleBackend>();
 }
 
 std::unique_ptr<Backend> make_library_backend(const std::string& path, const std::string& name, std::string* error)
 {
+    (void)single_thread_openjpeg();  // before the library loads (a static C runtime copies the environment then)
     auto b = std::make_unique<LibraryBackend>();
     if (!b->load(path, name, error)) {
         return nullptr;

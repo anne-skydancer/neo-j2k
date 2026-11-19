@@ -8,7 +8,8 @@ as its own DLL (`neoj2k.dll`, `libneoj2k.so`). Its arithmetic is OpenJPEG 2.5.4'
 bit-identical to it; everything around the arithmetic is rebuilt for small images, flawless partial decodes and
 bounded resources. A native Rust crate follows later and is tested against the C++ library bit for bit.
 
-Licence: BSD-2-Clause (`LICENSE`). Code ported from OpenJPEG keeps its own BSD-2-Clause notices (`NOTICE.md`).
+Licence: BSD-2-Clause (`LICENSE`). Code ported from OpenJPEG keeps its own BSD-2-Clause notices (`NOTICE.md`,
+`LICENSE.OpenJPEG`).
 
 The repository is private until the C++ library and the Rust crate are at parity and fuzzed.
 
@@ -28,7 +29,8 @@ python -I tools/fetch_testdata.py  # ISO 15444-4 class 1 data for the conformanc
 ctest --preset windows-msvc
 ```
 
-CMake 3.25+, a C++20 compiler (VS 2026, GCC 14+, Clang), Python 3 for the checks. The library needs nothing else.
+CMake 3.25+ (4.2+ for the Visual Studio 18 2026 generator of the Windows presets), a C++20 compiler (VS 2026,
+GCC 14+, Clang), Python 3 for the checks. The library needs nothing else.
 
 ## Layout
 

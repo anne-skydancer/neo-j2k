@@ -15,11 +15,24 @@
   OpenJPEG. `include/neoj2k/compat/` holds `openjpeg.h` and `opj_config.h` for code that includes those
   names. The tests compile their OpenJPEG request code against it (`tests/common/backend_neoj2k.cpp`).
 - `include/neoj2k/neoj2k.hpp`: a header-only C++20 wrapper: owning handles, a memory reader over borrowed
-  bytes, everything `noexcept`, calling nothing but the C ABI.
+  bytes (one stream at a time, its buffer sized to the bytes), everything `noexcept`, calling nothing but
+  the C ABI.
 - Extensions without an OpenJPEG counterpart: `nj2k_engine_string()` (a compile-time constant of at most
   31 characters, `NJ2K_ENGINE_STRING_MAX`, safe before `main()`) and `nj2k_cpu_supported()` (compiled for
   baseline x86-64). Stage 1b adds the rest: limit profiles (the Second Life profile built in, an OpenSim
   module, D10), a decode status with `TRUNCATED` and `NEED_DATA`, and the allocator hook.
+
+## Versions, and a host's cache
+
+`nj2k_version()` (`opj_version()` through the compatibility header) is the library's release,
+`NJ2K_VERSION_MAJOR.MINOR.PATCH`, and changes with every release; `OPJ_VERSION_*` stay 2.5.4, the API level
+mirrored. `nj2k_engine_string()`, `"neo-j2k MAJOR.MINOR"`, names the decoder for logs and an About box.
+Neither is a version of the decoded output. A host that keys a cache of decoded images on them keys it on
+its own decoder-output version instead, bumped when the pixels can change (owner decision D13: once at the
+fork's stage 1a hotfix, nothing at the switch). The viewer's texture cache keys on `getEngineInfo()`, which
+holds `opj_version()` (`llimagej2coj.cpp`, `lltexturecache.cpp`): built against the compatibility header
+unchanged, every neo-j2k release would purge every user's cache. The viewer switch (stage 8b) keys it on
+the viewer's own output version.
 
 ## Stage 0
 
@@ -29,13 +42,30 @@ OpenJPEG's), the image functions (`nj2k_image_create`, `nj2k_image_tile_create`,
 (false: the library starts no threads). Every other function fails cleanly (`NULL` or `NJ2K_FALSE`) until
 its stage: streams and codecs in 1b, decoding in 1c, encoding in 6a. `nj2k_set_MCT` stays false (Part 2).
 OpenJPEG declares `opj_get_jp2_metadata` and `opj_get_jp2_index` but never defines them; neo-j2k defines
-both (they return `NULL`).
+both (they return `NULL`). `nj2k_get_num_cpus` counts the logical processors of every processor group on
+Windows, where OpenJPEG's `GetSystemInfo` counts the calling thread's group only (the two differ above 64
+logical processors); elsewhere both count the online processors.
+
+## Open before stage 1b: where the per-thread decoder lives
+
+Plan stage 1c's gate is zero heap calls after warm-up, and D5 on the decisions page has the decoder reused
+per thread. OpenJPEG's API has no reuse: the viewer creates a codec per decode (`JPEG2KDecode::readHeader`
+and `decode` call `opj_create_decompress`, `~JPEG2KDecode` destroys it) and frees each image with
+`opj_image_destroy`. Reuse under it therefore needs one of these, for the planner and the owner:
+
+- thread-local state inside the library behind the unchanged API, which the rules below and the
+  global-state check (`tools/check_objects.py`: no `.tls`, `.tdata`, `.tbss`) rule out today: the check
+  would be relaxed and a thread-exit design added;
+- a reusable-codec extension that the viewer calls (the survey's viewer design, `api.md` section 2.4,
+  keeps a `thread_local` decoder in a viewer-side `llimagej2cneo.cpp`);
+- a host-owned pool behind the allocator hook.
 
 ## Builds and ABI
 
 - `neoj2k_static` (`neoj2k_static.lib`, `libneoj2k.a`; define `NJ2K_STATIC` when linking it) and
   `neoj2k_shared` (`neoj2k.dll` with its import library `neoj2k.lib`; `libneoj2k.so`, soname
-  `libneoj2k.so.0.0` while 0.x, the major version from 1.0).
+  `libneoj2k.so.0.0` while 0.x, the major version from 1.0). An installed package exports them as
+  `neoj2k::static` and `neoj2k::shared`, the names a build tree gives them too.
 - The shared library exports `nj2k_*` only: dllexport on Windows, a version script on Linux. `abi/exports.txt`
   lists the exports; `tools/check_exports.py --write-list abi/exports.txt` after an API change, which
   review then sees.
@@ -44,8 +74,13 @@ both (they return `NULL`).
 - No floating-point contraction anywhere (`/fp:precise`, plus `-ffp-contract=off` for clang-cl; GCC and
   Clang `-ffp-contract=off -fno-fast-math`), so lossy output can be identical across compilers (D2).
 - The instruction-set floor of neo-j2k's own code: x86-64-v3 (`/arch:AVX2`, `-march=x86-64-v3`), chosen at
-  compile time; `NJ2K_SIMD=SCALAR` builds for baseline x86-64 (D8).
+  compile time; `NJ2K_SIMD=SCALAR` builds for baseline x86-64 (D8), and its test holds every object of the
+  library to that.
 - Hardening: `/guard:cf` and `/CETCOMPAT`; `-fcf-protection=full`, `_FORTIFY_SOURCE=2` when the toolchain
   does not set it, `-z relro -z now -z noexecstack`.
-- The DLL keeps link-time code generation inside; the static library never uses it (`/GL` objects must not
-  ship, and GCC LTO objects bind to one GCC).
+- The DLL keeps link-time code generation inside; the static library and the CPU-check objects never use
+  it, in any configuration (`/GL` objects must not ship, and GCC LTO objects bind to one GCC), and the
+  global-state test refuses LTO objects.
+- The install ships `LICENSE`, `LICENSE.OpenJPEG` (OpenJPEG's licence and the notices of the code ported
+  from it, which its licence asks binary distributions to carry) and `NOTICE.md` in
+  `share/licenses/neoj2k`.

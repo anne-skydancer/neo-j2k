@@ -17,7 +17,11 @@
 //   other benches it saw) and says when the box cut it short.
 // - Clock: the TSC, calibrated against steady_clock at start (nominal cycles, not core cycles).
 // - Decoders: oracle (linked), lib:<path>[=<name>] (OpenJPEG ABI: the shipped DLL, the counting
-//   oracle module, which adds heap-call counts), neoj2k (from stage 1c).
+//   oracle module, which adds heap-call counts), neoj2k (from stage 1c). Each needs its own name.
+// - Timed rounds do the viewer's work only: the request, its checks and its 8-bit copy. The
+//   identity checksums and the heap counts come from untimed rounds before them.
+// - OpenJPEG runs on the calling thread: OPJ_NUM_THREADS is cleared at start (and its old value
+//   recorded), since OpenJPEG would start a thread pool for it.
 // Exit status: 0, or 2 on a usage error. Timing never fails a run; the gates read the CSV.
 #include <algorithm>
 #include <chrono>
@@ -129,6 +133,7 @@ struct Input {
     std::string name;
     Bytes data;
     int w = 0, h = 0, comps = 0, resolutions = 0;
+    int grid_w = 0, grid_h = 0;  // the size the viewer stores and budgets with: the tile grid's
 };
 
 std::string size_class(int w, int h)
@@ -157,6 +162,7 @@ struct Row {
 
 int main(int argc, char** argv)
 {
+    const std::string opj_threads = single_thread_openjpeg();  // before any codec exists
     Args a;
     for (int i = 1; i < argc; ++i) {
         const std::string k = argv[i];
@@ -196,6 +202,12 @@ int main(int argc, char** argv)
         if (!b) {
             usage(err);
         }
+        for (const auto& d : decs) {
+            if (d->name() == b->name()) {
+                // rows are kept by decoder name: two of one name would merge
+                usage("two decoders named '" + b->name() + "': name them (lib:<path>=<name>)");
+            }
+        }
         decs.push_back(std::move(b));
     }
     std::vector<Input> inputs;
@@ -211,6 +223,8 @@ int main(int argc, char** argv)
         in.data = std::move(*data);
         in.w = int(mh->width());
         in.h = int(mh->height());
+        in.grid_w = viewer::grid_side(mh->tiles_x(), mh->xtsiz);
+        in.grid_h = viewer::grid_side(mh->tiles_y(), mh->ytsiz);
         in.comps = mh->csiz;
         in.resolutions = mh->min_resolutions;
         inputs.push_back(std::move(in));
@@ -261,7 +275,7 @@ int main(int argc, char** argv)
                 if (kind == "full") {
                     n = in.data.size();
                 } else if (kind == "budget") {
-                    const auto b = std::size_t(viewer::data_size_j2c(in.w, in.h, r));
+                    const auto b = std::size_t(viewer::data_size_j2c(in.grid_w, in.grid_h, r));
                     if (r == 0 || b >= in.data.size()) {
                         continue;
                     }
@@ -292,14 +306,17 @@ int main(int argc, char** argv)
         std::vector<std::vector<double>> times(D);
         std::vector<std::uint64_t> spent(D, 0);
         std::vector<Row> r(D);
-        // one untimed round: the first call may set lasting state up
+        // untimed rounds: the identity checksum (the first call may also set lasting state up),
+        // then the heap calls of one request as the timed rounds make it
+        Request timed = rq;
+        timed.inspect = false;
         for (std::size_t k = 0; k < D; ++k) {
             const Outcome o = decs[k]->decode(rq);
             r[k].ok = o.ok;
             r[k].checksum = o.ok ? (a.mode == Mode::Viewer ? o.u8_hash : o.hash) : 0;
             std::uint64_t counts[4];
             decs[k]->alloc_reset();
-            (void)decs[k]->decode(rq);
+            (void)decs[k]->decode(timed);
             if (decs[k]->alloc_counts(counts)) {
                 r[k].allocs = double(counts[0]);
                 r[k].reallocs = double(counts[1]);
@@ -319,7 +336,7 @@ int main(int argc, char** argv)
             for (std::size_t j = 0; j < D; ++j) {
                 const std::size_t k = (j + std::size_t(it)) % D;  // rotate who goes first
                 const std::uint64_t t0 = tsc();
-                (void)decs[k]->decode(rq);
+                (void)decs[k]->decode(timed);
                 const std::uint64_t t1 = tsc();
                 spent[k] += t1 - t0;
                 times[k].push_back(double(t1 - t0) / g_tsc_per_us);
@@ -461,9 +478,11 @@ int main(int argc, char** argv)
         total.push_back(l.total);
     }
     const double other_mean = other.empty() ? 0 : std::accumulate(other.begin(), other.end(), 0.0) / double(other.size());
-    std::printf("nj2k_bench: %zu of %zu configurations in %.1f s%s; %s mode; TSC %.1f MHz; pinned %s\n", configs,
-                configs_total, wall_s, boxed ? " (time-boxed: stopped at the budget)" : "", mode_name(a.mode),
-                g_tsc_per_us, a.pin >= 0 ? std::to_string(a.pin).c_str() : "no");
+    std::printf("nj2k_bench: %zu of %zu configurations in %.1f s%s; %s mode; TSC %.1f MHz; pinned %s; "
+                "OPJ_NUM_THREADS %s\n",
+                configs, configs_total, wall_s, boxed ? " (time-boxed: stopped at the budget)" : "", mode_name(a.mode),
+                g_tsc_per_us, a.pin >= 0 ? std::to_string(a.pin).c_str() : "no",
+                opj_threads.empty() ? "unset" : ("cleared (was " + opj_threads + ")").c_str());
     std::printf("load while running: other processes %.0f %% mean, %.0f %% p90, %.0f %% max of %d CPUs; seen: %s\n",
                 other_mean, percentile(other, 0.9), other.empty() ? 0.0 : *std::max_element(other.begin(), other.end()),
                 logical_cpus(), seen.empty() ? "none" : [&] {
@@ -485,7 +504,8 @@ int main(int argc, char** argv)
                        ",\n  \"wall_seconds\": " + std::to_string(wall_s) + ",\n  \"clock\": \"TSC calibrated against steady_clock\"" +
                        ",\n  \"tsc_mhz\": " + std::to_string(g_tsc_per_us) + ",\n  \"load_other_mean\": " +
                        std::to_string(other_mean) + ",\n  \"load_other_p90\": " + std::to_string(percentile(other, 0.9)) +
-                       ",\n  \"logical_cpus\": " + std::to_string(logical_cpus()) + ",\n  \"classes\": [\n";
+                       ",\n  \"logical_cpus\": " + std::to_string(logical_cpus()) +
+                       ",\n  \"opj_num_threads_cleared\": \"" + opj_threads + "\"" + ",\n  \"classes\": [\n";
     bool first_json = true;
     for (const auto& [key, per] : by) {
         static const std::vector<const Row*> none;

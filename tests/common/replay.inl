@@ -10,10 +10,10 @@
 // through an Api table, so a library loaded at run time is driven exactly like a linked one.
 //
 // The viewer request follows indra/llimagej2coj/llimagej2coj.cpp of the viewer's release line
-// (behaviour only, no viewer code): LLImageJ2COJ::getMetadata's header pass, then decodeImpl's
-// comment scan and reduce clamp, a second codec with the reduce factor set before the header,
-// non-strict mode, LLJ2CDecodeGuard, opj_decode, opj_end_decompress, the geometry checks and the
-// flipped 8-bit copy of up to four components.
+// (behaviour only, no viewer code): LLImageJ2COJ::getMetadata's header pass and its component
+// check, then decodeImpl's comment scan and reduce clamp, a second codec with the reduce factor set
+// before the header, non-strict mode, LLJ2CDecodeGuard, opj_decode, opj_end_decompress, the
+// geometry checks and the flipped 8-bit copy of up to four components.
 
 #include <algorithm>
 #include <cstring>
@@ -216,8 +216,8 @@ inline void fail(nj2k::test::Outcome& out, const char* stage, const Messages& m)
     out.warning_kinds = m.warning_kinds;
 }
 
-// Geometry, samples and the identity hash of a decoded image.
-inline bool finish(nj2k::test::Outcome& out, const opj_image_t* img, bool capture, const Messages& m)
+// Geometry, samples and (when the request inspects) the identity hash of a decoded image.
+inline bool finish(nj2k::test::Outcome& out, const opj_image_t* img, const nj2k::test::Request& rq, const Messages& m)
 {
     out.warnings = m.warnings;
     out.errors = m.errors;
@@ -271,16 +271,18 @@ inline bool finish(nj2k::test::Outcome& out, const opj_image_t* img, bool captur
             fail(out, "geometry", m);
             return false;
         }
-        for (std::size_t i = 0; i < n; ++i) {
-            h.u32(static_cast<std::uint32_t>(ic.data[i]));
+        if (rq.inspect) {
+            for (std::size_t i = 0; i < n; ++i) {
+                h.u32(static_cast<std::uint32_t>(ic.data[i]));
+            }
         }
-        if (capture) {
+        if (rq.capture) {
             out.planes.emplace_back(ic.data, ic.data + n);
         }
     }
     out.ok = true;
     out.stage.clear();
-    out.hash = h.value();
+    out.hash = rq.inspect ? h.value() : 0;
     return true;
 }
 
@@ -293,7 +295,7 @@ inline nj2k::test::Outcome replay_plain(const Api& A, const nj2k::test::Request&
     params.cp_reduce = static_cast<OPJ_UINT32>(rq.reduce);
     params.cp_layer = static_cast<OPJ_UINT32>(rq.layers);
     Session s(A);
-    if (!s.open(rq, params, true)) {
+    if (!s.open(rq, params, rq.inspect)) {
         fail(out, "codec", s.messages);
         return out;
     }
@@ -308,7 +310,7 @@ inline nj2k::test::Outcome replay_plain(const Api& A, const nj2k::test::Request&
         fail(out, "decode", s.messages);
         return out;
     }
-    finish(out, s.image, rq.capture, s.messages);
+    finish(out, s.image, rq, s.messages);
     return out;
 }
 
@@ -340,8 +342,8 @@ inline nj2k::test::Outcome replay_viewer(const Api& A, const nj2k::test::Request
             fail(out, "header", meta.messages);
             return out;
         }
-        width = static_cast<int>(meta.info->tw * meta.info->tdx);
-        height = static_cast<int>(meta.info->th * meta.info->tdy);
+        width = viewer::grid_side(meta.info->tw, meta.info->tdx);
+        height = viewer::grid_side(meta.info->th, meta.info->tdy);
         components = static_cast<int>(meta.info->nbcomps);
         const std::uint64_t gw = std::uint64_t(meta.info->tw) * meta.info->tdx;
         const std::uint64_t gh = std::uint64_t(meta.info->th) * meta.info->tdy;
@@ -350,6 +352,12 @@ inline nj2k::test::Outcome replay_viewer(const Api& A, const nj2k::test::Request
                 const int r = static_cast<int>(meta.info->m_default_tile_info.tccp_info[c].numresolutions);
                 resolutions = c == 0 ? r : std::min(resolutions, r);
             }
+        }
+        // getMetadata refuses a component count the viewer does not take right after the header,
+        // before it stores anything, as a header that does not read
+        if (!viewer::components_supported(static_cast<std::uint64_t>(meta.info->nbcomps))) {
+            fail(out, "header", meta.messages);
+            return out;
         }
     }
     (void)components;
@@ -361,7 +369,7 @@ inline nj2k::test::Outcome replay_viewer(const Api& A, const nj2k::test::Request
     A.opj_set_default_decoder_parameters(&params);
     params.cp_reduce = 0;
     Session s(A);
-    if (!s.open(rq, params, true)) {
+    if (!s.open(rq, params, rq.inspect)) {
         fail(out, "codec", s.messages);
         return out;
     }
@@ -399,7 +407,7 @@ inline nj2k::test::Outcome replay_viewer(const Api& A, const nj2k::test::Request
         fail(out, "geometry", s.messages);
         return out;
     }
-    if (!finish(out, im, rq.capture, s.messages)) {
+    if (!finish(out, im, rq, s.messages)) {
         return out;
     }
     std::vector<std::uint8_t> raw(static_cast<std::size_t>(w) * h * channels);
@@ -413,9 +421,13 @@ inline nj2k::test::Outcome replay_viewer(const Api& A, const nj2k::test::Request
             }
         }
     }
-    nj2k::test::Fnv64 h8;
-    h8.bytes(raw.data(), raw.size());
-    out.u8_hash = h8.value();
+    if (rq.inspect) {
+        nj2k::test::Fnv64 h8;
+        h8.bytes(raw.data(), raw.size());
+        out.u8_hash = h8.value();
+    } else {
+        nj2k::test::keep_alive(raw.data(), raw.size());  // the copy is the viewer's work: keep it timed
+    }
     return out;
 }
 
@@ -553,9 +565,11 @@ inline bool replay_upload(const Api& A, const std::uint8_t* raw, int width, int 
     opj_stream_t* st = nullptr;
     Grow sink{&out};
     if (ok) {
+        // the viewer's zeroed size guess; below 4 px a side it is 0, OpenJPEG makes no stream of
+        // 0 bytes, and the viewer's upload fails, so this one fails too
         const std::size_t guess = static_cast<std::size_t>(wt) * ht * 64 * 64 * 3;
-        out.assign(guess, 0);  // the viewer's zeroed size guess
-        st = A.opj_stream_create(guess ? guess : 1, OPJ_FALSE);
+        out.assign(guess, 0);
+        st = A.opj_stream_create(guess, OPJ_FALSE);
         ok = st != nullptr;
     }
     if (ok) {

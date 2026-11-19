@@ -32,6 +32,10 @@ struct Request {
     int layers = 0;        // layers to decode, 0 for all (cp_layer); Plain and Strict only
     Mode mode = Mode::Plain;
     bool capture = false;  // keep the sample planes in the outcome
+    // Compute the identity hashes and keep the decoder's messages. The bench's timed rounds clear
+    // it, so they time the viewer's work only: the decode, its checks and its 8-bit copy, with
+    // message handlers that ignore the messages, as the viewer's do.
+    bool inspect = true;
 };
 
 struct Component {
@@ -69,7 +73,8 @@ public:
     virtual void alloc_reset() {}
 };
 
-// "oracle", "neoj2k", or "lib:<path>[=<name>]" (an OpenJPEG-ABI shared library).
+// "oracle", "neoj2k", or "lib:<path>[=<name>]" (an OpenJPEG-ABI shared library). Every backend
+// decodes on the calling thread: making one clears OPJ_NUM_THREADS (single_thread_openjpeg).
 std::unique_ptr<Backend> make_backend(const std::string& spec, std::string* error = nullptr);
 std::unique_ptr<Backend> make_oracle_backend();
 std::unique_ptr<Backend> make_neoj2k_backend();
@@ -77,13 +82,19 @@ std::unique_ptr<Backend> make_library_backend(const std::string& path, const std
 
 // Viewer behaviour shared by every backend (indra/llimage, llimagej2coj, release line).
 namespace viewer {
-// LLImageJ2C::calcDataSizeJ2C: the bytes the fetcher asks for at a discard level.
+constexpr std::uint64_t kMaxComponents = 8;      // MAX_IMAGE_COMPONENTS (llimage.h)
+constexpr std::size_t kFirstRequestBytes = 600;  // lltexturefetch: the first request of a texture
+// LLImageJ2C::calcDataSizeJ2C: the bytes the fetcher asks for at a discard level, from the image
+// size LLImageJ2COJ::getMetadata stores: the tile grid's (tiles x tile size, see grid_side).
 std::int64_t data_size_j2c(int w, int h, int discard);
+// The side LLImageJ2COJ::getMetadata stores: tiles x tile size, in 32 bits, as a signed int.
+int grid_side(std::uint64_t tiles, std::uint32_t tile_size) noexcept;
+// LLJ2CDecodeGuard::componentsSupported: the component counts getMetadata takes (1 to 8).
+bool components_supported(std::uint64_t components) noexcept;
 // LLJ2CReduce::reduceFactor: never ask for a coarser level than the codestream has.
 int reduce_factor(int requested_discard, int resolutions, int width, int height, int max_image_size = 4096);
 // LLJ2CDecodeGuard::decodeAllowed with MAX_IMAGE_COMPONENTS (8).
 bool decode_allowed(std::uint64_t width, std::uint64_t height, std::uint64_t components, unsigned reduce);
-constexpr std::size_t kFirstRequestBytes = 600;  // lltexturefetch: the first request of a texture
 }  // namespace viewer
 
 }  // namespace nj2k::test

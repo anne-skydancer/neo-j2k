@@ -22,10 +22,17 @@
 //            For one-tile LRCP streams with SOP or PLT: a cut where layer k+1 starts must decode
 //            exactly as the whole file limited to k layers (cp_layer), an oracle independent of the
 //            truncation code (plan audit B5). KNOWN lists the backend's known defects.
+//   resources --a SPEC --ref KNOWN --root DIR
+//            Known resource defects of a backend that counts its heap calls (the counting oracle
+//            module, lib:<nj2k_oracle_counting>): each "<file> <mode> <reduce> <MiB>" line is a
+//            whole-file request for which the backend asks the heap for at least that much. A line
+//            that asks for less fails: its defect is gone, and the line goes.
 //
 // SPEC: oracle | neoj2k | lib:<path>[=<name>]. LIST: a codestream, a folder, or a list file.
 // Modes: plain (one codec, non-strict), strict, viewer (the viewer's two-pass request).
-// Exit status: 0 when everything matched, 1 on a difference, 2 on a usage or input error.
+// Exit status: 0 when everything matched, 1 on a difference, 2 on a usage or input error, and 2
+// when a check matched nothing (verify with no reference line left, layers with no locatable file,
+// resources with no line).
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
@@ -142,7 +149,8 @@ std::unique_ptr<Backend> backend(const std::string& spec)
 struct Input {
     std::string path, name;
     Bytes data;
-    int resolutions = 0, w = 0, h = 0;
+    int resolutions = 0;
+    int grid_w = 0, grid_h = 0;  // the size the viewer stores and budgets with: the tile grid's
 };
 
 std::vector<Input> load_inputs(const std::string& files, const std::string& root)
@@ -160,8 +168,8 @@ std::vector<Input> load_inputs(const std::string& files, const std::string& root
         in.data = std::move(*data);
         if (const auto mh = parse_main_header(in.data)) {
             in.resolutions = mh->min_resolutions;
-            in.w = int(mh->width());
-            in.h = int(mh->height());
+            in.grid_w = viewer::grid_side(mh->tiles_x(), mh->xtsiz);
+            in.grid_h = viewer::grid_side(mh->tiles_y(), mh->ytsiz);
         }
         out.push_back(std::move(in));
     }
@@ -182,7 +190,7 @@ std::vector<std::size_t> lengths(const Input& in, const std::string& kind, int r
         if (r == 0) {
             return {};
         }
-        const auto b = std::size_t(viewer::data_size_j2c(in.w, in.h, r));
+        const auto b = std::size_t(viewer::data_size_j2c(in.grid_w, in.grid_h, r));
         return b < size ? std::vector<std::size_t>{b} : std::vector<std::size_t>{};
     }
     if (kind == "first") {
@@ -490,6 +498,12 @@ int cmd_verify(const Args& a)
     }
     std::printf("verify %s against %s: %zu lines (%zu whole-file decodes, %zu cut digests over %zu decodes), %zu mismatches\n",
                 A->name().c_str(), a.ref.c_str(), lines, whole, cuts, cut_decodes, bad);
+    if (lines == 0) {
+        // a check that checks nothing must not pass: a renamed --only file, a --cut-steps value the
+        // table does not hold, or an empty table
+        std::fprintf(stderr, "nj2k_diff: no reference line of %s matched the options\n", a.ref.c_str());
+        return 2;
+    }
     return bad ? 1 : 0;
 }
 
@@ -615,6 +629,66 @@ int cmd_layers(const Args& a)
     return bad || stale ? 1 : (files ? 0 : 2);
 }
 
+int cmd_resources(const Args& a)
+{
+    if (a.a.empty() || a.ref.empty() || a.root.empty()) {
+        usage("resources needs --a (a counting backend), --ref and --root");
+    }
+    auto A = backend(a.a);
+    std::uint64_t probe[4];
+    if (!A->alloc_counts(probe)) {
+        usage((A->name() + " does not count its heap calls (lib:<nj2k_oracle_counting>)").c_str());
+    }
+    std::ifstream kf(a.ref);
+    if (!kf) {
+        usage(("cannot read " + a.ref).c_str());
+    }
+    std::size_t lines = 0, gone = 0;
+    std::string line;
+    while (std::getline(kf, line)) {
+        const std::string t = trim(line);
+        if (t.empty() || t[0] == '#') {
+            continue;
+        }
+        std::vector<std::string> f;
+        for (const auto& part : split(t, ' ')) {
+            if (!part.empty()) {
+                f.push_back(part);
+            }
+        }
+        Mode mode;
+        if (f.size() != 4 || !parse_mode(f[1], mode)) {
+            usage(("bad known-defect line: " + t).c_str());
+        }
+        const std::string path = join_path(a.root, f[0]);
+        const auto data = read_file(path);
+        if (!data) {
+            usage(("cannot read " + path).c_str());
+        }
+        ++lines;
+        Request rq;
+        rq.data = data->data();
+        rq.size = data->size();
+        rq.reduce = std::stoi(f[2]);
+        rq.mode = mode;
+        A->alloc_reset();
+        const Outcome o = A->decode(rq);
+        std::uint64_t c[4];
+        A->alloc_counts(c);
+        const double mib = double(c[3]) / (1024.0 * 1024.0);
+        std::printf("%s %s r%s: %s; asked the heap for %.0f MiB in %llu calls (the defect: at least %s MiB)\n",
+                    f[0].c_str(), f[1].c_str(), f[2].c_str(), o.ok ? "decoded" : ("refused at " + o.stage).c_str(), mib,
+                    static_cast<unsigned long long>(c[0] + c[1]), f[3].c_str());
+        if (mib < std::stod(f[3])) {
+            ++gone;
+            std::printf("KNOWN DEFECT GONE %s %s r%s: below %s MiB now; remove it from %s\n", f[0].c_str(), f[1].c_str(),
+                        f[2].c_str(), f[3].c_str(), a.ref.c_str());
+        }
+    }
+    std::printf("resources %s: %zu known resource defects, %zu gone\n", A->name().c_str(), lines, gone);
+    return gone ? 1 : (lines ? 0 : 2);
+}
+
 }  // namespace
 
 int main(int argc, char** argv)
@@ -625,5 +699,6 @@ int main(int argc, char** argv)
     if (a.cmd == "verify") return cmd_verify(a);
     if (a.cmd == "layers") return cmd_layers(a);
     if (a.cmd == "decode") return cmd_decode(a);
+    if (a.cmd == "resources") return cmd_resources(a);
     usage(("unknown command " + a.cmd).c_str());
 }

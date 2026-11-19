@@ -155,7 +155,7 @@ std::vector<Spec> specs()
     // Two tiles get no coded data at these rates, so with packed headers their tile-parts hold no
     // bytes at all. That is valid JPEG 2000, but OpenJPEG 2.5.4 refuses such a tile
     // (opj_j2k_decode_tile: no tile data): kept as an edge case, its outcome recorded
-    // (doc/departures.md, candidate D-3).
+    // (doc/departures.md, candidate DP-3).
     add({.name = "edge_ppt_empty_tiles_97", .w = 64, .h = 48, .comps = 3, .tw = 32, .th = 32, .irreversible = true,
          .numres = 4, .rates = rates({24, 8}), .packed = Packed::Ppt, .oracle_refuses = true});
 
@@ -594,6 +594,7 @@ const char* prog_name(OPJ_PROG_ORDER p)
 
 int main(int argc, char** argv)
 {
+    (void)single_thread_openjpeg();  // the encoder runs on this thread (OPJ_NUM_THREADS cleared)
     if (argc != 3 || (std::string(argv[1]) != "--out" && std::string(argv[1]) != "--verify")) {
         std::fprintf(stderr, "usage: nj2k_corpus_gen --out DIR | --verify DIR\n");
         return 2;

@@ -48,7 +48,7 @@ Run them with `nj2k_diff compare` (`doc/testing.md`).
 `tests/oracle-known-defects.txt` lists them for the layer-boundary check; the check fails when a listed
 case starts to pass, so the list follows the pin.
 
-- **O-1: a cut packed-header stream with EPH markers is refused.** `corpus/generated/packed_ppm_sop_eph_97.j2k`
+- **OD-1: a cut packed-header stream with EPH markers is refused.** `corpus/generated/packed_ppm_sop_eph_97.j2k`
   (PPM, SOP, EPH, three layers) cut where layer 2 starts (484 bytes), or anywhere before layer 3, gives
   "Expected EPH marker" and no image, in the shipped DLL and in the oracle; the whole file limited to one
   layer decodes. Likely cause, from reading `t2.c` (not instrumented): a code-block's first inclusion is
@@ -56,12 +56,12 @@ case starts to pass, so the list follows the pin.
   parsed as if those code-blocks had never been included, and the parse goes astray; EPH makes it fail,
   and without EPH it would go unnoticed. A build without the fix's segment close-up fails the same way, so
   the defect is OpenJPEG's, not the fix's. It bears on stage 1a's exhaustion exit (audit B3 asked for
-  packed-header streams in its gate). neo-j2k keeps the complete layers here (`doc/departures.md`, D-4).
-- **O-2: a tile whose tile-parts hold no data bytes is refused.** With packed headers, a tile whose packets
+  packed-header streams in its gate). neo-j2k keeps the complete layers here (`doc/departures.md`, DP-4).
+- **OD-2: a tile whose tile-parts hold no data bytes is refused.** With packed headers, a tile whose packets
   are all empty has no bytes after SOD; that is valid, but `opj_j2k_decode_tile` refuses a tile without
   data. Kept as `corpus/generated/edge_ppt_empty_tiles_97.j2k` (the reference records the refusal);
-  candidate departure D-3.
-- **O-3: a tile-part's declared length is allocated before it is read.** In non-strict mode
+  candidate departure DP-3.
+- **OD-3: a tile-part's declared length is allocated before it is read.** In non-strict mode
   `opj_j2k_read_sod` (`j2k.c:5016-5046`) only warns when `Psot` exceeds what is left of the stream and then
   allocates all of it. `sl_32_rgb_97.j2k` (782 bytes) with `Psot` set to `0xFFFFFF00` decodes normally and
   commits 4,105 MB per decode (1,027 MB with `Psot` = 1 GiB), in the shipped DLL and in the oracle, through
@@ -69,7 +69,7 @@ case starts to pass, so the list follows the pin.
   ClusterFuzzLite on the stage-0 pull request (an out-of-memory at `j2k.c:5045`), then measured with
   `nj2k_diff decode`. Fix for the fork: in non-strict mode allocate at most the bytes left. The fuzz targets
   keep tile-parts above 64 MB away from the oracle meanwhile; neo-j2k never allocates from `Psot`.
-- **O-4: the MQ encoder writes past the code-block buffer** (fork audit S5, now confirmed). The lossless
+- **OD-4: the MQ encoder writes past the code-block buffer** (fork audit S5, now confirmed). The lossless
   round-trip fuzzer (ClusterFuzzLite, ASan) found a one-byte heap write past an 83-byte code-block buffer
   (`opj_mqc_byteout`, `mqc.c:494`, from `opj_mqc_flush`, allocated at `tcd.c:1336`): a 28x2 image, three
   16-bit signed components, 4x32 code-blocks, RESET and TERMALL, four layers, EPH. Every terminated pass

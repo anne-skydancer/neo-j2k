@@ -14,8 +14,22 @@ set(NJ2K_SOURCES
   memory.cpp
 )
 
+# No link-time code generation, in every configuration: the generic IPO property alone is not
+# enough, since INTERPROCEDURAL_OPTIMIZATION_<CONFIG> (which CMAKE_INTERPROCEDURAL_OPTIMIZATION_<CONFIG>
+# initialises, for example in a superproject that turns LTO on everywhere) overrides it.
+function(nj2k_no_ipo target)
+  set(_configs Debug Release RelWithDebInfo MinSizeRel ${CMAKE_CONFIGURATION_TYPES} ${CMAKE_BUILD_TYPE})
+  list(REMOVE_DUPLICATES _configs)
+  set_property(TARGET ${target} PROPERTY INTERPROCEDURAL_OPTIMIZATION OFF)
+  foreach(_config IN LISTS _configs)
+    string(TOUPPER "${_config}" _config)
+    set_property(TARGET ${target} PROPERTY INTERPROCEDURAL_OPTIMIZATION_${_config} OFF)
+  endforeach()
+endfunction()
+
 # nj2k_cpu_supported() is compiled for baseline x86-64 whatever NJ2K_SIMD says, so it lives in an
-# object library without the instruction-set flags.
+# object library without the instruction-set flags, and without LTO, which could compile it again
+# at link time with the flags of the objects it meets there.
 function(nj2k_cpu_check_objects name defs)
   add_library(${name} OBJECT cpu_check.c)
   target_include_directories(${name} PRIVATE "${PROJECT_SOURCE_DIR}/include")
@@ -24,6 +38,7 @@ function(nj2k_cpu_check_objects name defs)
     target_compile_definitions(${name} PRIVATE NJ2K_REQUIRE_X86_64_V3)
   endif()
   set_target_properties(${name} PROPERTIES C_VISIBILITY_PRESET hidden POSITION_INDEPENDENT_CODE ON)
+  nj2k_no_ipo(${name})
   nj2k_warnings(${name})
   nj2k_fp_strict(${name})
   nj2k_hardening(${name})
@@ -60,8 +75,10 @@ if(NJ2K_BUILD_STATIC)
     set_target_properties(neoj2k_static PROPERTIES OUTPUT_NAME neoj2k)
   endif()
   # No link-time code generation in the static library: Microsoft advises against shipping /GL
-  # objects, and GCC LTO objects only link with the GCC that wrote them (plan section 2.5).
-  set_target_properties(neoj2k_static PROPERTIES INTERPROCEDURAL_OPTIMIZATION OFF)
+  # objects, and GCC LTO objects only link with the GCC that wrote them (plan section 2.5);
+  # tools/check_objects.py refuses such objects.
+  nj2k_no_ipo(neoj2k_static)
+  set_target_properties(neoj2k_static PROPERTIES EXPORT_NAME static)
   add_library(neoj2k::static ALIAS neoj2k_static)
   list(APPEND NJ2K_LIBRARY_TARGETS neoj2k_static)
 endif()
@@ -99,6 +116,7 @@ if(NJ2K_BUILD_SHARED)
         INTERPROCEDURAL_OPTIMIZATION_RELWITHDEBINFO ON)
     endif()
   endif()
+  set_target_properties(neoj2k_shared PROPERTIES EXPORT_NAME shared)
   add_library(neoj2k::shared ALIAS neoj2k_shared)
   list(APPEND NJ2K_LIBRARY_TARGETS neoj2k_shared)
 endif()
@@ -121,5 +139,8 @@ if(NJ2K_INSTALL AND NJ2K_LIBRARY_TARGETS)
     configure_file("${PROJECT_SOURCE_DIR}/cmake/neoj2k.pc.in" "${CMAKE_CURRENT_BINARY_DIR}/neoj2k.pc" @ONLY)
     install(FILES "${CMAKE_CURRENT_BINARY_DIR}/neoj2k.pc" DESTINATION ${CMAKE_INSTALL_LIBDIR}/pkgconfig)
   endif()
-  install(FILES "${PROJECT_SOURCE_DIR}/LICENSE" DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/neoj2k)
+  # The library holds code ported from OpenJPEG, whose licence asks for its notice in binary
+  # distributions too: it ships next to neo-j2k's.
+  install(FILES "${PROJECT_SOURCE_DIR}/LICENSE" "${PROJECT_SOURCE_DIR}/LICENSE.OpenJPEG" "${PROJECT_SOURCE_DIR}/NOTICE.md"
+    DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/neoj2k)
 endif()

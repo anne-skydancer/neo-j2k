@@ -13,6 +13,7 @@
 
 extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size)
 {
+    nj2k::fuzz::fuzz_setup();
     static const auto oracle = nj2k::test::make_oracle_backend();
     const nj2k::fuzz::Input in = nj2k::fuzz::split_input(data, size);
     if (in.codestream.empty() || !nj2k::fuzz::oracle_may_decode(in.codestream, in.reduce)) {
@@ -24,6 +25,7 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
     rq.reduce = in.reduce;
     rq.layers = in.mode == nj2k::test::Mode::Viewer ? 0 : in.layers;
     rq.mode = in.mode;
+    ++nj2k::fuzz::exercised();
     (void)oracle->decode(rq);
     return 0;
 }
