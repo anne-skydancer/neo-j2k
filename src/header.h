@@ -251,6 +251,14 @@ nj2k_status_t read_main_header(Source& src, Arena& arena, const Messages& msg, c
 nj2k_status_t read_tile_part_header(Source& src, Arena& arena, const Messages& msg, const HeaderSettings& settings,
                                     MainHeader& mh, std::uint64_t sot, TilePartHeader& out) noexcept;
 
+// One marker segment of a tile-part header (its marker code m and its body of n bytes), recorded in
+// mh.tiles for the tile or checked as read_tile_part_header does: what may not appear there is
+// refused, a marker segment the decoder does not know is skipped with a warning (DP-7). The
+// decode's walk over the tile-parts calls it for each marker it reads.
+nj2k_status_t read_tile_part_marker(Arena& arena, const Messages& msg, const HeaderSettings& settings, MainHeader& mh,
+                                    std::uint16_t tile, std::uint16_t m, const std::uint8_t* body,
+                                    std::uint32_t n) noexcept;
+
 // Every component's parameters of a tile (out: mh.numcomps entries), with marker precedence applied
 // (W7) and each component's step sizes checked against the bands its resolutions need (W8), in one
 // pass over the components and the tile's markers. tile may be null for the main header's defaults.

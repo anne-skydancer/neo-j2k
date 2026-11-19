@@ -940,6 +940,108 @@ nj2k_status_t read_main_header(Source& src, Arena& arena, const Messages& msg, c
     return NJ2K_OK;
 }
 
+nj2k_status_t read_tile_part_marker(Arena& arena, const Messages& msg, const HeaderSettings& set, MainHeader& mh,
+                                    std::uint16_t tile, std::uint16_t m, const std::uint8_t* body, std::uint32_t n) noexcept
+{
+    TileOverrides* t = nullptr;
+    if (m == mk::COD || m == mk::COC || m == mk::QCD || m == mk::QCC || m == mk::RGN || m == mk::POC ||
+        m == mk::PPT) {
+        t = tile_overrides(arena, mh, tile);
+        if (!t) {
+            return arena_failure(msg, arena);
+        }
+    }
+    nj2k_status_t st = NJ2K_OK;
+    switch (m) {
+    case mk::COD:
+        st = read_cod(msg, set, body, n, t->cod, t->cod_style);
+        if (st == NJ2K_OK) {
+            t->has_cod = true;
+        }
+        break;
+    case mk::COC: {
+        std::uint32_t comp = 0;
+        CodingStyle cs{};
+        st = read_coc(msg, mh.numcomps, body, n, comp, cs);
+        if (st == NJ2K_OK) {
+            auto* keep = arena.make<CodingStyle>();
+            if (!keep || !t->coc.push(arena, CompValue<const CodingStyle*>{std::uint16_t(comp), keep})) {
+                return arena_failure(msg, arena);
+            }
+            *keep = cs;
+        }
+        break;
+    }
+    case mk::QCD: {
+        auto* q = arena.make<Quantization>();
+        if (!q) {
+            return arena_failure(msg, arena);
+        }
+        st = read_sqcd(msg, body, n, *q, "QCD");
+        if (st == NJ2K_OK) {
+            t->qcd = q;
+        }
+        break;
+    }
+    case mk::QCC: {
+        std::uint32_t comp = 0;
+        auto* q = arena.make<Quantization>();
+        if (!q) {
+            return arena_failure(msg, arena);
+        }
+        st = read_qcc(msg, mh.numcomps, body, n, comp, *q);
+        if (st == NJ2K_OK && !t->qcc.push(arena, CompValue<const Quantization*>{std::uint16_t(comp), q})) {
+            return arena_failure(msg, arena);
+        }
+        break;
+    }
+    case mk::RGN: {
+        std::uint32_t comp = 0;
+        std::uint8_t shift = 0;
+        st = read_rgn(msg, mh.numcomps, body, n, comp, shift);
+        if (st == NJ2K_OK && !t->rgn.push(arena, CompValue<std::uint8_t>{std::uint16_t(comp), shift})) {
+            return arena_failure(msg, arena);
+        }
+        break;
+    }
+    case mk::POC:
+        // OpenJPEG's limit counts the main header's changes too
+        st = read_poc(msg, arena, mh.numcomps, body, n, mh.poc.size + t->poc.size, t->poc);
+        break;
+    case mk::PPT:
+        if (mh.has_ppm) {
+            st = fail(msg, NJ2K_E_HEADER,
+                      "Error reading PPT marker: packet header have been previously found in the main header "
+                      "(PPM marker).\n");
+        } else {
+            st = add_packed(msg, arena, body, n, t->ppt, false);
+        }
+        break;
+    case mk::PLT:
+        st = check_plt(msg, body, n);
+        break;
+    case mk::COM:
+        break;
+    case mk::SOT:
+    case mk::SIZ:
+    case mk::TLM:
+    case mk::PLM:
+    case mk::PPM:
+    case mk::CRG:
+    case mk::CAP:
+    case mk::CPF:
+    case mk::SOP:
+        st = fail(msg, NJ2K_E_HEADER, "Marker is not compliant with its position\n");
+        break;
+    default:
+        // skipped by its length (OpenJPEG fails a tile-part header with an unknown marker)
+        msg.emit(Messages::Warning, "Unknown marker 0x%04X (%u bytes) skipped in a tile-part header\n", unsigned(m),
+                 n);
+        break;
+    }
+    return st;
+}
+
 nj2k_status_t read_tile_part_header(Source& src, Arena& arena, const Messages& msg, const HeaderSettings& set,
                                     MainHeader& mh, std::uint64_t sot, TilePartHeader& out) noexcept
 {
@@ -1017,103 +1119,7 @@ nj2k_status_t read_tile_part_header(Source& src, Arena& arena, const Messages& m
         if (const nj2k_status_t st = read_body(src, arena, msg, n, body, "a tile-part header"); st != NJ2K_OK) {
             return st;
         }
-        TileOverrides* t = nullptr;
-        if (m == mk::COD || m == mk::COC || m == mk::QCD || m == mk::QCC || m == mk::RGN || m == mk::POC ||
-            m == mk::PPT) {
-            t = tile_overrides(arena, mh, tp.tile);
-            if (!t) {
-                return arena_failure(msg, arena);
-            }
-        }
-        nj2k_status_t st = NJ2K_OK;
-        switch (m) {
-        case mk::COD:
-            st = read_cod(msg, set, body, n, t->cod, t->cod_style);
-            if (st == NJ2K_OK) {
-                t->has_cod = true;
-            }
-            break;
-        case mk::COC: {
-            std::uint32_t comp = 0;
-            CodingStyle cs{};
-            st = read_coc(msg, mh.numcomps, body, n, comp, cs);
-            if (st == NJ2K_OK) {
-                auto* keep = arena.make<CodingStyle>();
-                if (!keep || !t->coc.push(arena, CompValue<const CodingStyle*>{std::uint16_t(comp), keep})) {
-                    return arena_failure(msg, arena);
-                }
-                *keep = cs;
-            }
-            break;
-        }
-        case mk::QCD: {
-            auto* q = arena.make<Quantization>();
-            if (!q) {
-                return arena_failure(msg, arena);
-            }
-            st = read_sqcd(msg, body, n, *q, "QCD");
-            if (st == NJ2K_OK) {
-                t->qcd = q;
-            }
-            break;
-        }
-        case mk::QCC: {
-            std::uint32_t comp = 0;
-            auto* q = arena.make<Quantization>();
-            if (!q) {
-                return arena_failure(msg, arena);
-            }
-            st = read_qcc(msg, mh.numcomps, body, n, comp, *q);
-            if (st == NJ2K_OK && !t->qcc.push(arena, CompValue<const Quantization*>{std::uint16_t(comp), q})) {
-                return arena_failure(msg, arena);
-            }
-            break;
-        }
-        case mk::RGN: {
-            std::uint32_t comp = 0;
-            std::uint8_t shift = 0;
-            st = read_rgn(msg, mh.numcomps, body, n, comp, shift);
-            if (st == NJ2K_OK && !t->rgn.push(arena, CompValue<std::uint8_t>{std::uint16_t(comp), shift})) {
-                return arena_failure(msg, arena);
-            }
-            break;
-        }
-        case mk::POC:
-            // OpenJPEG's limit counts the main header's changes too
-            st = read_poc(msg, arena, mh.numcomps, body, n, mh.poc.size + t->poc.size, t->poc);
-            break;
-        case mk::PPT:
-            if (mh.has_ppm) {
-                st = fail(msg, NJ2K_E_HEADER,
-                          "Error reading PPT marker: packet header have been previously found in the main header "
-                          "(PPM marker).\n");
-            } else {
-                st = add_packed(msg, arena, body, n, t->ppt, false);
-            }
-            break;
-        case mk::PLT:
-            st = check_plt(msg, body, n);
-            break;
-        case mk::COM:
-            break;
-        case mk::SOT:
-        case mk::SIZ:
-        case mk::TLM:
-        case mk::PLM:
-        case mk::PPM:
-        case mk::CRG:
-        case mk::CAP:
-        case mk::CPF:
-        case mk::SOP:
-            st = fail(msg, NJ2K_E_HEADER, "Marker is not compliant with its position\n");
-            break;
-        default:
-            // skipped by its length (OpenJPEG fails a tile-part header with an unknown marker)
-            msg.emit(Messages::Warning, "Unknown marker 0x%04X (%u bytes) skipped in a tile-part header\n", unsigned(m),
-                     n);
-            break;
-        }
-        if (st != NJ2K_OK) {
+        if (const nj2k_status_t st = read_tile_part_marker(arena, msg, set, mh, tp.tile, m, body, n); st != NJ2K_OK) {
             return st;
         }
     }
@@ -1226,13 +1232,15 @@ bool decoded_component_geometry(const MainHeader& mh, std::uint32_t comp, std::u
 
 namespace {
 
-// Bytes per item in the working-memory estimate. Stage 1c measures its high-water marks against
-// this estimate and adjusts these numbers where a decode needs more (plan stage 1c gate).
+// Bytes per item in the working-memory estimate. Stage 1c measured what decodes take from the
+// allocator against it (decode_unit, test_memory_bound): the structures live in the working arena,
+// which reserves blocks in a doubling series, so they count twice (kArenaReserve).
 constexpr std::uint64_t kCodeBlockDecoded = 128;  // code-block state of a resolution that is decoded
 constexpr std::uint64_t kCodeBlockHeader = 32;    // tag-tree nodes and Lblock of a dropped resolution
 constexpr std::uint64_t kPrecinct = 64;
 constexpr std::uint64_t kScratch = 256 * 1024;    // Tier-1 buffers and the decoder's own state
 constexpr std::uint64_t kLineBytes = 64;          // wavelet lines: per sample of the longest side
+constexpr std::uint64_t kArenaReserve = 2;        // what the working arena reserves for what it holds
 
 std::uint64_t sat_add(std::uint64_t a, std::uint64_t b) noexcept
 {
@@ -1319,7 +1327,7 @@ std::uint64_t decode_working_memory(const MainHeader& mh, std::uint32_t factor, 
                 const std::uint64_t tcx0 = ceildiv(t.x0, sc.dx), tcy0 = ceildiv(t.y0, sc.dy);
                 const std::uint64_t tcx1 = ceildiv(t.x1, sc.dx), tcy1 = ceildiv(t.y1, sc.dy);
                 const CodingStyle& s = mh.main_style(c);
-                tile = sat_add(tile, structure_bytes(s, factor, tcx0, tcy0, tcx1, tcy1));
+                tile = sat_add(tile, sat_mul(structure_bytes(s, factor, tcx0, tcy0, tcx1, tcy1), kArenaReserve));
                 if (several && (!selected || selected[c])) {
                     // the tile's coefficients at the decoded level, before they go to the image
                     const std::uint64_t w = ceildivpow2(std::uint32_t(tcx1), factor) - ceildivpow2(std::uint32_t(tcx0), factor);

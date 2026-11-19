@@ -1598,8 +1598,8 @@ void test_api_rules()
     CHECK(!nj2k_set_decoded_components(r.codec, 1, good, NJ2K_TRUE));
     CHECK(nj2k_set_decoded_components(r.codec, 1, good, NJ2K_FALSE));
     CHECK(nj2k_set_decoded_components(r.codec, 0, nullptr, NJ2K_FALSE));
-    // decoding comes in stage 1c
-    CHECK(!nj2k_decode(r.codec, stream.get(), r.image) && nj2k_get_status(r.codec) == NJ2K_E_UNSUPPORTED);
+    // a decode needs the image the header gave (decode_unit tests the decode itself)
+    CHECK(!nj2k_decode(r.codec, stream.get(), nullptr) && nj2k_get_status(r.codec) == NJ2K_E_ARGUMENT);
     // the component selection: repeated calls take no more memory, and a refused one leaves the
     // earlier selection, as OpenJPEG does; seen through the working memory of a 2,048 x 2,048
     // three-component image under a 32 MiB limit, which fits one component and not three

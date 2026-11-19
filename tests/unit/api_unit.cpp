@@ -323,12 +323,12 @@ void test_scan_and_backends()
     cut.mode = Mode::Plain;
     CHECK(oracle->decode(cut).ok);
 
-    // neo-j2k through the compatibility header: since stage 1b the header reads, with the oracle's
-    // facts; until stage 1c the decode refuses
+    // neo-j2k through the compatibility header: the header reads with the oracle's facts (stage 1b)
+    // and the decode gives the oracle's image (stage 1c)
     auto neo = make_neoj2k_backend();
     rq.mode = Mode::Plain;
-    const Outcome n = neo->decode(rq);
-    CHECK(!n.ok && n.stage == "decode");
+    const Outcome n = neo->decode(rq), o = oracle->decode(rq);
+    CHECK(n.ok && o.ok && n.hash == o.hash);
     CHECK(nj2k::make_decoder() != nullptr);
     for (Mode m : {Mode::Plain, Mode::Viewer}) {
         rq.mode = m;

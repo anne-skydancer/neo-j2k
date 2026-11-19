@@ -37,6 +37,10 @@ OWN = {
     "NJ2K_E_UNSUPPORTED", "NJ2K_E_LIMIT", "NJ2K_E_NO_MEMORY", "NJ2K_E_DATA", "NJ2K_E_OUTPUT", "NJ2K_E_STATE",
     "nj2k_allocator", "nj2k_allocator_t", "nj2k_create_decompress_with_allocator",
     "NJ2K_REDUCE_EXACT", "NJ2K_REDUCE_CLAMP", "nj2k_decoder_set_reduce_policy", "nj2k_get_decoded_dimensions",
+    # stage 1c: decoding from memory, codestream after codestream, into the caller's buffers
+    "NJ2K_SAMPLE_I32", "NJ2K_SAMPLE_U8", "NJ2K_SAMPLE_U16", "nj2k_plane", "nj2k_plane_t", "nj2k_output",
+    "nj2k_output_t", "nj2k_codestream_layout", "nj2k_codestream_layout_t", "nj2k_read_header_memory",
+    "nj2k_get_codestream_layout", "nj2k_decode_memory", "nj2k_decoder_set_retained_bytes",
 }
 ENUM_TAGS = ["RSIZ_CAPABILITIES", "CINEMA_MODE", "PROG_ORDER", "COLOR_SPACE", "CODEC_FORMAT"]
 # names in openjpeg.h that are not API: its include guard, its build switches, INLINE
