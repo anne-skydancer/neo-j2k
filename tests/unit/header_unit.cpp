@@ -1165,11 +1165,11 @@ void test_api_rules()
     CHECK(cut.status == NJ2K_E_NEED_DATA);
     CHECK(!nj2k_set_decoded_resolution_factor(cut.codec, 1) && nj2k_get_status(cut.codec) == NJ2K_E_STATE);
     // file streams
-    const char* tmp = std::getenv("TEMP");
-    if (!tmp) {
-        tmp = std::getenv("TMPDIR");
+    std::string tmp = env_value("TEMP");
+    if (tmp.empty()) {
+        tmp = env_value("TMPDIR");
     }
-    const std::string path = std::string(tmp ? tmp : ".") + "/nj2k_header_unit_file.j2k";
+    const std::string path = (tmp.empty() ? std::string(".") : tmp) + "/nj2k_header_unit_file.j2k";
     CHECK(write_file(path, *data));
     nj2k_stream_t* fs_stream = nj2k_stream_create_default_file_stream(path.c_str(), NJ2K_TRUE);
     CHECK(fs_stream != nullptr);
@@ -1239,6 +1239,7 @@ void test_mutations()
 
 int main(int argc, char** argv)
 {
+    console_reports();
     if (argc < 4) {
         std::fprintf(stderr, "usage: nj2k_header_unit <corpus dir> <fuzz bombs dir> <known-defects dir>\n");
         return 2;

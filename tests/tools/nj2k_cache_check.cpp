@@ -44,6 +44,7 @@ std::uint32_t le32(const std::uint8_t* p)
 
 int main(int argc, char** argv)
 {
+    console_reports();
     if (argc < 2) {
         std::fprintf(stderr, "usage: nj2k_cache_check <texturecache dir> [--opensim]\n");
         return 2;
