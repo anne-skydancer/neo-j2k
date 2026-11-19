@@ -17,8 +17,13 @@ The repository is private until the C++ library and the Rust crate are at parity
 
 Stage 0, the skeleton: the build, the draft API (OpenJPEG's API under `nj2k_` names, with a compile-time `opj_*`
 compatibility header), CI, the test oracle, the corpus and its reference tables, the differential, cut-point,
-layer and conformance harness, fuzz targets and the bench. The decoder comes in stages 1b and 1c, the encoder in
-6a (`doc/stages.md`).
+layer and conformance harness, fuzz targets and the bench.
+
+Stage 1b, the header and the limits: streams, the decoder up to the decode, the main and tile-part header
+model and the JP2/JPH box reader, the decoder limits (the Second Life profile built in, an OpenSim module),
+statuses (`NJ2K_E_NEED_DATA`, `NJ2K_TRUNCATED` for 1c's partial decodes), the allocator hook, the reduce
+policy and the decoded dimensions (`doc/api.md`). Decoding comes in stage 1c, the encoder in 6a
+(`doc/stages.md`).
 
 ## Build and test
 

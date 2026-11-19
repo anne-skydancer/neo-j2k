@@ -27,6 +27,12 @@
 //            module, lib:<nj2k_oracle_counting>): each "<file> <mode> <reduce> <MiB>" line is a
 //            whole-file request for which the backend asks the heap for at least that much. A line
 //            that asks for less fails: its defect is gone, and the line goes.
+//   header   --a SPEC --b SPEC --files LIST [--modes M] [--reduce R] [--bytes N] [--allow-diff]
+//            Reads every header (JP2 and JPH files too) with both backends and compares the image
+//            and the codestream information it gives, at each reduce level and mode (plain: the
+//            factor in the parameters; viewer: set before the header). --bytes N also reads every
+//            prefix up to two bytes past the main header, at most N bytes long (JP2 files: the
+//            first N bytes), where a refusal must meet a refusal.
 //
 // SPEC: oracle | neoj2k | lib:<path>[=<name>]. LIST: a codestream, a folder, or a list file.
 // Modes: plain (one codec, non-strict), strict, viewer (the viewer's two-pass request).
@@ -629,6 +635,88 @@ int cmd_layers(const Args& a)
     return bad || stale ? 1 : (files ? 0 : 2);
 }
 
+// Header facts: the image the header read gives and the codestream information, both backends, every
+// reduce level and mode; with --prefixes, every prefix up to two bytes past the main header too (the
+// header read ends at the first SOT marker), where a refusal must meet a refusal.
+int cmd_header(const Args& a)
+{
+    if (a.a.empty() || a.b.empty() || a.files.empty()) {
+        usage("header needs --a, --b and --files");
+    }
+    auto A = backend(a.a), B = backend(a.b);
+    std::vector<Input> inputs;
+    for (const auto& path : expand_inputs(a.files, true)) {
+        auto data = read_file(path);
+        if (!data) {
+            std::fprintf(stderr, "nj2k_diff: cannot read %s\n", path.c_str());
+            return 2;
+        }
+        Input in;
+        in.path = path;
+        in.name = a.root.empty() ? base_name(path) : relative_to(path, a.root);
+        in.data = std::move(*data);
+        inputs.push_back(std::move(in));
+    }
+    if (inputs.empty()) {
+        usage(("no codestreams in " + a.files).c_str());
+    }
+    std::size_t reads = 0, both_ok = 0, both_refused = 0, differences = 0, prefix_reads = 0;
+    std::map<std::string, std::pair<std::size_t, std::string>> by_file;  // differences, the first one
+    auto check = [&](const Input& in, std::size_t n, int r, Mode mode, bool prefix) {
+        Request rq;
+        rq.data = in.data.data();
+        rq.size = n;
+        rq.reduce = r;
+        rq.mode = mode;
+        rq.jp2 = is_jp2_file(in.data.data(), in.data.size());
+        const HeaderFacts x = A->header(rq), y = B->header(rq);
+        ++reads;
+        prefix_reads += prefix;
+        both_ok += x.ok && y.ok;
+        both_refused += !x.ok && !y.ok;
+        const std::string diff = header_difference(x, y);
+        if (!diff.empty()) {
+            ++differences;
+            char line[1024];
+            std::snprintf(line, sizeof(line), "%s bytes=%zu/%zu r=%d: %s%s%s%s%s", mode_name(mode), n, in.data.size(), r,
+                          diff.c_str(), x.ok ? "" : " (a: ", x.ok ? "" : x.last_error.c_str(), y.ok ? "" : ") (b: ",
+                          y.ok ? (x.ok ? "" : ")") : (y.last_error + ")").c_str());
+            auto& f = by_file[in.name];
+            if (f.first++ == 0) {
+                f.second = line;
+            }
+            if (differences <= 50) {
+                std::printf("DIFF %s %s\n", in.name.c_str(), line);
+            }
+        }
+    };
+    for (const auto& in : inputs) {
+        for (Mode mode : a.modes) {
+            for (int r : a.reduce) {
+                check(in, in.data.size(), r, mode, false);
+            }
+            if (a.bytes) {
+                // every prefix through the main header and the SOT marker after it, at most the
+                // first --bytes bytes (JP2 files: those)
+                std::size_t end = std::min(a.bytes, in.data.size());
+                if (const auto mh = parse_main_header(in.data)) {
+                    end = std::min(mh->end + 2, end);
+                }
+                for (std::size_t n = 0; n < end; ++n) {
+                    check(in, n, 0, mode, true);
+                }
+            }
+        }
+    }
+    for (const auto& [name, f] : by_file) {
+        std::printf("FILE %s: %zu different, the first: %s\n", name.c_str(), f.first, f.second.c_str());
+    }
+    std::printf("header %s vs %s: %zu files, %zu reads (%zu of prefixes): %zu both read, %zu both refused, %zu different\n",
+                A->name().c_str(), B->name().c_str(), inputs.size(), reads, prefix_reads, both_ok, both_refused,
+                differences);
+    return differences && !a.allow_diff ? 1 : 0;
+}
+
 int cmd_resources(const Args& a)
 {
     if (a.a.empty() || a.ref.empty() || a.root.empty()) {
@@ -701,5 +789,6 @@ int main(int argc, char** argv)
     if (a.cmd == "layers") return cmd_layers(a);
     if (a.cmd == "decode") return cmd_decode(a);
     if (a.cmd == "resources") return cmd_resources(a);
+    if (a.cmd == "header") return cmd_header(a);
     usage(("unknown command " + a.cmd).c_str());
 }

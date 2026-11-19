@@ -12,6 +12,11 @@ owner's fork (https://github.com/anne-skydancer/openjpeg):
 
 - `include/neoj2k/neoj2k.h` (the declarations of OpenJPEG's `openjpeg.h`, renamed),
 - `src/image.cpp`, `src/defaults.cpp` (ported from `image.c` and `openjpeg.c`),
+- `src/header.cpp`, `src/jp2.cpp` (new readers whose header checks and messages derive from `j2k.c`
+  and `jp2.c`),
+- `src/codec.cpp` (the image and codestream information a header read gives, and the messages of the
+  reduce factor and the component selection, from `j2k.c` and `openjpeg.c`), `src/stream.cpp` (the
+  stream's behaviour and the file stream's functions, from `cio.c` and `openjpeg.c`),
 - `oracle/openjp2/` (OpenJPEG's library sources, the test oracle; never part of the library),
 - `oracle/patches/` (patches to those sources, when `oracle/PIN` lists any; none today).
 

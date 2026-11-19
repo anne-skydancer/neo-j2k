@@ -33,12 +33,12 @@ jobs:
         with:
           persist-credentials: false
       - name: Toolchain
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq ninja-build g++-15
+        run: sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 update -qq && sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 install -y -qq ninja-build g++-15
       - name: Conformance data (cache)
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: .testdata/openjpeg-data
-          key: openjpeg-data-class1-${{ env.OPENJPEG_DATA_COMMIT }}-linux
+          key: openjpeg-data-conformance-${{ env.OPENJPEG_DATA_COMMIT }}-linux
       - name: Conformance data (fetch)
         run: python3 -I tools/fetch_testdata.py
       - name: Configure
@@ -81,6 +81,7 @@ jobs:
           set -uo pipefail
           mkdir -p findings seeds/header seeds/decode seeds/roundtrip
           cp corpus/generated/*.j2k seeds/header/
+          python3 -I fuzz/make_inputs.py --header-seeds seeds/header
           cp corpus/generated/*.j2k seeds/decode/
           python3 -I fuzz/make_inputs.py --decode-seeds seeds/decode
           cp fuzz/seeds/roundtrip/*.bin seeds/roundtrip/

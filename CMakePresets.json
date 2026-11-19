@@ -32,6 +32,13 @@
       "inherits": "windows-base",
       "cacheVariables": { "NJ2K_SANITIZE": "address", "NJ2K_BUILD_BENCH": "OFF" }
     },
+    {
+      "name": "windows-clang-cl-asan",
+      "displayName": "Windows, clang-cl, AddressSanitizer",
+      "inherits": "windows-base",
+      "toolset": "ClangCL",
+      "cacheVariables": { "NJ2K_SANITIZE": "address", "NJ2K_BUILD_BENCH": "OFF" }
+    },
     { "name": "linux-gcc", "displayName": "Linux, GCC", "inherits": "linux-base" },
     {
       "name": "linux-gcc-scalar",
@@ -70,6 +77,7 @@
     { "name": "windows-msvc", "configurePreset": "windows-msvc", "configuration": "RelWithDebInfo" },
     { "name": "windows-clang-cl", "configurePreset": "windows-clang-cl", "configuration": "RelWithDebInfo" },
     { "name": "windows-msvc-asan", "configurePreset": "windows-msvc-asan", "configuration": "RelWithDebInfo" },
+    { "name": "windows-clang-cl-asan", "configurePreset": "windows-clang-cl-asan", "configuration": "RelWithDebInfo" },
     { "name": "linux-gcc", "configurePreset": "linux-gcc" },
     { "name": "linux-gcc-scalar", "configurePreset": "linux-gcc-scalar" },
     { "name": "linux-clang", "configurePreset": "linux-clang" },
@@ -86,6 +94,7 @@
     { "name": "windows-msvc", "inherits": "test-base", "configurePreset": "windows-msvc", "configuration": "RelWithDebInfo" },
     { "name": "windows-clang-cl", "inherits": "test-base", "configurePreset": "windows-clang-cl", "configuration": "RelWithDebInfo" },
     { "name": "windows-msvc-asan", "inherits": "test-base", "configurePreset": "windows-msvc-asan", "configuration": "RelWithDebInfo" },
+    { "name": "windows-clang-cl-asan", "inherits": "test-base", "configurePreset": "windows-clang-cl-asan", "configuration": "RelWithDebInfo" },
     { "name": "linux-gcc", "inherits": "test-base", "configurePreset": "linux-gcc" },
     { "name": "linux-gcc-scalar", "inherits": "test-base", "configurePreset": "linux-gcc-scalar" },
     { "name": "linux-clang", "inherits": "test-base", "configurePreset": "linux-clang" },

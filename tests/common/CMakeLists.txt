@@ -10,6 +10,7 @@ add_library(nj2k_test_common STATIC
   pgx.cpp
   load.cpp
   viewer.cpp
+  header_facts.cpp
   backend_openjpeg.cpp
   backend_neoj2k.cpp)
 target_include_directories(nj2k_test_common PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")

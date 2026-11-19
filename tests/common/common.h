@@ -19,9 +19,10 @@ using Bytes = std::vector<std::uint8_t>;
 std::optional<Bytes> read_file(const std::string& path);
 bool write_file(const std::string& path, std::span<const std::uint8_t> bytes);
 
-// A list argument: a directory (its *.j2k, *.j2c, *.jpc files, sorted), a text file with one path
-// per line ('#' starts a comment; relative paths are taken from the list's folder), or one file.
-std::vector<std::string> expand_inputs(const std::string& arg);
+// A list argument: a directory (its *.j2k, *.j2c, *.jpc files, sorted, and *.jp2, *.jph with
+// with_jp2), a text file with one path per line ('#' starts a comment; relative paths are taken
+// from the list's folder), or one file.
+std::vector<std::string> expand_inputs(const std::string& arg, bool with_jp2 = false);
 std::string base_name(const std::string& path);
 std::string join_path(const std::string& dir, const std::string& name);
 // path relative to root when it lies under it (with '/' separators), else the path unchanged

@@ -18,16 +18,114 @@
   its decoder limits API (`opj_decoder_limits_t`, `opj_decoder_limits_init`, `opj_decoder_set_limits`,
   `OPJ_HAVE_DECODER_LIMITS`, `OPJ_DECODER_LIMITS_NONE`, `OPJ_DECODER_LIMITS_SL_TEXTURE`). Once the viewer
   sets the Second Life limits through it, switching to neo-j2k is a link change only if those calls map.
-  Stage 1b adds them under the mirrored names (`nj2k_decoder_limits*`, `NJ2K_DECODER_LIMITS_*`,
-  `NJ2K_HAVE_DECODER_LIMITS`) with neo-j2k's limit profiles; until then `gen_compat.py` lists them as
-  pending for 1b (`PENDING`), and fails on any other name without a mapping.
+  Since stage 1b they map (`nj2k_decoder_limits*`, `NJ2K_DECODER_LIMITS_*`, `NJ2K_HAVE_DECODER_LIMITS`),
+  with the same structure and the same Second Life numbers; `gen_compat.py --check` fails on any name of
+  the oracle's header without a mapping.
 - `include/neoj2k/neoj2k.hpp`: a header-only C++20 wrapper: owning handles, a memory reader over borrowed
   bytes (one stream at a time, its buffer sized to the bytes), everything `noexcept`, calling nothing but
   the C ABI.
-- Extensions without an OpenJPEG counterpart: `nj2k_engine_string()` (a compile-time constant of at most
-  31 characters, `NJ2K_ENGINE_STRING_MAX`, safe before `main()`) and `nj2k_cpu_supported()` (compiled for
-  baseline x86-64). Stage 1b adds the rest: limit profiles (the Second Life profile built in, an OpenSim
-  module, D10), a decode status with `TRUNCATED` and `NEED_DATA`, and the allocator hook.
+- Extensions without an OpenJPEG counterpart keep their `nj2k_*` names (the compatibility header maps
+  none of them): `nj2k_engine_string()` (a compile-time constant of at most 31 characters,
+  `NJ2K_ENGINE_STRING_MAX`, safe before `main()`), `nj2k_cpu_supported()` (compiled for baseline x86-64),
+  and stage 1b's: the OpenSim limit profile, statuses, the allocator hook, the reduce policy and the
+  decoded dimensions (below).
+
+## Limits (owner decision D10)
+
+`nj2k_decoder_limits_init()` fills a profile, `nj2k_decoder_set_limits()` gives it to a decoder before
+`nj2k_read_header()`. Every limit is checked from the headers before what it bounds is allocated; a field
+of 0 is no limit, and a decoder without limits has none.
+
+| Profile | Tiles | Components | Layers | Side at the decoded level | Working memory |
+|---|---|---|---|---|---|
+| `NJ2K_DECODER_LIMITS_SL_TEXTURE` (built in; the fork's 1a numbers) | 1,024 | 8 | 64 | 2,048 | 256 MiB |
+| `NJ2K_DECODER_LIMITS_OPENSIM_TEXTURE` (module, `NJ2K_PROFILE_OPENSIM`, on by default) | 1,024 | 8 | 64 | 16,384 | 256 MiB |
+
+The numbers come from the viewer's own size rules and from what each item costs, not from the cache
+(plan audit A1, B2; `src/limit_profiles.h` gives the reasons). Every texture of the owner's viewer cache
+passes the Second Life profile at every reduce level (`doc/testing.md`). Where they are checked:
+
+- tiles and components: when SIZ is read, before anything per component is allocated (nothing per tile
+  ever is: tile parameters exist only for tiles whose headers carry markers, plan S2);
+- layers: as each COD is read, main header and tile-part headers;
+- the side and the working memory: before decoding (`nj2k_get_decoded_dimensions()` runs the same
+  check). The working memory is computed from the header: the decoded samples, the coefficients of the
+  largest tile when there are several, the code-block and precinct state of every resolution of that tile,
+  and fixed scratch (`decode_working_memory`, `src/header.cpp`); stage 1c measures its high-water marks
+  against it and corrects the per-item figures if a decode needs more;
+- the header state itself: the decoder's arena never reserves more than `max_memory`.
+
+A profile unknown to the build (the OpenSim one with `NJ2K_PROFILE_OPENSIM=OFF`) sets no limits and makes
+`nj2k_decoder_limits_init()` return false, as the fork's API does: check the result.
+
+## Statuses
+
+`nj2k_get_status(codec)` gives the outcome of the codec's last call that reports one, as
+`nj2k_status_t`: `NJ2K_OK` (0) and `NJ2K_TRUNCATED` (1, stage 1c's partial decodes) are success; errors
+are negative: `NJ2K_E_NEED_DATA`, `E_ARGUMENT`, `E_NOT_JPEG2000`, `E_HEADER`, `E_UNSUPPORTED`, `E_LIMIT`,
+`E_NO_MEMORY`, `E_DATA`, `E_OUTPUT`, `E_STATE`. `nj2k_status_string()` describes each. Hosts treat an
+unknown negative value as failure and an unknown positive one as success.
+
+`NJ2K_E_NEED_DATA` means the bytes ended before what the call needs was complete (the main header and
+the SOT marker after it, for `nj2k_read_header()`; the first tile-part header or the first packet of the
+requested resolutions, for the decode): no damage was found, and with more bytes the call can succeed.
+Every cut inside a main header gives it (`header_unit` reads every prefix of every generated file); a
+host that holds every byte of the file already treats it as damage (plan audit D5).
+
+## Allocator
+
+`nj2k_create_decompress_with_allocator(format, allocator)` takes a host's `nj2k_allocator_t`
+(`allocate` with an alignment, `release` with the size, `user`; not `malloc` and `free`, which debug and
+leak-checking headers define as macros; `struct_size` first, as every growing structure of
+neo-j2k's own). Everything the codec allocates for itself comes from it, the codec object included: one
+block for the decoder and one arena block for an SL texture's header (2,312 bytes for a 32 x 32
+texture). What the API hands to the caller comes from the C runtime's heap, as OpenJPEG's does, because
+the functions that destroy it take no codec: the image of `nj2k_read_header()`, streams, the codestream
+information. A failed allocation is `NJ2K_E_NO_MEMORY`, and the codec can still be destroyed
+(`header_unit` fails every allocation of a header read in turn).
+
+## Reduce policy and decoded dimensions
+
+`nj2k_decoder_set_reduce_policy(codec, NJ2K_REDUCE_EXACT | NJ2K_REDUCE_CLAMP)`: under `EXACT` (the
+default, OpenJPEG's behaviour) a reduce factor at or above a component's number of resolutions is refused
+(`NJ2K_E_LIMIT`, at `nj2k_read_header()` when the factor came before it, else at
+`nj2k_set_decoded_resolution_factor()`, which then changes nothing: fork audit S1); under `CLAMP` it is
+lowered to the coarsest level the main header gives every component (plan W4), and the components'
+`factor` says which level is used. A viewer's further rule (decode the coarsest level only while it stays
+small) stays the viewer's.
+
+`nj2k_get_decoded_dimensions(codec, image)` sets each component's `factor`, `x0`, `y0`, `w` and `h` to
+what the decode will deliver, before decoding, and runs the decode's limit checks: a host sizes its
+buffers from it (plan P2a). OpenJPEG sizes the image differently when the factor comes before the header
+(the header's rule) and after it (the decode's rule), which differ at odd origins; neo-j2k follows both, and
+`header_unit` compares every generated file at every level in both orders with the oracle's decodes.
+
+## What stage 1b implements
+
+- Streams (`nj2k_stream_*`, file streams included) with OpenJPEG's semantics, except that a read function
+  returning 0 ends the stream (OpenJPEG would call it for ever). A JP2 file is read only from a stream that
+  gives its length (`nj2k_stream_set_user_data_length`; file streams do when the file has one): without
+  it a box's own length is all there is to go by, so no box is read (`NJ2K_E_UNSUPPORTED`), as OpenJPEG
+  reads none. A codestream's header needs no length: a marker segment holds at most 64 KiB.
+- The decoder: creation (J2K and JP2/JPH formats; `NJ2K_CODEC_JPT` and the others give `NULL`), message
+  handlers (a message is formatted only when a handler takes it), `nj2k_setup_decoder` (before the
+  header), strict mode, limits, the reduce policy, `nj2k_read_header`, `nj2k_set_decoded_resolution_factor`
+  (before the header the factor is kept and the call returns false, as OpenJPEG's, with `NJ2K_E_STATE`),
+  `nj2k_set_decoded_components` (a refused selection keeps the earlier one, as OpenJPEG's; repeated calls
+  reuse the same memory), `nj2k_get_decoded_dimensions`, `nj2k_get_cstr_info` and
+  `nj2k_destroy_cstr_info`.
+- The header model (`src/header.h`): the main header and the tile-part headers, read once into the
+  arena, owning their bytes (PPM and PPT data included), with OpenJPEG's checks and messages; marker
+  precedence and quantization counts as the standard has them (W7, W8, `doc/departures.md`); `Psot = 0`
+  (W5); per-tile parameters only for tiles whose headers carry markers. The tile-part header reader is
+  the library's, for stage 1c's decode loop.
+- The JP2/JPH box reader (`src/jp2.h`): signature, file type, the JP2 header box (image header, bits per
+  component, colour specification, palette, component mapping, channel definitions) and the codestream
+  box; the image gets OpenJPEG's colour space and ICC profile.
+- Still failing cleanly, with `NJ2K_E_UNSUPPORTED`: `nj2k_decode`, `nj2k_end_decompress`,
+  `nj2k_get_decoded_tile`, `nj2k_read_tile_header`, `nj2k_decode_tile_data` and `nj2k_set_decode_area`
+  (stage 1c); the encoder (6a). `nj2k_get_cstr_index` gives `NULL` (no codestream index is built, fork
+  audit P5), `nj2k_dump_codec` prints nothing, `nj2k_codec_set_threads` is false (no threads).
 
 ## Versions, and a host's cache
 
@@ -46,14 +144,13 @@ the viewer's own output version.
 Implemented: the version and engine strings, the CPU check, the parameter defaults (byte-identical to
 OpenJPEG's), the image functions (`nj2k_image_create`, `nj2k_image_tile_create`, `nj2k_image_destroy`,
 `nj2k_image_data_alloc`, `nj2k_image_data_free`), `nj2k_get_num_cpus` and `nj2k_has_thread_support`
-(false: the library starts no threads). Every other function fails cleanly (`NULL` or `NJ2K_FALSE`) until
-its stage: streams and codecs in 1b, decoding in 1c, encoding in 6a. `nj2k_set_MCT` stays false (Part 2).
-OpenJPEG declares `opj_get_jp2_metadata` and `opj_get_jp2_index` but never defines them; neo-j2k defines
-both (they return `NULL`). `nj2k_get_num_cpus` counts the logical processors of every processor group on
-Windows, where OpenJPEG's `GetSystemInfo` counts the calling thread's group only (the two differ above 64
-logical processors); elsewhere both count the online processors.
+(false: the library starts no threads). `nj2k_set_MCT` stays false (Part 2). OpenJPEG declares
+`opj_get_jp2_metadata` and `opj_get_jp2_index` but never defines them; neo-j2k defines both (they return
+`NULL`). `nj2k_get_num_cpus` counts the logical processors of every processor group on Windows, where
+OpenJPEG's `GetSystemInfo` counts the calling thread's group only (the two differ above 64 logical
+processors); elsewhere both count the online processors.
 
-## Open before stage 1b: where the per-thread decoder lives
+## Open before stage 1c: where the per-thread decoder lives
 
 Plan stage 1c's gate is zero heap calls after warm-up, and D5 on the decisions page has the decoder reused
 per thread. OpenJPEG's API has no reuse: the viewer creates a codec per decode (`JPEG2KDecode::readHeader`
@@ -65,7 +162,12 @@ and `decode` call `opj_create_decompress`, `~JPEG2KDecode` destroys it) and free
   would be relaxed and a thread-exit design added;
 - a reusable-codec extension that the viewer calls (the survey's viewer design, `api.md` section 2.4,
   keeps a `thread_local` decoder in a viewer-side `llimagej2cneo.cpp`);
-- a host-owned pool behind the allocator hook.
+- a host-owned pool behind the allocator hook (stage 1b's `nj2k_create_decompress_with_allocator` already
+  routes the codec's own memory, the codec object included, to the host).
+
+Under the OpenJPEG-shaped API the image (`nj2k_image_t` and its sample planes), the stream and its buffer
+come from the C runtime's heap whatever the choice, since their destroy functions take no codec; a
+zero-heap path needs the image and stream handled by the host or by the extension.
 
 ## Builds and ABI
 

@@ -36,7 +36,49 @@ struct Request {
     // it, so they time the viewer's work only: the decode, its checks and its 8-bit copy, with
     // message handlers that ignore the messages, as the viewer's do.
     bool inspect = true;
+    bool jp2 = false;  // a JP2 or JPH file, read by the JP2 codec (is_jp2_file)
+    // Plain and Strict: the reduce factor set after the header (opj_set_decoded_resolution_factor),
+    // not in the parameters before it. OpenJPEG then sizes the image differently at odd origins.
+    bool reduce_after_header = false;
 };
+
+// Whether bytes start with the JP2 signature box.
+bool is_jp2_file(const std::uint8_t* data, std::size_t size) noexcept;
+
+// What a header read gives (opj_read_header's image and opj_get_cstr_info's information), as far as
+// both libraries define them; the request's mode picks how the reduce factor reaches the codec:
+// Plain and Strict through the parameters, Viewer by opj_set_decoded_resolution_factor before the
+// header, non-strict, as the viewer's decode pass does.
+struct HeaderFacts {
+    struct Comp {
+        std::uint32_t dx = 0, dy = 0, w = 0, h = 0, x0 = 0, y0 = 0, prec = 0, sgnd = 0, factor = 0, resno_decoded = 0,
+                      alpha = 0;
+    };
+    struct Tccp {
+        std::uint32_t csty = 0, numresolutions = 0, cblkw = 0, cblkh = 0, cblksty = 0, qmfbid = 0, qntsty = 0,
+                      numgbits = 0;
+        std::int32_t roishift = 0;
+        std::vector<std::uint32_t> mant, expn;  // the bands OpenJPEG reports (none when 97 or more)
+        std::vector<std::uint8_t> prc;          // the first numresolutions bytes of prcw, then of prch
+    };
+    bool ok = false;
+    std::string stage;  // codec, header or info when !ok
+    std::string last_error;
+    std::uint32_t x0 = 0, y0 = 0, x1 = 0, y1 = 0, numcomps = 0;
+    int color_space = 0;
+    std::vector<Comp> comps;
+    bool icc_buffer = false;  // icc_profile_buf set (OpenJPEG sets it with length 0 for CIELab)
+    std::vector<std::uint8_t> icc;
+    std::uint32_t tx0 = 0, ty0 = 0, tdx = 0, tdy = 0, tw = 0, th = 0, nbcomps = 0;
+    std::uint32_t csty = 0, numlayers = 0, mct = 0;
+    int prg = 0;
+    std::vector<Tccp> tccp;
+
+    std::uint64_t hash() const;
+};
+// The first difference between two header reads, "" when they agree (a refusal agrees with a
+// refusal, wherever it happened).
+std::string header_difference(const HeaderFacts& a, const HeaderFacts& b);
 
 struct Component {
     std::uint32_t w = 0, h = 0, dx = 0, dy = 0, x0 = 0, y0 = 0, prec = 0, sgnd = 0, factor = 0, resno_decoded = 0;
@@ -63,6 +105,8 @@ public:
     virtual ~Backend() = default;
     virtual const std::string& name() const noexcept = 0;
     virtual Outcome decode(const Request& request) = 0;
+    // The header read alone (opj_read_header and opj_get_cstr_info).
+    virtual HeaderFacts header(const Request& request) = 0;
     // The viewer's upload encode of an 8-bit interleaved, bottom-up raw image (bench and encoder
     // tests); false when the backend cannot encode yet.
     virtual bool encode_upload(const std::uint8_t* raw, int width, int height, int comps, bool reversible,

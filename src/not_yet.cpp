@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: BSD-2-Clause
 // Copyright (c) 2026, Anne Skydancer (neo-j2k)
 //
-// The parts of the API that later stages implement. Each fails cleanly today (nullptr or
-// NJ2K_FALSE, no side effects), so the export list and the ABI checks cover the whole API from
-// stage 0. The stage that replaces each group is named; the plan is in doc/stages.md.
+// The parts of the API that later stages implement, and the few that neo-j2k answers with a fixed
+// value. Each fails cleanly (nullptr or NJ2K_FALSE, no side effects), so the export list and the ABI
+// checks cover the whole API from stage 0. The stage that replaces each group is named; the plan is
+// in doc/stages.md. The decoder's functions live in codec.cpp and stream.cpp.
 #include <neoj2k/neoj2k.h>
 
 #if defined(_WIN32)
@@ -20,54 +21,7 @@
 
 extern "C" {
 
-// ---- streams (stage 1b) ----------------------------------------------------------------------
-
-NJ2K_API nj2k_stream_t* NJ2K_CALLCONV nj2k_stream_default_create(NJ2K_BOOL)
-{
-    return nullptr;
-}
-
-NJ2K_API nj2k_stream_t* NJ2K_CALLCONV nj2k_stream_create(NJ2K_SIZE_T, NJ2K_BOOL)
-{
-    return nullptr;
-}
-
-NJ2K_API void NJ2K_CALLCONV nj2k_stream_destroy(nj2k_stream_t*) {}
-NJ2K_API void NJ2K_CALLCONV nj2k_stream_set_read_function(nj2k_stream_t*, nj2k_stream_read_fn) {}
-NJ2K_API void NJ2K_CALLCONV nj2k_stream_set_write_function(nj2k_stream_t*, nj2k_stream_write_fn) {}
-NJ2K_API void NJ2K_CALLCONV nj2k_stream_set_skip_function(nj2k_stream_t*, nj2k_stream_skip_fn) {}
-NJ2K_API void NJ2K_CALLCONV nj2k_stream_set_seek_function(nj2k_stream_t*, nj2k_stream_seek_fn) {}
-NJ2K_API void NJ2K_CALLCONV nj2k_stream_set_user_data(nj2k_stream_t*, void*, nj2k_stream_free_user_data_fn) {}
-NJ2K_API void NJ2K_CALLCONV nj2k_stream_set_user_data_length(nj2k_stream_t*, NJ2K_UINT64) {}
-
-NJ2K_API nj2k_stream_t* NJ2K_CALLCONV nj2k_stream_create_default_file_stream(const char*, NJ2K_BOOL)
-{
-    return nullptr;
-}
-
-NJ2K_API nj2k_stream_t* NJ2K_CALLCONV nj2k_stream_create_file_stream(const char*, NJ2K_SIZE_T, NJ2K_BOOL)
-{
-    return nullptr;
-}
-
-// ---- codec and messages (stage 1b) -------------------------------------------------------------
-
-NJ2K_API NJ2K_BOOL NJ2K_CALLCONV nj2k_set_info_handler(nj2k_codec_t*, nj2k_msg_callback, void*)
-{
-    return NJ2K_FALSE;
-}
-
-NJ2K_API NJ2K_BOOL NJ2K_CALLCONV nj2k_set_warning_handler(nj2k_codec_t*, nj2k_msg_callback, void*)
-{
-    return NJ2K_FALSE;
-}
-
-NJ2K_API NJ2K_BOOL NJ2K_CALLCONV nj2k_set_error_handler(nj2k_codec_t*, nj2k_msg_callback, void*)
-{
-    return NJ2K_FALSE;
-}
-
-NJ2K_API void NJ2K_CALLCONV nj2k_destroy_codec(nj2k_codec_t*) {}
+// ---- threads ------------------------------------------------------------------------------------
 
 // The library starts no threads of its own (plan T2): a host executor runs large work instead.
 NJ2K_API NJ2K_BOOL NJ2K_CALLCONV nj2k_codec_set_threads(nj2k_codec_t*, int)
@@ -94,86 +48,9 @@ NJ2K_API int NJ2K_CALLCONV nj2k_get_num_cpus(void)
     return n > 0 ? static_cast<int>(n) : 1;
 }
 
-// ---- decoding (stages 1b and 1c) ---------------------------------------------------------------
+// ---- codestream index and dumps -----------------------------------------------------------------
 
-NJ2K_API nj2k_codec_t* NJ2K_CALLCONV nj2k_create_decompress(NJ2K_CODEC_FORMAT)
-{
-    return nullptr;
-}
-
-NJ2K_API NJ2K_BOOL NJ2K_CALLCONV nj2k_setup_decoder(nj2k_codec_t*, nj2k_dparameters_t*)
-{
-    return NJ2K_FALSE;
-}
-
-NJ2K_API NJ2K_BOOL NJ2K_CALLCONV nj2k_decoder_set_strict_mode(nj2k_codec_t*, NJ2K_BOOL)
-{
-    return NJ2K_FALSE;
-}
-
-NJ2K_API NJ2K_BOOL NJ2K_CALLCONV nj2k_read_header(nj2k_stream_t*, nj2k_codec_t*, nj2k_image_t** p_image)
-{
-    if (p_image) {
-        *p_image = nullptr;
-    }
-    return NJ2K_FALSE;
-}
-
-NJ2K_API NJ2K_BOOL NJ2K_CALLCONV nj2k_set_decoded_components(nj2k_codec_t*, NJ2K_UINT32, const NJ2K_UINT32*, NJ2K_BOOL)
-{
-    return NJ2K_FALSE;
-}
-
-NJ2K_API NJ2K_BOOL NJ2K_CALLCONV nj2k_set_decode_area(nj2k_codec_t*, nj2k_image_t*, NJ2K_INT32, NJ2K_INT32, NJ2K_INT32,
-                                                     NJ2K_INT32)
-{
-    return NJ2K_FALSE;
-}
-
-NJ2K_API NJ2K_BOOL NJ2K_CALLCONV nj2k_decode(nj2k_codec_t*, nj2k_stream_t*, nj2k_image_t*)
-{
-    return NJ2K_FALSE;
-}
-
-NJ2K_API NJ2K_BOOL NJ2K_CALLCONV nj2k_end_decompress(nj2k_codec_t*, nj2k_stream_t*)
-{
-    return NJ2K_FALSE;
-}
-
-NJ2K_API NJ2K_BOOL NJ2K_CALLCONV nj2k_get_decoded_tile(nj2k_codec_t*, nj2k_stream_t*, nj2k_image_t*, NJ2K_UINT32)
-{
-    return NJ2K_FALSE;
-}
-
-NJ2K_API NJ2K_BOOL NJ2K_CALLCONV nj2k_set_decoded_resolution_factor(nj2k_codec_t*, NJ2K_UINT32)
-{
-    return NJ2K_FALSE;
-}
-
-NJ2K_API NJ2K_BOOL NJ2K_CALLCONV nj2k_read_tile_header(nj2k_codec_t*, nj2k_stream_t*, NJ2K_UINT32*, NJ2K_UINT32*,
-                                                      NJ2K_INT32*, NJ2K_INT32*, NJ2K_INT32*, NJ2K_INT32*,
-                                                      NJ2K_UINT32*, NJ2K_BOOL*)
-{
-    return NJ2K_FALSE;
-}
-
-NJ2K_API NJ2K_BOOL NJ2K_CALLCONV nj2k_decode_tile_data(nj2k_codec_t*, NJ2K_UINT32, NJ2K_BYTE*, NJ2K_UINT32, nj2k_stream_t*)
-{
-    return NJ2K_FALSE;
-}
-
-NJ2K_API nj2k_codestream_info_v2_t* NJ2K_CALLCONV nj2k_get_cstr_info(nj2k_codec_t*)
-{
-    return nullptr;
-}
-
-NJ2K_API void NJ2K_CALLCONV nj2k_destroy_cstr_info(nj2k_codestream_info_v2_t** cstr_info)
-{
-    if (cstr_info) {
-        *cstr_info = nullptr;
-    }
-}
-
+// No codestream index is built (fork audit P5: OpenJPEG builds one on every decode for this call).
 NJ2K_API nj2k_codestream_index_t* NJ2K_CALLCONV nj2k_get_cstr_index(nj2k_codec_t*)
 {
     return nullptr;
@@ -186,6 +63,7 @@ NJ2K_API void NJ2K_CALLCONV nj2k_destroy_cstr_index(nj2k_codestream_index_t** p_
     }
 }
 
+// OpenJPEG's opj_dump prints through this; neo-j2k prints nothing.
 NJ2K_API void NJ2K_CALLCONV nj2k_dump_codec(nj2k_codec_t*, NJ2K_INT32, FILE*) {}
 
 // OpenJPEG declares these two and never defines them (its DLL lacks them). neo-j2k defines them:

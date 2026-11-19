@@ -33,6 +33,7 @@ public:
     OracleBackend() : api_(REPLAY_NS::linked_api()) {}
     const std::string& name() const noexcept override { return name_; }
     Outcome decode(const Request& rq) override { return REPLAY_NS::replay(api_, rq); }
+    HeaderFacts header(const Request& rq) override { return REPLAY_NS::replay_header(api_, rq); }
     bool encode_upload(const std::uint8_t* raw, int width, int height, int comps, bool reversible,
                        std::vector<std::uint8_t>& out) override
     {
@@ -98,6 +99,7 @@ public:
 
     const std::string& name() const noexcept override { return name_; }
     Outcome decode(const Request& rq) override { return REPLAY_NS::replay(api_, rq); }
+    HeaderFacts header(const Request& rq) override { return REPLAY_NS::replay_header(api_, rq); }
     bool encode_upload(const std::uint8_t* raw, int width, int height, int comps, bool reversible,
                        std::vector<std::uint8_t>& out) override
     {

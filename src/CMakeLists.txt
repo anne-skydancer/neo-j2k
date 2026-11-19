@@ -12,7 +12,21 @@ set(NJ2K_SOURCES
   defaults.cpp
   not_yet.cpp
   memory.cpp
+  arena.cpp
+  messages.cpp
+  stream.cpp
+  limit_profiles.cpp
+  header.cpp
+  jp2.cpp
+  codec.cpp
 )
+# The decoder limit profiles are modules (owner decision D10): Second Life's is built in, OpenSim's
+# is its own source file, left out with NJ2K_PROFILE_OPENSIM=OFF.
+if(NJ2K_PROFILE_OPENSIM)
+  list(APPEND NJ2K_SOURCES limit_profile_opensim.cpp)
+else()
+  list(APPEND NJ2K_SOURCES limit_profile_opensim_off.cpp)
+endif()
 
 # No link-time code generation, in every configuration: the generic IPO property alone is not
 # enough, since INTERPROCEDURAL_OPTIMIZATION_<CONFIG> (which CMAKE_INTERPROCEDURAL_OPTIMIZATION_<CONFIG>
