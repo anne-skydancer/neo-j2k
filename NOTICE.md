@@ -13,7 +13,7 @@ owner's fork (https://github.com/anne-skydancer/openjpeg):
 - `include/neoj2k/neoj2k.h` (the declarations of OpenJPEG's `openjpeg.h`, renamed),
 - `src/image.cpp`, `src/defaults.cpp` (ported from `image.c` and `openjpeg.c`),
 - `oracle/openjp2/` (OpenJPEG's library sources, the test oracle; never part of the library),
-- `oracle/patches/` (patches to those sources).
+- `oracle/patches/` (patches to those sources, when `oracle/PIN` lists any; none today).
 
 Each of these files keeps OpenJPEG's copyright notice; `oracle/openjp2/LICENSE` is OpenJPEG's licence.
 `LICENSE.OpenJPEG` carries that licence and the notices of the ported files for the built libraries:
