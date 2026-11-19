@@ -290,7 +290,7 @@ struct Walk {
             return true;
         }
         const std::uint64_t at = pos;
-        std::uint8_t two[2];
+        std::uint8_t two[2] = {};
         if (seek(at + static_cast<std::uint64_t>(left) - 2) && read(two, 2) == 2) {
             ends_with_eoc = be16(two) == mk::EOC;
         }
@@ -415,7 +415,7 @@ struct Walk {
         const std::uint64_t backup = pos;
         std::uint32_t l_tile_no = 0, l_tot_len = 0, l_current_part = 0, l_num_parts = 0;
         for (;;) {
-            std::uint8_t h[10];
+            std::uint8_t h[10] = {};
             if (read(h, 2) != 2) {
                 if (!seek(backup)) {
                     return NJ2K_E_DATA;
@@ -474,7 +474,7 @@ struct Walk {
     nj2k_status_t read_tile_header(bool& go_on) noexcept
     {
         std::uint32_t current_marker = mk::SOT;
-        std::uint8_t h[2];
+        std::uint8_t h[2] = {};
         if (state == kEoc) {
             current_marker = mk::EOC;
         } else if (state != kTphsot) {
@@ -551,7 +551,7 @@ struct Walk {
                     return NJ2K_E_NEED_DATA;
                 }
                 const std::uint8_t* body = nullptr;
-                std::uint8_t sot_body[8];
+                std::uint8_t sot_body[8] = {};
                 if (is_sot) {
                     if (marker_size > sizeof sot_body) {
                         // OpenJPEG reads the segment, then refuses its size
@@ -1020,7 +1020,7 @@ struct Walk {
         state &= ~kData;
         // the marker after the tile
         if (!(bytes_left() == 0 && state == kNeoc) && state != kEoc) {
-            std::uint8_t h[2];
+            std::uint8_t h[2] = {};
             if (read(h, 2) != 2) {
                 msg.emit(d.strict ? Messages::Error : Messages::Warning, "Stream too short\n");
                 truncated = true;

@@ -763,7 +763,7 @@ nj2k_status_t read_main_header(Source& src, Arena& arena, const Messages& msg, c
                                MainHeader*& out) noexcept
 {
     const std::uint64_t start = src.tell();
-    std::uint8_t b[2];
+    std::uint8_t b[2] = {};
     const std::size_t got = src.read(b, 2);
     if (got == 0) {
         return need_data(msg, "the main header (no bytes)");
@@ -1045,7 +1045,7 @@ nj2k_status_t read_tile_part_marker(Arena& arena, const Messages& msg, const Hea
 nj2k_status_t read_tile_part_header(Source& src, Arena& arena, const Messages& msg, const HeaderSettings& set,
                                     MainHeader& mh, std::uint64_t sot, TilePartHeader& out) noexcept
 {
-    std::uint8_t b[8];
+    std::uint8_t b[8] = {};
     if (src.read(b, 2) != 2) {
         return need_data(msg, "a SOT marker segment");
     }

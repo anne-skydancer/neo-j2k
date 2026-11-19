@@ -405,7 +405,7 @@ nj2k_status_t read_jp2_boxes(Source& src, Arena& arena, const Messages& msg, Jp2
     Reader rd{*jp2, arena, msg};
     bool signature = false, file_type = false, header = false;
     for (;;) {
-        std::uint8_t h[16];
+        std::uint8_t h[16] = {};
         const std::size_t got = src.read(h, 8);
         if (!signature) {
             // a JP2 file starts with its signature box: anything else is no JP2 file
@@ -689,7 +689,7 @@ bool apply_pclr(const Jp2Header& jp2, nj2k_image_t* image, const Jp2CmapEntry* c
         }
         new_comps[i].data = static_cast<std::int32_t*>(
             plane_alloc(sizeof(std::int32_t) * std::size_t(old_comps[cmp].w) * old_comps[cmp].h));
-        if (!new_comps[i].data && std::size_t(old_comps[cmp].w) * old_comps[cmp].h) {
+        if (!new_comps[i].data && std::size_t(old_comps[cmp].w) * old_comps[cmp].h != 0) {
             while (i > 0) {
                 --i;
                 plane_free(new_comps[i].data);
