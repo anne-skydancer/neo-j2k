@@ -33,7 +33,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Toolchain
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq ninja-build g++-15
+        run: sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 update -qq && sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 install -y -qq ninja-build g++-15
       - name: Conformance data (cache)
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
