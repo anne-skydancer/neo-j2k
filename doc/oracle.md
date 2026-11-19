@@ -112,7 +112,7 @@ audit's findings O1-O3.
 - **OD-2: a tile whose tile-parts hold no data bytes is refused.** With packed headers, a tile whose packets
   are all empty has no bytes after SOD; that is valid, but `opj_j2k_decode_tile` refuses a tile without
   data. Kept as `corpus/generated/edge_ppt_empty_tiles_97.j2k` (the reference records the refusal);
-  candidate departure DP-3.
+  neo-j2k decodes such a tile as the standard has it (departure DP-3, decided 2026-11-19).
 - **OD-3: a tile-part's declared length is allocated before it is read.** In non-strict mode
   `opj_j2k_read_sod` (`j2k.c:5122-5149` at the pin) only warns when `Psot` exceeds what is left of the
   stream and then allocates all of it. `sl_32_rgb_97.j2k` (782 bytes) with `Psot` set to `0xFFFFFF00`
