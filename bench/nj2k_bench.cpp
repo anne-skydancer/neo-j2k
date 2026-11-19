@@ -475,10 +475,11 @@ int main(int argc, char** argv)
                 }().c_str());
     std::map<std::string, std::map<std::string, std::vector<const Row*>>> by;  // class|kind -> backend -> rows
     for (const auto& r : rows) {
-        by[r.kind + " " + r.cls][r.backend].push_back(&r);
+        // one class per kind, size and reduce level: a 1024 px texture at reduce 5 is a small request
+        by[r.kind + " " + r.cls + " r" + std::to_string(r.reduce)][r.backend].push_back(&r);
     }
-    std::printf("%-22s %-14s %6s %10s %10s %8s %9s %9s\n", "kind class", "backend", "files", "median us", "ratio",
-                "same", "allocs", "frees");
+    std::printf("%-28s %-14s %6s %10s %10s %8s %9s %9s\n", "kind class reduce", "backend", "files", "median us",
+                "ratio", "same", "allocs", "frees");
     std::string json = "{\n  \"configurations\": " + std::to_string(configs) + ",\n  \"configurations_planned\": " +
                        std::to_string(configs_total) + ",\n  \"time_boxed\": " + (boxed ? "true" : "false") +
                        ",\n  \"wall_seconds\": " + std::to_string(wall_s) + ",\n  \"clock\": \"TSC calibrated against steady_clock\"" +
@@ -514,7 +515,7 @@ int main(int argc, char** argv)
                     frees.push_back(r->frees);
                 }
             }
-            std::printf("%-22s %-14s %6zu %10.2f %10.3f %8zu %9s %9s\n", key.c_str(), dec->name().c_str(), it->second.size(),
+            std::printf("%-28s %-14s %6zu %10.2f %10.3f %8zu %9s %9s\n", key.c_str(), dec->name().c_str(), it->second.size(),
                         median(med), median(ratio), same, allocs.empty() ? "-" : std::to_string(long(median(allocs))).c_str(),
                         frees.empty() ? "-" : std::to_string(long(median(frees))).c_str());
             json += std::string(first_json ? "" : ",\n") + "    {\"class\": \"" + key + "\", \"backend\": \"" + dec->name() +

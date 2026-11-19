@@ -71,8 +71,8 @@ int main(int argc, char** argv)
         const std::string k = argv[i];
         if (k == "--a" && i + 1 < argc) {
             spec = argv[++i];
-        } else if (k == "--data" && i + 1 < argc) {
-            data = argv[++i];
+        } else if (k == "--data") {
+            data = i + 1 < argc ? argv[++i] : "";  // an empty value may arrive as no value at all
         } else if (k == "--mode" && i + 1 < argc) {
             if (!parse_mode(argv[++i], mode)) {
                 std::fprintf(stderr, "nj2k_conformance: unknown mode\n");

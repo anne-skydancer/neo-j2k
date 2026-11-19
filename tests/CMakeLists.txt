@@ -8,6 +8,8 @@
 set(NJ2K_CORPUS "${PROJECT_SOURCE_DIR}/corpus/generated")
 set(NJ2K_TESTDATA "$ENV{NJ2K_TESTDATA}" CACHE PATH "openjpeg-data checkout (tools/fetch_testdata.py)")
 set(NJ2K_TEST_TMP "$ENV{NJ2K_TEST_TMP}" CACHE PATH "Folder for TEMP/TMP/TMPDIR while tests run")
+file(TO_CMAKE_PATH "${NJ2K_TESTDATA}" NJ2K_TESTDATA)
+file(TO_CMAKE_PATH "${NJ2K_TEST_TMP}" NJ2K_TEST_TMP)
 
 function(nj2k_test_program name)
   add_executable(${name} ${ARGN})
