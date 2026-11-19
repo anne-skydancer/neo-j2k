@@ -27,9 +27,9 @@ function(nj2k_no_ipo target)
   endforeach()
 endfunction()
 
-# nj2k_cpu_supported() is compiled for baseline x86-64 whatever NJ2K_SIMD says, so it lives in an
-# object library without the instruction-set flags, and without LTO, which could compile it again
-# at link time with the flags of the objects it meets there.
+# nj2k_cpu_supported() is compiled for baseline x86-64 whatever NJ2K_SIMD and the toolchain's default
+# say, so it lives in an object library with the baseline flags, and without LTO, which could compile
+# it again at link time with the flags of the objects it meets there.
 function(nj2k_cpu_check_objects name defs)
   add_library(${name} OBJECT cpu_check.c)
   target_include_directories(${name} PRIVATE "${PROJECT_SOURCE_DIR}/include")
@@ -38,6 +38,7 @@ function(nj2k_cpu_check_objects name defs)
     target_compile_definitions(${name} PRIVATE NJ2K_REQUIRE_X86_64_V3)
   endif()
   set_target_properties(${name} PROPERTIES C_VISIBILITY_PRESET hidden POSITION_INDEPENDENT_CODE ON)
+  nj2k_baseline_isa(${name})
   nj2k_no_ipo(${name})
   nj2k_warnings(${name})
   nj2k_fp_strict(${name})

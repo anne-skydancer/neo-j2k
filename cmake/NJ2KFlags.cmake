@@ -37,6 +37,17 @@ function(nj2k_fp_strict target)
   endif()
 endfunction()
 
+# Baseline x86-64, whatever the toolchain's default: a compiler may be configured for a newer level
+# (the scalar build with GCC 15 on the ubuntu-26.04 runners held AVX instructions without an
+# explicit -march). cl.exe targets SSE2 when no /arch is given.
+function(nj2k_baseline_isa target)
+  if(NJ2K_GNU_LIKE)
+    target_compile_options(${target} PRIVATE -march=x86-64 -mtune=generic)
+  elseif(NJ2K_CLANG_CL)
+    target_compile_options(${target} PRIVATE /clang:-march=x86-64)
+  endif()
+endfunction()
+
 # The instruction-set floor of neo-j2k's own code: x86-64-v3 (AVX2) chosen at compile time, or
 # baseline x86-64 for the scalar build (owner decision D8).
 function(nj2k_simd target)
@@ -46,6 +57,8 @@ function(nj2k_simd target)
     else()
       target_compile_options(${target} PRIVATE -march=x86-64-v3)
     endif()
+  else()
+    nj2k_baseline_isa(${target})
   endif()
 endfunction()
 

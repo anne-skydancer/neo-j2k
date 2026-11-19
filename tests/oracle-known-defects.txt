@@ -8,6 +8,7 @@
 #
 # OD-1: a cut packed-header stream with EPH is refused. packed_ppm_sop_eph_97.j2k (PPM, SOP, EPH,
 # 3 layers) cut where layer 2 starts (484 bytes) gives "Expected EPH marker" and no image, in the
-# shipped OpenJPEG 2.5.4 and in the oracle (3b1a6a96 + the general truncation fix); the whole file
-# limited to one layer decodes. Cuts anywhere before layer 3 fail the same way.
+# shipped OpenJPEG 2.5.4, in its fork with the general truncation fix, and in the oracle at the 1a
+# hotfix (dfcc4d1c); the whole file limited to one layer decodes. Cuts anywhere before layer 3 fail
+# the same way.
 packed_ppm_sop_eph_97.j2k * 1
