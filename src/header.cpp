@@ -604,54 +604,83 @@ nj2k_status_t merge_ppm(const Messages& msg, Arena& arena, MainHeader& mh) noexc
     return NJ2K_OK;
 }
 
+// The tile's entry in the directory, made (with its page, and the directory with the first page) when
+// it has none; null when the arena refuses. tile is below mh.tile_count().
 TileOverrides* tile_overrides(Arena& arena, MainHeader& mh, std::uint16_t tile) noexcept
 {
-    // sorted by tile; tiles mostly come in order, so the search ends at the back
-    std::uint32_t lo = 0, hi = mh.tiles.size;
-    while (lo < hi) {
-        const std::uint32_t mid = lo + (hi - lo) / 2;
-        if (mh.tiles.data[mid]->tile < tile) {
-            lo = mid + 1;
-        } else {
-            hi = mid;
+    TileDirectory& dir = mh.tiles;
+    constexpr std::uint32_t kPage = TileDirectory::kPageTiles;
+    if (!dir.pages) {
+        const std::uint32_t count = (mh.tile_count() + kPage - 1) / kPage;
+        dir.pages = arena.make_array<TileDirectory::Page*>(count);
+        if (!dir.pages) {
+            return nullptr;
+        }
+        dir.page_count = count;
+    }
+    TileDirectory::Page*& page = dir.pages[tile / kPage];
+    if (!page) {
+        page = arena.make<TileDirectory::Page>();
+        if (!page) {
+            return nullptr;
         }
     }
-    if (lo < mh.tiles.size && mh.tiles.data[lo]->tile == tile) {
-        return mh.tiles.data[lo];
+    TileOverrides*& t = page->tile[tile % kPage];
+    if (!t) {
+        t = arena.make<TileOverrides>();
+        if (!t) {
+            return nullptr;
+        }
+        t->tile = tile;
+        ++dir.size;
     }
-    auto* t = arena.make<TileOverrides>();
-    if (!t || !mh.tiles.push(arena, t)) {
-        return nullptr;
-    }
-    t->tile = tile;
-    for (std::uint32_t i = mh.tiles.size - 1; i > lo; --i) {
-        mh.tiles.data[i] = mh.tiles.data[i - 1];
-    }
-    mh.tiles.data[lo] = t;
     return t;
 }
 
+// The last marker for the component (the one that counts), or null.
 template <class T>
-bool set_comp_value(Arena& arena, ArenaList<CompValue<T>>& list, std::uint32_t comp, T value) noexcept
+const CompValue<T>* last_comp_value(const ArenaList<CompValue<T>>& list, std::uint32_t comp) noexcept
 {
-    for (CompValue<T>& v : list) {
-        if (v.comp == comp) {
-            v.value = value;  // a later marker for the same component replaces the earlier one
-            return true;
-        }
-    }
-    return list.push(arena, CompValue<T>{std::uint16_t(comp), value});
-}
-
-template <class T>
-const CompValue<T>* find_comp_value(const ArenaList<CompValue<T>>& list, std::uint32_t comp) noexcept
-{
-    for (const CompValue<T>& v : list) {
-        if (v.comp == comp) {
-            return &v;
+    for (std::uint32_t i = list.size; i-- > 0;) {
+        if (list.data[i].comp == comp) {
+            return &list.data[i];
         }
     }
     return nullptr;
+}
+
+// A component's parameters from the main header (main COC > main COD, main QCC > main QCD), then
+// the tile's own COD and QCD over them (tile-part COD > main COC, tile-part QCD > main QCC).
+TileComponentParams component_defaults(const MainHeader& mh, const TileOverrides* tile, std::uint32_t comp) noexcept
+{
+    TileComponentParams p{&mh.cod, &mh.main_style(comp), &mh.main_quant(comp), mh.main_roishift(comp)};
+    if (tile && tile->has_cod) {
+        p.coding = &tile->cod;
+        p.style = &tile->cod_style;
+    }
+    if (tile && tile->qcd) {
+        p.quant = tile->qcd;
+    }
+    return p;
+}
+
+// W8: every sub-band of every resolution needs its step size; derived quantization has one.
+nj2k_status_t check_step_count(const TileComponentParams& p, const TileOverrides* tile, std::uint32_t comp,
+                               const Messages& msg) noexcept
+{
+    if (p.quant->qntsty == kQntDerived) {
+        return NJ2K_OK;
+    }
+    const std::uint32_t bands = 3u * p.style->numresolutions - 2;
+    if (p.quant->nbands >= bands) {
+        return NJ2K_OK;
+    }
+    if (tile) {
+        return fail(msg, NJ2K_E_HEADER, "Tile %u, component %u: the quantization gives %u step sizes for %u sub-bands\n",
+                    unsigned(tile->tile), comp, unsigned(p.quant->nbands), bands);
+    }
+    return fail(msg, NJ2K_E_HEADER, "Component %u: the quantization gives %u step sizes for %u sub-bands\n", comp,
+                unsigned(p.quant->nbands), bands);
 }
 
 // PLT, as OpenJPEG checks it: the packet lengths must end with a complete length.
@@ -728,20 +757,6 @@ void Quantization::step(std::uint32_t band, std::uint32_t& expn, std::uint32_t& 
     } else {
         expn = mant = 0;
     }
-}
-
-const TileOverrides* MainHeader::overrides(std::uint32_t tile) const noexcept
-{
-    std::uint32_t lo = 0, hi = tiles.size;
-    while (lo < hi) {
-        const std::uint32_t mid = lo + (hi - lo) / 2;
-        if (tiles.data[mid]->tile < tile) {
-            lo = mid + 1;
-        } else {
-            hi = mid;
-        }
-    }
-    return lo < tiles.size && tiles.data[lo]->tile == tile ? tiles.data[lo] : nullptr;
 }
 
 nj2k_status_t read_main_header(Source& src, Arena& arena, const Messages& msg, const HeaderSettings& set,
@@ -1024,7 +1039,7 @@ nj2k_status_t read_tile_part_header(Source& src, Arena& arena, const Messages& m
             st = read_coc(msg, mh.numcomps, body, n, comp, cs);
             if (st == NJ2K_OK) {
                 auto* keep = arena.make<CodingStyle>();
-                if (!keep || !set_comp_value<const CodingStyle*>(arena, t->coc, comp, keep)) {
+                if (!keep || !t->coc.push(arena, CompValue<const CodingStyle*>{std::uint16_t(comp), keep})) {
                     return arena_failure(msg, arena);
                 }
                 *keep = cs;
@@ -1049,7 +1064,7 @@ nj2k_status_t read_tile_part_header(Source& src, Arena& arena, const Messages& m
                 return arena_failure(msg, arena);
             }
             st = read_qcc(msg, mh.numcomps, body, n, comp, *q);
-            if (st == NJ2K_OK && !set_comp_value<const Quantization*>(arena, t->qcc, comp, q)) {
+            if (st == NJ2K_OK && !t->qcc.push(arena, CompValue<const Quantization*>{std::uint16_t(comp), q})) {
                 return arena_failure(msg, arena);
             }
             break;
@@ -1058,7 +1073,7 @@ nj2k_status_t read_tile_part_header(Source& src, Arena& arena, const Messages& m
             std::uint32_t comp = 0;
             std::uint8_t shift = 0;
             st = read_rgn(msg, mh.numcomps, body, n, comp, shift);
-            if (st == NJ2K_OK && !set_comp_value<std::uint8_t>(arena, t->rgn, comp, shift)) {
+            if (st == NJ2K_OK && !t->rgn.push(arena, CompValue<std::uint8_t>{std::uint16_t(comp), shift})) {
                 return arena_failure(msg, arena);
             }
             break;
@@ -1111,51 +1126,51 @@ nj2k_status_t read_tile_part_header(Source& src, Arena& arena, const Messages& m
     return NJ2K_OK;
 }
 
+// Marker precedence (W7): tile-part COC > tile-part COD > main COC > main COD, and the same for
+// QCC/QCD and RGN; of several markers for one component, the last one read counts.
+nj2k_status_t resolve_tile(const MainHeader& mh, const TileOverrides* tile, const Messages& msg,
+                           TileComponentParams* out) noexcept
+{
+    for (std::uint32_t c = 0; c < mh.numcomps; ++c) {
+        out[c] = component_defaults(mh, tile, c);
+    }
+    if (tile) {
+        // in the order read, so the last marker for a component is the one that stays
+        for (const auto& v : tile->coc) {
+            out[v.comp].style = v.value;
+        }
+        for (const auto& v : tile->qcc) {
+            out[v.comp].quant = v.value;
+        }
+        for (const auto& v : tile->rgn) {
+            out[v.comp].roishift = v.value;
+        }
+    }
+    for (std::uint32_t c = 0; c < mh.numcomps; ++c) {
+        if (const nj2k_status_t st = check_step_count(out[c], tile, c, msg); st != NJ2K_OK) {
+            return st;
+        }
+    }
+    return NJ2K_OK;
+}
+
 nj2k_status_t resolve_tile_component(const MainHeader& mh, const TileOverrides* tile, std::uint32_t comp,
                                      const Messages& msg, TileComponentParams& out) noexcept
 {
-    TileComponentParams p{};
-    p.coding = tile && tile->has_cod ? &tile->cod : &mh.cod;
-    // tile-part COC > tile-part COD > main COC > main COD
+    TileComponentParams p = component_defaults(mh, tile, comp);
     if (tile) {
-        if (const auto* v = find_comp_value(tile->coc, comp)) {
+        if (const auto* v = last_comp_value(tile->coc, comp)) {
             p.style = v->value;
-        } else if (tile->has_cod) {
-            p.style = &tile->cod_style;
         }
-    }
-    if (!p.style) {
-        p.style = &mh.main_style(comp);
-    }
-    // tile-part QCC > tile-part QCD > main QCC > main QCD
-    if (tile) {
-        if (const auto* v = find_comp_value(tile->qcc, comp)) {
+        if (const auto* v = last_comp_value(tile->qcc, comp)) {
             p.quant = v->value;
-        } else if (tile->qcd) {
-            p.quant = tile->qcd;
         }
-    }
-    if (!p.quant) {
-        p.quant = &mh.main_quant(comp);
-    }
-    p.roishift = mh.main_roishift(comp);
-    if (tile) {
-        if (const auto* v = find_comp_value(tile->rgn, comp)) {
+        if (const auto* v = last_comp_value(tile->rgn, comp)) {
             p.roishift = v->value;
         }
     }
-    // every sub-band of every resolution needs its step size (W8); derived quantization has one
-    if (p.quant->qntsty != kQntDerived) {
-        const std::uint32_t bands = 3u * p.style->numresolutions - 2;
-        if (p.quant->nbands < bands) {
-            if (tile) {
-                return fail(msg, NJ2K_E_HEADER,
-                            "Tile %u, component %u: the quantization gives %u step sizes for %u sub-bands\n",
-                            unsigned(tile->tile), comp, unsigned(p.quant->nbands), bands);
-            }
-            return fail(msg, NJ2K_E_HEADER, "Component %u: the quantization gives %u step sizes for %u sub-bands\n",
-                        comp, unsigned(p.quant->nbands), bands);
-        }
+    if (const nj2k_status_t st = check_step_count(p, tile, comp, msg); st != NJ2K_OK) {
+        return st;
     }
     out = p;
     return NJ2K_OK;
@@ -1318,23 +1333,12 @@ std::uint64_t decode_working_memory(const MainHeader& mh, std::uint32_t factor, 
     return sat_add(total, largest);
 }
 
-std::uint64_t tile_packets(const MainHeader& mh, std::uint32_t tile, const TileOverrides* overrides) noexcept
+std::uint64_t tile_packets(const MainHeader& mh, std::uint32_t tile, const TileComponentParams* params) noexcept
 {
     const Rect t = tile_rect(mh, tile);
-    const TileCoding& coding = overrides && overrides->has_cod ? overrides->cod : mh.cod;
     std::uint64_t precincts = 0;
     for (std::uint32_t c = 0; c < mh.numcomps; ++c) {
-        const CodingStyle* s = nullptr;
-        if (overrides) {
-            if (const auto* v = find_comp_value(overrides->coc, c)) {
-                s = v->value;
-            } else if (overrides->has_cod) {
-                s = &overrides->cod_style;
-            }
-        }
-        if (!s) {
-            s = &mh.main_style(c);
-        }
+        const CodingStyle* s = params[c].style;
         const SizComponent& sc = mh.comps[c];
         const std::uint32_t tcx0 = ceildiv(t.x0, sc.dx), tcy0 = ceildiv(t.y0, sc.dy);
         const std::uint32_t tcx1 = ceildiv(t.x1, sc.dx), tcy1 = ceildiv(t.y1, sc.dy);
@@ -1353,7 +1357,8 @@ std::uint64_t tile_packets(const MainHeader& mh, std::uint32_t tile, const TileO
             precincts = sat_add(precincts, sat_mul(pw, ph));
         }
     }
-    return sat_mul(precincts, coding.numlayers);
+    // the layers are the tile's (its COD's, or the main header's), the same in every component
+    return sat_mul(precincts, params[0].coding->numlayers);
 }
 
 }  // namespace nj2k::detail

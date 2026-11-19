@@ -132,7 +132,9 @@ struct CompValue {
 };
 
 // The markers of one tile's headers (over all its tile-parts). Only tiles whose headers carry COD,
-// COC, QCD, QCC, RGN, POC or PPT get one.
+// COC, QCD, QCC, RGN, POC or PPT get one. The COC, QCC and RGN markers are kept in the order they
+// came in, each added in one step: when a component has several, the last one counts (resolved by
+// resolve_tile and resolve_tile_component).
 struct TileOverrides {
     std::uint16_t tile;
     bool has_cod;
@@ -144,6 +146,27 @@ struct TileOverrides {
     ArenaList<CompValue<std::uint8_t>> rgn;  // roishift
     ArenaList<PocEntry> poc;
     ArenaList<PackedChunk> ppt;
+};
+
+// The tiles whose headers carry markers of their own, by tile index: pages of 128 entries, each made
+// when a tile in it first gets markers, under a directory of one entry per 128 tiles SIZ declares (at
+// most 4 KiB, made with the first page). The memory follows the tile-part headers read, not the tiles
+// SIZ declares (fork audit S2), and a tile is found or added in the same few steps whatever order the
+// tile-parts come in.
+struct TileDirectory {
+    static constexpr std::uint32_t kPageTiles = 128;
+    struct Page {
+        TileOverrides* tile[kPageTiles];
+    };
+    Page** pages;             // page_count entries, null until a tile has markers
+    std::uint32_t page_count;
+    std::uint32_t size;       // tiles with markers of their own
+
+    const TileOverrides* find(std::uint32_t tile) const noexcept
+    {
+        const Page* page = tile / kPageTiles < page_count ? pages[tile / kPageTiles] : nullptr;
+        return page ? page->tile[tile % kPageTiles] : nullptr;
+    }
 };
 
 struct MainHeader {
@@ -177,11 +200,11 @@ struct MainHeader {
     std::uint64_t start, end;
     // the fewest resolutions of any component, from the main header
     std::uint32_t min_resolutions;
-    // tiles with markers of their own, sorted by tile index
-    ArenaList<TileOverrides*> tiles;
+    // tiles with markers of their own
+    TileDirectory tiles;
 
     std::uint32_t tile_count() const noexcept { return tw * th; }
-    const TileOverrides* overrides(std::uint32_t tile) const noexcept;
+    const TileOverrides* overrides(std::uint32_t tile) const noexcept { return tiles.find(tile); }
     const CodingStyle& main_style(std::uint32_t comp) const noexcept { return coc[comp] ? *coc[comp] : cod_style; }
     const Quantization& main_quant(std::uint32_t comp) const noexcept { return qcc[comp] ? *qcc[comp] : qcd; }
     std::uint8_t main_roishift(std::uint32_t comp) const noexcept
@@ -228,8 +251,14 @@ nj2k_status_t read_main_header(Source& src, Arena& arena, const Messages& msg, c
 nj2k_status_t read_tile_part_header(Source& src, Arena& arena, const Messages& msg, const HeaderSettings& settings,
                                     MainHeader& mh, std::uint64_t sot, TilePartHeader& out) noexcept;
 
-// A tile-component's parameters, with marker precedence applied (W7), its step sizes checked
-// against the bands its resolutions need (W8). tile may be null for the main header's defaults.
+// Every component's parameters of a tile (out: mh.numcomps entries), with marker precedence applied
+// (W7) and each component's step sizes checked against the bands its resolutions need (W8), in one
+// pass over the components and the tile's markers. tile may be null for the main header's defaults.
+nj2k_status_t resolve_tile(const MainHeader& mh, const TileOverrides* tile, const Messages& msg,
+                           TileComponentParams* out) noexcept;
+
+// One tile-component's parameters, as resolve_tile gives them; it looks through the tile's markers
+// for the component, so a decode that needs every component takes resolve_tile.
 nj2k_status_t resolve_tile_component(const MainHeader& mh, const TileOverrides* tile, std::uint32_t comp,
                                      const Messages& msg, TileComponentParams& out) noexcept;
 
@@ -279,7 +308,8 @@ bool decoded_component_geometry(const MainHeader& mh, std::uint32_t comp, std::u
 // change a tile's parameters; decoding checks each tile again when its headers are in.
 std::uint64_t decode_working_memory(const MainHeader& mh, std::uint32_t factor, const bool* selected) noexcept;
 
-// The number of packets a tile declares (layers x precincts x components), for work budgets.
-std::uint64_t tile_packets(const MainHeader& mh, std::uint32_t tile, const TileOverrides* overrides) noexcept;
+// The number of packets a tile declares (layers x precincts x components), for work budgets, from
+// its components' parameters (resolve_tile: mh.numcomps entries).
+std::uint64_t tile_packets(const MainHeader& mh, std::uint32_t tile, const TileComponentParams* params) noexcept;
 
 }  // namespace nj2k::detail

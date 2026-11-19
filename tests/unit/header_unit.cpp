@@ -6,10 +6,10 @@
 // the bits-per-component box), component depths and their warning, the fork audit's probe rows (S2,
 // S3) and the plan audit's (A1) with the memory they make neo-j2k allocate, marker precedence (W7),
 // quantization counts (W8), Psot = 0 (W5), the reduce policy (W4) and the reduce setter (S1), the
-// allocator hook with failure injection, a header model that owns its bytes (plan audit D5), the
-// decoded dimensions against the oracle's decodes, and header reads of mutated headers. The oracle
-// (OpenJPEG at the pinned fork commit) is linked beside neo-j2k; the internal header reader is
-// reached through the static library.
+// allocator hook with failure injection, a header model that owns its bytes (plan audit D5), tile-part
+// markers in any order at the same cost, the decoded dimensions against the oracle's decodes, and
+// header reads of mutated headers. The oracle (OpenJPEG at the pinned fork commit) is linked beside
+// neo-j2k; the internal header reader is reached through the static library.
 #include <openjpeg.h>
 
 #include <neoj2k/neoj2k.h>
@@ -1132,7 +1132,9 @@ void test_tile_parts()
         }
         CHECK_MSG(i + 1 == expected.size(), "%s: %zu tile-parts, the scanner %zu", name.c_str(), i + 1, expected.size());
         // the packets a tile declares, for the work budgets of stage 1c
-        CHECK(d::tile_packets(*mh, 0, mh->overrides(0)) > 0);
+        std::vector<d::TileComponentParams> params(mh->numcomps);
+        CHECK(d::resolve_tile(*mh, mh->overrides(0), msg, params.data()) == NJ2K_OK &&
+              d::tile_packets(*mh, 0, params.data()) > 0);
     }
     CHECK(files > 50);
     std::printf("  tile-parts: %zu files, %zu tile-part headers\n", files, parts);
@@ -1412,6 +1414,121 @@ void test_owned_bytes()
     }
 }
 
+// Tile-part markers cost the same whatever order they come in (the audit's finding 5): the tile-parts
+// of 65,535 tiles in descending tile order, each with an RGN marker; and one tile of 16,384
+// components with a COC marker for each in descending order, and a second one for some. Every
+// tile and component resolves to its last marker, the whole-tile resolution gives what resolving
+// each component alone does, and the header state stays within a few bytes per input byte.
+void test_tile_directory()
+{
+    namespace d = nj2k::detail;
+    d::Allocator sys = d::Allocator::system();
+    d::Messages msg;
+    d::HeaderSettings hs{};
+    auto read_all = [&](const Bytes& cs, d::Arena& arena, d::MainHeader*& mh) {
+        d::Source src(cs.data(), cs.size());
+        if (d::read_main_header(src, arena, msg, hs, mh) != NJ2K_OK) {
+            return std::size_t(0);
+        }
+        std::size_t parts = 0;
+        std::uint64_t sot = mh->end;
+        for (;;) {
+            d::TilePartHeader tp{};
+            if (d::read_tile_part_header(src, arena, msg, hs, *mh, sot, tp) != NJ2K_OK) {
+                return std::size_t(0);
+            }
+            ++parts;
+            sot = tp.data + tp.data_length;
+            std::uint8_t m[2];
+            if (!src.skip(sot - src.tell()) || src.read(m, 2) != 2 || m[0] != 0xFF || m[1] != 0x90) {
+                return parts;
+            }
+        }
+    };
+    {
+        Siz s;
+        s.x1 = 255;
+        s.y1 = 257;
+        s.tdx = s.tdy = 1;
+        s.comps = 1;
+        Cod c;
+        c.levels = 0;
+        Writer w;
+        w.u16(0xFF4F).segment(0xFF51, s.body()).segment(0xFF52, c.body()).segment(0xFF5C, qcd_none(1));
+        for (int t = 65534; t >= 0; --t) {
+            w.u16(0xFF90).u16(10).u16(unsigned(t)).u32(12 + 7 + 2).u8(0).u8(1);
+            w.segment(0xFF5E, Bytes{0, 0, std::uint8_t(t % 37)});
+            w.u16(0xFF93);
+        }
+        w.u16(0xFFD9);
+        d::Arena arena;
+        arena.init(&sys);
+        d::MainHeader* mh = nullptr;
+        CHECK(read_all(w.b, arena, mh) == 65535);
+        if (mh) {
+            CHECK(mh->tiles.size == 65535);
+            std::size_t right = 0;
+            for (std::uint32_t t = 0; t < 65535; ++t) {
+                d::TileComponentParams one{}, all{};
+                const d::TileOverrides* o = mh->overrides(t);
+                right += o && o->tile == t && d::resolve_tile_component(*mh, o, 0, msg, one) == NJ2K_OK &&
+                         d::resolve_tile(*mh, o, msg, &all) == NJ2K_OK && one.roishift == t % 37 &&
+                         all.roishift == t % 37;
+            }
+            CHECK_MSG(right == 65535, "%zu tiles", right);
+            CHECK_MSG(arena.reserved() <= 16 * w.b.size(), "%llu bytes from %zu", (unsigned long long)arena.reserved(),
+                      w.b.size());
+        }
+    }
+    {
+        constexpr std::uint32_t n = 16384;
+        Siz s;
+        s.x1 = s.y1 = 16;
+        s.comps = n;
+        Cod c;  // 6 resolutions; a COC gives component k (k % 6) + 1, or (k + 3) % 6 + 1 the second time
+        Writer tph;
+        auto coc = [&](std::uint32_t k, unsigned levels) {
+            tph.segment(0xFF53, Bytes{std::uint8_t(k >> 8), std::uint8_t(k & 0xFF), 0, std::uint8_t(levels), 4, 4, 0, 1});
+        };
+        for (std::uint32_t k = n; k-- > 0;) {
+            coc(k, k % 6);
+        }
+        for (std::uint32_t k = 0; k < n; k += 41) {
+            coc(k, (k + 3) % 6);
+        }
+        Writer w;
+        w.u16(0xFF4F).segment(0xFF51, s.body()).segment(0xFF52, c.body()).segment(0xFF5C, qcd_none(16));
+        w.u16(0xFF90).u16(10).u16(0).u32(std::uint32_t(12 + tph.b.size() + 2)).u8(0).u8(1).bytes(tph.b).u16(0xFF93);
+        w.u16(0xFFD9);
+        d::Arena arena;
+        arena.init(&sys);
+        d::MainHeader* mh = nullptr;
+        CHECK(read_all(w.b, arena, mh) == 1);
+        const d::TileOverrides* o = mh ? mh->overrides(0) : nullptr;
+        CHECK(o != nullptr);
+        if (mh && o) {
+            std::vector<d::TileComponentParams> all(n);
+            CHECK(d::resolve_tile(*mh, o, msg, all.data()) == NJ2K_OK);
+            std::size_t right = 0, alone = 0, sampled = 0;
+            for (std::uint32_t k = 0; k < n; ++k) {
+                const unsigned levels = k % 41 == 0 ? (k + 3) % 6 : k % 6;
+                right += all[k].style->numresolutions == levels + 1;
+                // a component alone is looked for through the tile's markers: a sample of them
+                if (k % 97 == 0 || k % 41 == 0) {
+                    ++sampled;
+                    d::TileComponentParams one{};
+                    alone += d::resolve_tile_component(*mh, o, k, msg, one) == NJ2K_OK && one.style == all[k].style &&
+                             one.quant == all[k].quant && one.coding == all[k].coding;
+                }
+            }
+            CHECK_MSG(right == n, "%zu components", right);
+            CHECK_MSG(alone == sampled, "%zu of %zu", alone, sampled);
+            CHECK_MSG(arena.reserved() <= 16 * w.b.size(), "%llu bytes from %zu", (unsigned long long)arena.reserved(),
+                      w.b.size());
+        }
+    }
+}
+
 // The rest of the API's order and argument rules.
 void test_api_rules()
 {
@@ -1548,6 +1665,7 @@ int main(int argc, char** argv)
     test_reduce_policy();
     test_allocator();
     test_owned_bytes();
+    test_tile_directory();
     test_api_rules();
     test_mutations();
     std::printf("header_unit: %d checks, %d failures\n", g_checks, g_failures);

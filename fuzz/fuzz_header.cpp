@@ -5,7 +5,8 @@
 // - neo-j2k (stage 1b): the header read through the API (J2K, or JP2 when the input starts with
 //   the JP2 signature), with no limits and with the Second Life profile, then the decoded
 //   dimensions and the codestream information; and the library's tile-part header reader over every
-//   tile-part. No filter: neo-j2k bounds its own memory. Every allocation goes through a counting
+//   tile-part, with each tile's parameters resolved for all its components at once and one at a time,
+//   which must agree. No filter: neo-j2k bounds its own memory. Every allocation goes through a counting
 //   hook, which aborts when the header state outgrows the input (64 bytes for each input byte, plus
 //   256 KiB) or when the codec does not give back everything it took.
 // - the test scanner (j2k_scan) reads the main header, the tile-parts and the packet positions;
@@ -18,8 +19,10 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <vector>
 
 #if defined(_WIN32)
 #include <malloc.h>
@@ -142,7 +145,14 @@ void neo_header(const std::uint8_t* data, std::size_t size, const nj2k_decoder_l
     }
 }
 
-// The tile-part header reader over every tile-part of a codestream (stage 1c drives it).
+bool same_params(const nj2k::detail::TileComponentParams& a, const nj2k::detail::TileComponentParams& b)
+{
+    return a.coding == b.coding && a.style == b.style && a.quant == b.quant && a.roishift == b.roishift;
+}
+
+// The tile-part header reader over every tile-part of a codestream (stage 1c drives it), each
+// tile's parameters resolved for all its components (resolve_tile) and for the first ones on their
+// own (resolve_tile_component), which must give the same.
 void neo_tile_parts(const std::uint8_t* data, std::size_t size)
 {
     using namespace nj2k::detail;
@@ -159,6 +169,9 @@ void neo_tile_parts(const std::uint8_t* data, std::size_t size)
         Source src(data, size);
         MainHeader* mh = nullptr;
         if (read_main_header(src, arena, msg, hs, mh) == NJ2K_OK) {
+            // the whole-tile resolution for codestreams of up to 1,024 components, which keeps an
+            // input's work small while every component count the profiles allow is covered
+            std::vector<TileComponentParams> params(mh->numcomps <= 1024 ? mh->numcomps : 0);
             std::uint64_t sot = mh->end;
             for (int parts = 0; parts < 4096; ++parts) {
                 TilePartHeader tp{};
@@ -166,11 +179,19 @@ void neo_tile_parts(const std::uint8_t* data, std::size_t size)
                     break;
                 }
                 const TileOverrides* t = mh->overrides(tp.tile);
+                const bool whole = !params.empty() && resolve_tile(*mh, t, msg, params.data()) == NJ2K_OK;
+                if (whole) {
+                    (void)tile_packets(*mh, tp.tile, params.data());
+                }
                 for (std::uint32_t c = 0; c < mh->numcomps && c < 16; ++c) {
                     TileComponentParams p{};
-                    (void)resolve_tile_component(*mh, t, c, msg, p);
+                    const bool one = resolve_tile_component(*mh, t, c, msg, p) == NJ2K_OK;
+                    if (whole && (!one || !same_params(p, params[c]))) {
+                        std::fprintf(stderr, "tile %u, component %u: resolved alone, not as with the whole tile\n",
+                                     unsigned(tp.tile), c);
+                        std::abort();
+                    }
                 }
-                (void)tile_packets(*mh, tp.tile, t);
                 const std::uint64_t left = size - tp.data;
                 const std::uint64_t length = tp.psot ? tp.data_length : left;
                 if (length >= left || !src.skip(length)) {
