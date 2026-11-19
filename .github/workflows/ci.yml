@@ -31,7 +31,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
       - name: actionlint
@@ -68,11 +68,11 @@ jobs:
     env:
       NJ2K_TESTDATA: ${{ github.workspace }}/.testdata/openjpeg-data
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
       - name: Conformance data (cache)
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: .testdata/openjpeg-data
           key: openjpeg-data-class1-${{ env.OPENJPEG_DATA_COMMIT }}-windows
@@ -111,7 +111,7 @@ jobs:
       CXX: ${{ matrix.cxx }}
       NJ2K_TESTDATA: ${{ github.workspace }}/.testdata/openjpeg-data
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
       - name: Toolchain
@@ -126,7 +126,7 @@ jobs:
           "$CC" --version | head -n 1
           cmake --version | head -n 1
       - name: Conformance data (cache)
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: .testdata/openjpeg-data
           key: openjpeg-data-class1-${{ env.OPENJPEG_DATA_COMMIT }}-linux
@@ -158,11 +158,11 @@ jobs:
           DEBIAN_FRONTEND=noninteractive apt-get install -y -qq g++-14 cmake ninja-build python3 git ca-certificates binutils
           gcc-14 --version | head -n 1
           cmake --version | head -n 1
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
       - name: Conformance data (cache)
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: .testdata/openjpeg-data
           key: openjpeg-data-class1-${{ env.OPENJPEG_DATA_COMMIT }}-linux
