@@ -4,8 +4,10 @@ OpenJPEG's licence and notices
 neo-j2k's libraries (neoj2k.dll, libneoj2k.so and the static libraries) contain code ported from
 OpenJPEG (https://github.com/uclouvain/openjpeg), through the fork it is based on
 (https://github.com/anne-skydancer/openjpeg): src/image.cpp and src/defaults.cpp, from OpenJPEG's
-image.c and openjpeg.c; the declarations of include/neoj2k/neoj2k.h, from openjpeg.h; and the header
-checks and messages of src/header.cpp and src/jp2.cpp, from j2k.c and jp2.c. OpenJPEG is licensed
+image.c and openjpeg.c; the declarations of include/neoj2k/neoj2k.h, from openjpeg.h; the header
+checks and messages of src/header.cpp and src/jp2.cpp, from j2k.c and jp2.c; the header read's image,
+codestream information and messages of src/codec.cpp, from j2k.c and openjpeg.c; and the stream of
+src/stream.cpp, from cio.c and openjpeg.c. OpenJPEG is licensed
 under the BSD 2-Clause License, whose second clause asks for its notice in binary distributions
 too. Its licence, as OpenJPEG's LICENSE file gives it, follows; the ported files carry these notices
 as well:
