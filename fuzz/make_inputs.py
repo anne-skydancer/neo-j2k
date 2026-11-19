@@ -7,6 +7,9 @@ usage: make_inputs.py --decode-seeds OUT [--corpus DIR]
            every corpus file with option bytes in front (fuzz/fuzz_common.h): the viewer's request
            at reduce 5 on its first 600 bytes and at reduce 2 on half the file, plain decodes at
            reduce 1-5, strict mode with one layer, a plain cut. Made at fuzz and test time.
+       make_inputs.py --header-seeds OUT [--corpus DIR]
+           every corpus file in a JP2 file, for the header target's JP2 reading (the corpus itself
+           seeds its codestream reading). Made at fuzz and test time.
        make_inputs.py --roundtrip-seeds OUT
            coding parameters and samples for the round-trip target (committed: fuzz/seeds/roundtrip)
        make_inputs.py --bombs OUT [--corpus DIR]
@@ -83,6 +86,46 @@ def decode_seeds(corpus, out):
         }
         for tag, options in variants.items():
             write(out, "%s.%s.bin" % (stem, tag), bytes(options) + cs)
+            count += 1
+    return count
+
+
+# ---- header seeds ----------------------------------------------------------------------------------
+
+def box(kind, body):
+    return struct.pack(">I", 8 + len(body)) + kind + bytes(body)
+
+
+def jp2_wrap(cs):
+    """A JP2 file around a codestream: the signature, file type and JP2 header boxes (the image header,
+    a bits-per-component box when the components' depths differ, the colour) and the codestream box."""
+    xsiz, ysiz, xosiz, yosiz = struct.unpack_from(">IIII", cs, 8)
+    comps = struct.unpack_from(">H", cs, 40)[0]
+    depths = bytes(cs[42:42 + 3 * comps:3])
+    bpc = depths[0] if len(set(depths)) == 1 else 255
+    header = box(b"ihdr", struct.pack(">IIHBBBB", ysiz - yosiz, xsiz - xosiz, comps, bpc, 7, 0, 0))
+    if bpc == 255:
+        header += box(b"bpcc", depths)
+    header += box(b"colr", struct.pack(">BBBI", 1, 0, 0, 16 if comps >= 3 else 17))
+    signature = box(b"jP  ", bytes([0x0D, 0x0A, 0x87, 0x0A]))
+    return signature + box(b"ftyp", b"jp2 " + bytes(4) + b"jp2 ") + box(b"jp2h", header) + box(b"jp2c", cs)
+
+
+def header_seeds(corpus, out):
+    """The header target (fuzz_header.cpp) takes the reduce factor and whether the stream gives its
+    length from the input's last byte: each JP2 file gets a 00 after it (reduce 0, the length given),
+    and the first one is also written with 08 (reduce 0, no length)."""
+    if os.path.isdir(out):
+        for name in os.listdir(out):
+            if name.endswith(".bin"):
+                os.remove(os.path.join(out, name))
+    count = 0
+    for i, (name, cs) in enumerate(corpus_files(corpus)):
+        jp2 = jp2_wrap(cs)
+        write(out, "%s.jp2.bin" % name[:-4], jp2 + bytes([0x00]))
+        count += 1
+        if i == 0:
+            write(out, "%s.jp2-no-length.bin" % name[:-4], jp2 + bytes([0x08]))
             count += 1
     return count
 
@@ -234,14 +277,17 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--corpus", default=os.path.join(ROOT, "corpus", "generated"))
     ap.add_argument("--decode-seeds")
+    ap.add_argument("--header-seeds")
     ap.add_argument("--roundtrip-seeds")
     ap.add_argument("--bombs")
     ap.add_argument("--known-defects")
     a = ap.parse_args()
-    if not (a.decode_seeds or a.roundtrip_seeds or a.bombs or a.known_defects):
+    if not (a.decode_seeds or a.header_seeds or a.roundtrip_seeds or a.bombs or a.known_defects):
         ap.error("nothing to make")
     if a.decode_seeds:
         print("make_inputs: %d decode seeds in %s" % (decode_seeds(a.corpus, a.decode_seeds), a.decode_seeds))
+    if a.header_seeds:
+        print("make_inputs: %d header seeds in %s" % (header_seeds(a.corpus, a.header_seeds), a.header_seeds))
     if a.roundtrip_seeds:
         print("make_inputs: %d round-trip seeds in %s" % (roundtrip_seeds(a.roundtrip_seeds), a.roundtrip_seeds))
     if a.bombs:

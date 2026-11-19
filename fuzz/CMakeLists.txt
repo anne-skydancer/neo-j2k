@@ -4,9 +4,9 @@
 # Fuzz targets. With NJ2K_BUILD_FUZZERS they link libFuzzer: nj2k_fuzz_<target> (Clang on Linux,
 # where CI fuzzes; MSVC with /fsanitize=fuzzer for local runs on Windows). With the tests they also
 # build against a plain driver, nj2k_fuzz_<target>_replay, and CTest replays the seeds (the corpus,
-# the option-prefixed decode seeds of make_inputs.py, the round-trip seeds) and fuzz/regressions
-# through them on every compiler and platform. The filters' own test checks that the bombs of
-# fuzz/bombs stay away from the oracle.
+# the option-prefixed decode seeds and the JP2 header seeds of make_inputs.py, the round-trip seeds)
+# and fuzz/regressions through them on every compiler and platform. The filters' own test checks
+# that the bombs of fuzz/bombs stay away from the oracle.
 set(NJ2K_FUZZ_TARGETS header decode roundtrip)
 
 if(NJ2K_BUILD_FUZZERS)
@@ -48,18 +48,28 @@ if(NJ2K_BUILD_TESTS)
     nj2k_program_exceptions(nj2k_fuzz_${t}_replay)
   endforeach()
 
-  # The decode seeds with option bytes (viewer mode, reduce levels, cuts, layer limits) are made
-  # from the corpus by make_inputs.py, as the fuzz jobs make them.
+  # The decode seeds with option bytes (viewer mode, reduce levels, cuts, layer limits) and the
+  # header target's JP2 seeds are made from the corpus by make_inputs.py, as the fuzz jobs make them.
   find_package(Python3 COMPONENTS Interpreter)
   set(_nj2k_decode_seeds)
+  set(_nj2k_header_seeds)
   if(Python3_FOUND)
     set(_nj2k_decode_seeds "${CMAKE_CURRENT_BINARY_DIR}/seeds-decode")
     add_test(NAME fuzz_seeds.decode
              COMMAND "${Python3_EXECUTABLE}" -I "${CMAKE_CURRENT_SOURCE_DIR}/make_inputs.py"
                      --decode-seeds "${_nj2k_decode_seeds}" --corpus "${_nj2k_corpus}")
     set_tests_properties(fuzz_seeds.decode PROPERTIES FIXTURES_SETUP nj2k_decode_seeds)
+    set(_nj2k_header_seeds "${CMAKE_CURRENT_BINARY_DIR}/seeds-header")
+    add_test(NAME fuzz_seeds.header
+             COMMAND "${Python3_EXECUTABLE}" -I "${CMAKE_CURRENT_SOURCE_DIR}/make_inputs.py"
+                     --header-seeds "${_nj2k_header_seeds}" --corpus "${_nj2k_corpus}")
+    set_tests_properties(fuzz_seeds.header PROPERTIES FIXTURES_SETUP nj2k_header_seeds)
   endif()
-  add_test(NAME fuzz_replay.header COMMAND nj2k_fuzz_header_replay "${_nj2k_corpus}" "${_nj2k_regressions}")
+  add_test(NAME fuzz_replay.header
+           COMMAND nj2k_fuzz_header_replay "${_nj2k_corpus}" "${_nj2k_regressions}" ${_nj2k_header_seeds})
+  if(_nj2k_header_seeds)
+    set_tests_properties(fuzz_replay.header PROPERTIES FIXTURES_REQUIRED nj2k_header_seeds)
+  endif()
   add_test(NAME fuzz_replay.decode
            COMMAND nj2k_fuzz_decode_replay "${_nj2k_corpus}" "${_nj2k_regressions}" ${_nj2k_decode_seeds})
   if(_nj2k_decode_seeds)
