@@ -43,7 +43,11 @@ struct Decoder {
     std::uint32_t factor = 0;          // the reduce factor in effect, after the policy
     std::uint32_t* selected = nullptr;  // nj2k_set_decoded_components, in the caller's order
     std::uint32_t nselected = 0;
-    bool* selected_mask = nullptr;
+    bool* selected_mask = nullptr;     // null when every component is decoded
+    // where the selection is kept: made by the first selection, numcomps entries each, and
+    // overwritten by every later one, so repeated calls take no more memory
+    std::uint32_t* selection_order = nullptr;
+    bool* selection_mask = nullptr;
 
     static Decoder* from(nj2k_codec_t* codec) noexcept
     {

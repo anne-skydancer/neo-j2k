@@ -14,8 +14,10 @@
 
 namespace nj2k::detail {
 
-// Plain blocks: nullptr for a zero size, as OpenJPEG's opj_calloc.
+// Plain blocks: nullptr for a zero size, as OpenJPEG's opj_calloc and opj_malloc. heap_malloc's
+// block is not cleared, for buffers that are always written before they are read.
 void* heap_calloc(std::size_t count, std::size_t size) noexcept;
+void* heap_malloc(std::size_t size) noexcept;
 void heap_free(void* ptr) noexcept;
 
 // Sample planes: 64-byte aligned (a cache line, and every SIMD width neo-j2k uses); nullptr for a

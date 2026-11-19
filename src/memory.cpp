@@ -65,6 +65,11 @@ void* heap_calloc(std::size_t count, std::size_t size) noexcept
     return std::calloc(count, size);
 }
 
+void* heap_malloc(std::size_t size) noexcept
+{
+    return size ? std::malloc(size) : nullptr;
+}
+
 void heap_free(void* ptr) noexcept
 {
     std::free(ptr);

@@ -370,23 +370,35 @@ NJ2K_API NJ2K_BOOL NJ2K_CALLCONV nj2k_set_decoded_components(nj2k_codec_t* p_cod
     if (numcomps > total) {
         return fail(d, NJ2K_E_ARGUMENT, "nj2k_set_decoded_components: %u components, the image has %u\n", numcomps, total);
     }
-    bool* mask = d->arena.make_array<bool>(total);
-    auto* order = d->arena.make_array<std::uint32_t>(numcomps);
-    if (!mask || !order) {
-        return fail(d, d->arena.failure() == nj2k::detail::Arena::Failure::budget ? NJ2K_E_LIMIT : NJ2K_E_NO_MEMORY,
-                    "Not enough memory to select the components\n");
+    if (!d->selection_mask) {
+        bool* mask = d->arena.make_array<bool>(total);
+        auto* order = d->arena.make_array<std::uint32_t>(total);
+        if (!mask || !order) {
+            return fail(d, d->arena.failure() == nj2k::detail::Arena::Failure::budget ? NJ2K_E_LIMIT : NJ2K_E_NO_MEMORY,
+                        "Not enough memory to select the components\n");
+        }
+        d->selection_mask = mask;
+        d->selection_order = order;
     }
+    bool* mask = d->selection_mask;
+    std::memset(mask, 0, total);
     for (std::uint32_t i = 0; i < numcomps; ++i) {
-        if (comps_indices[i] >= total) {
-            return fail(d, NJ2K_E_ARGUMENT, "Invalid component index: %u\n", comps_indices[i]);
+        const std::uint32_t c = comps_indices[i];
+        if (c >= total || mask[c]) {
+            // a refused selection leaves the earlier one in place, as OpenJPEG does
+            std::memset(mask, 0, total);
+            for (std::uint32_t j = 0; j < d->nselected; ++j) {
+                mask[d->selected[j]] = true;
+            }
+            if (c >= total) {
+                return fail(d, NJ2K_E_ARGUMENT, "Invalid component index: %u\n", c);
+            }
+            return fail(d, NJ2K_E_ARGUMENT, "Component index %u used several times\n", c);
         }
-        if (mask[comps_indices[i]]) {
-            return fail(d, NJ2K_E_ARGUMENT, "Component index %u used several times\n", comps_indices[i]);
-        }
-        mask[comps_indices[i]] = true;
-        order[i] = comps_indices[i];
+        mask[c] = true;
     }
-    d->selected = order;
+    std::memcpy(d->selection_order, comps_indices, std::size_t(numcomps) * sizeof(std::uint32_t));
+    d->selected = d->selection_order;
     d->selected_mask = mask;
     d->nselected = numcomps;
     return finish(d, NJ2K_OK);

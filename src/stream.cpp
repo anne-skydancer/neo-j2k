@@ -113,7 +113,10 @@ Stream* new_stream(NJ2K_SIZE_T buffer_size, NJ2K_BOOL is_input) noexcept
     auto* s = new (mem) Stream();
     s->input = is_input != 0;
     if (buffer_size) {
-        s->buffer = static_cast<std::uint8_t*>(nj2k::detail::heap_calloc(1, buffer_size));
+        // filled by the read function before any byte of it is read: no need to clear it, which a
+        // host that sizes the buffer to the whole file (the viewer) would pay on every header read,
+        // and OpenJPEG does not either (opj_malloc)
+        s->buffer = static_cast<std::uint8_t*>(nj2k::detail::heap_malloc(buffer_size));
         if (!s->buffer) {
             nj2k::detail::heap_free(s);
             return nullptr;

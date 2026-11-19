@@ -7,9 +7,9 @@
 // S3) and the plan audit's (A1) with the memory they make neo-j2k allocate, marker precedence (W7),
 // quantization counts (W8), Psot = 0 (W5), the reduce policy (W4) and the reduce setter (S1), the
 // allocator hook with failure injection, a header model that owns its bytes (plan audit D5), tile-part
-// markers in any order at the same cost, the decoded dimensions against the oracle's decodes, and
-// header reads of mutated headers. The oracle (OpenJPEG at the pinned fork commit) is linked beside
-// neo-j2k; the internal header reader is reached through the static library.
+// markers in any order at the same cost, the component selection, the decoded dimensions against the
+// oracle's decodes, and header reads of mutated headers. The oracle (OpenJPEG at the pinned fork
+// commit) is linked beside neo-j2k; the internal header reader is reached through the static library.
 #include <openjpeg.h>
 
 #include <neoj2k/neoj2k.h>
@@ -1556,6 +1556,39 @@ void test_api_rules()
     CHECK(nj2k_set_decoded_components(r.codec, 0, nullptr, NJ2K_FALSE));
     // decoding comes in stage 1c
     CHECK(!nj2k_decode(r.codec, stream.get(), r.image) && nj2k_get_status(r.codec) == NJ2K_E_UNSUPPORTED);
+    // the component selection: repeated calls take no more memory, and a refused one leaves the
+    // earlier selection, as OpenJPEG does; seen through the working memory of a 2,048 x 2,048
+    // three-component image under a 32 MiB limit, which fits one component and not three
+    {
+        Siz big;
+        big.x1 = big.y1 = 2048;
+        const Bytes cs = codestream(big, Cod{});
+        nj2k_decoder_limits_t tight{};
+        tight.max_memory = 32ull << 20;
+        Counting count;
+        nj2k_allocator_t hook = count.hook();
+        Options o;
+        o.allocator = &hook;
+        o.limits = &tight;
+        Read sel;
+        read_header(sel, cs, o);
+        CHECK(sel.ok && !nj2k_get_decoded_dimensions(sel.codec, sel.image) &&
+              nj2k_get_status(sel.codec) == NJ2K_E_LIMIT);
+        const NJ2K_UINT32 one[1] = {1}, twice[2] = {2, 2}, past_last[1] = {3};
+        CHECK(nj2k_set_decoded_components(sel.codec, 1, one, NJ2K_FALSE));
+        const std::size_t allocs = count.allocs;
+        for (int i = 0; i < 1000; ++i) {
+            const NJ2K_UINT32 pick[1] = {NJ2K_UINT32(i % 3)};
+            CHECK(nj2k_set_decoded_components(sel.codec, 1, pick, NJ2K_FALSE));
+        }
+        CHECK_MSG(count.allocs == allocs, "%zu allocations, %zu before", count.allocs, allocs);
+        CHECK(nj2k_set_decoded_components(sel.codec, 1, one, NJ2K_FALSE));
+        CHECK(!nj2k_set_decoded_components(sel.codec, 2, twice, NJ2K_FALSE));
+        CHECK(!nj2k_set_decoded_components(sel.codec, 1, past_last, NJ2K_FALSE));
+        CHECK_MSG(nj2k_get_decoded_dimensions(sel.codec, sel.image), "%s", sel.errors.c_str());
+        CHECK(nj2k_set_decoded_components(sel.codec, 0, nullptr, NJ2K_FALSE));
+        CHECK(!nj2k_get_decoded_dimensions(sel.codec, sel.image) && nj2k_get_status(sel.codec) == NJ2K_E_LIMIT);
+    }
     CHECK(!nj2k_read_header(nullptr, r.codec, &again));
     nj2k::Codec fresh = nj2k::make_decoder();
     CHECK(!nj2k_get_cstr_info(fresh.get()) && nj2k_get_status(fresh.get()) == NJ2K_E_STATE);
