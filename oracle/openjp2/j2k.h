@@ -350,6 +350,11 @@ typedef struct opj_decoding_param {
     OPJ_UINT32 m_layer;
     /** resource limits (opj_decoder_set_limits); every limit is 0 (none) unless set */
     opj_decoder_limits_t m_limits;
+    /** with a memory limit: the bytes of the tile parameters the main header made */
+    OPJ_UINT64 m_header_memory;
+    /** with a memory limit: the bytes counted against it, those of the tile
+     * parameters and of every tile decode since the decode started */
+    OPJ_UINT64 m_memory;
 }
 opj_decoding_param_t;
 
@@ -672,9 +677,10 @@ void opj_j2k_decoder_set_strict_mode(opj_j2k_t *j2k, OPJ_BOOL strict);
 Set the resource limits of the decoder (see opj_decoder_limits_t).
 @param j2k J2K decompressor handle
 @param p_limits the limits, copied
+@return OPJ_FALSE after the header was read (the limits are not changed)
 */
-void opj_j2k_decoder_set_limits(opj_j2k_t *j2k,
-                                const opj_decoder_limits_t *p_limits);
+OPJ_BOOL opj_j2k_decoder_set_limits(opj_j2k_t *j2k,
+                                    const opj_decoder_limits_t *p_limits);
 
 OPJ_BOOL opj_j2k_set_threads(opj_j2k_t *j2k, OPJ_UINT32 num_threads);
 

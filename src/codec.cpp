@@ -294,6 +294,11 @@ NJ2K_API NJ2K_BOOL NJ2K_CALLCONV nj2k_decoder_set_limits(nj2k_codec_t* p_codec, 
     if (!p_limits) {
         return fail(d, NJ2K_E_ARGUMENT, "nj2k_decoder_set_limits: no limits\n");
     }
+    if (d->state != Decoder::State::created) {
+        // the header's limits were checked (or skipped) when it was read: as the fork's 1a
+        // (6bad83c0), a later call changes nothing
+        return fail(d, NJ2K_E_STATE, "nj2k_decoder_set_limits must be called before nj2k_read_header.\n");
+    }
     d->limits = *p_limits;
     return finish(d, NJ2K_OK);
 }

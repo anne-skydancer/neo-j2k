@@ -11,21 +11,26 @@ audit B4: one definition), built into the tests.
 ## What it is
 
 - `oracle/PIN` names the fork (`anne-skydancer/openjpeg`), the commit and the patches (none today).
-- The pin: `dfcc4d1c`, the head of the fork's `vkstorm-2.5.4-hotfix` branch (stage 1a) as pushed on
-  2026-11-19, the source the `3p-openjpeg` hotfix branch packages (`4653ee5`). It is OpenJPEG 2.5.4 as
-  the package `v2.5.4-cpu-avx2.3` ships it (`3b1a6a96`) with six decoder fixes:
+- The pin: `03b3cddc`, the fork's `vkstorm-2.5.4-hotfix` branch as the published stage 1a package
+  `3p-openjpeg` `v2.5.4-cpu-avx2.4` builds it (its tag `2fe0ef2`), which the viewer ships. It is OpenJPEG
+  2.5.4 as the package `v2.5.4-cpu-avx2.3` ships it (`3b1a6a96`) with the 1a decoder fixes:
   - every complete codeword segment of a cut tile kept, a cut packet header an absent packet (`c51e47ed`:
     the fork audit's general truncation fix, which the oracle carried as a patch before);
   - a reduce factor checked before it applies (`14277522`);
-  - decoder limits, `opj_decoder_limits_init` and `opj_decoder_set_limits` (`f7a8f43d`): opt-in, and no
-    viewer code sets them yet, so the oracle decodes without them; tile parameters allocated only for
-    tiles that appear;
+  - decoder limits, `opj_decoder_limits_init` and `opj_decoder_set_limits` (`f7a8f43d`, refused after the
+    header since `6bad83c0`, a whole decode counted against the memory limit since `19c04f26`, a JP2
+    palette's components against the component limit since `ed7727f8`): opt-in, and no viewer code sets
+    them yet, so the oracle decodes without them; tile parameters allocated only for tiles that appear;
   - the packet walk stopped once a tile's data is exhausted (`5b0ac326`);
   - cut codestreams with EPH markers (`1666206e`);
   - the last bytes of a cut `Psot = 0` tile-part kept (plan W5), and 9/7 tiles that vanish at the decoded
-    resolution decoded (W9) (`dfcc4d1c`).
-- The pin follows the hotfix: when the branch moves on (its review round, the OD-3 fix), the pin moves
-  with it.
+    resolution decoded (W9) (`dfcc4d1c`);
+  - packed packet headers (PPM, PPT) kept in step with the packets of a cut tile: an absent packet
+    consumes its packed header, and a code-block that loses passes takes no more (`06efaa3c`, `5c869d3a`),
+    which fixed OD-1.
+- The pin follows the published hotfix: when the fork's package moves on (`v2.5.4-cpu-avx2.5`: the
+  windowed inverse wavelet of `opj_set_decode_area`, `f83f98e3`, and the encoder fixes for OD-4 and
+  OD-6, `e64db843` and `841b2de4`, on the branch but not packaged yet), the pin moves with it.
 - `oracle/openjp2/` holds the library sources the package compiles (no GPU back-ends, no tools), with
   OpenJPEG's own notices, and the fork's `LICENSE`. `tools/oracle_sync.py --verify` (CI, lint job)
   fetches the pinned commit, applies the patches and compares every file.
@@ -71,6 +76,22 @@ B3). Windows, MSVC 14.51.
 The 84 changed lines of `corpus/generated/oracle-reference.tsv` were re-recorded; nothing else changed,
 and the nightly table did not. Run the comparisons with `nj2k_diff compare` (`doc/testing.md`).
 
+## The move to the published 1a (2026-11-19)
+
+From `dfcc4d1c` to `03b3cddc` (the `v2.5.4-cpu-avx2.4` package), checked against the tables as they
+were, then re-recorded. Windows, MSVC 14.51.
+
+| Check | Result |
+|---|---|
+| Generated corpus, whole files (756 decodes, reduce 0-5, plain and viewer) | identical |
+| Generated corpus, every cut point up to 4 KB (1,028,088 decodes, 1,056 digests) | identical but the 22 digests of `packed_ppm_sop_eph_97.j2k`, where more cut points decode (1,062 of 1,453 at a step of 1, 81 of 112 at 13; before 636 to 650 and 49 to 50): the review round's packed-header fix (`06efaa3c`, `5c869d3a`) |
+| Nightly table, cut points from 4 to 16 KB (1,239,348 decodes) | identical |
+| Layer-boundary check (198 checks) | no mismatch; the five OD-1 cases decode as the whole file limited to their layers, so OD-1 left the known-defect list |
+| The rest of CTest (header facts, conformance, fuzz replays, known resource defects) | unchanged |
+
+The 22 changed lines of `corpus/generated/oracle-reference.tsv` were re-recorded; nothing else changed,
+and the nightly table did not.
+
 ## Known defects of the oracle
 
 Each has an input and a check that fails once the defect is gone, so the list follows the pin:
@@ -80,16 +101,14 @@ Each has an input and a check that fails once the defect is gone, so the list fo
 `fuzz/regressions`. They are numbered OD-n, apart from the owner's decisions D1-D15 and the fork
 audit's findings O1-O3.
 
-- **OD-1: a cut packed-header stream with EPH markers is refused.** `corpus/generated/packed_ppm_sop_eph_97.j2k`
-  (PPM, SOP, EPH, three layers) cut where layer 2 starts (484 bytes), or anywhere before layer 3, gives
-  "Expected EPH marker" and no image, in the shipped DLL and in the oracle (also at `dfcc4d1c`); the
-  whole file limited to one layer decodes. Likely cause, from reading `t2.c` (not instrumented): a
-  code-block's first inclusion is recorded (`numsegs`) only when its data is read, so once the data runs
-  out the later packed headers are parsed as if those code-blocks had never been included, and the parse
-  goes astray; EPH makes it fail, and without EPH it would go unnoticed. A build without the fix's
-  segment close-up fails the same way, so the defect is OpenJPEG's, not the fix's. It bears on 1a's
-  exhaustion exit (audit B3 asked for packed-header streams in its gate). neo-j2k keeps the complete
-  layers here (`doc/departures.md`, DP-4).
+- **OD-1 (fixed at the pin): a cut packed-header stream with EPH markers was refused.**
+  `corpus/generated/packed_ppm_sop_eph_97.j2k` (PPM, SOP, EPH, three layers) cut where layer 2 starts (484
+  bytes), or anywhere before layer 3, gave "Expected EPH marker" and no image, in the shipped DLL and in
+  the oracle up to `dfcc4d1c`: a code-block's first inclusion was recorded (`numsegs`) only when its data
+  was read, so once the data ran out the later packed headers were parsed as if those code-blocks had
+  never been included. The fork's review round keeps the packed headers in step (`06efaa3c`,
+  `5c869d3a`); since the pin `03b3cddc` the layers that arrived decode, and neo-j2k matches it (DP-4 is
+  closed).
 - **OD-2: a tile whose tile-parts hold no data bytes is refused.** With packed headers, a tile whose packets
   are all empty has no bytes after SOD; that is valid, but `opj_j2k_decode_tile` refuses a tile without
   data. Kept as `corpus/generated/edge_ppt_empty_tiles_97.j2k` (the reference records the refusal);

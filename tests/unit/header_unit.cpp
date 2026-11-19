@@ -359,6 +359,15 @@ void test_limits_api()
     CHECK(!nj2k_decoder_set_limits(codec.get(), nullptr) && nj2k_get_status(codec.get()) == NJ2K_E_ARGUMENT);
     CHECK(nj2k_decoder_set_limits(codec.get(), &s) && nj2k_get_status(codec.get()) == NJ2K_OK);
     CHECK(!nj2k_decoder_set_reduce_policy(codec.get(), 7) && nj2k_get_status(codec.get()) == NJ2K_E_ARGUMENT);
+    {
+        // after the header, limits are refused and change nothing, as the fork's (6bad83c0)
+        const auto files = corpus_files();
+        CHECK(!files.empty());
+        Read r;
+        read_header(r, files.front().second);
+        CHECK(r.ok);
+        CHECK(!nj2k_decoder_set_limits(r.codec, &s) && nj2k_get_status(r.codec) == NJ2K_E_STATE);
+    }
     CHECK(nj2k_get_status(nullptr) == NJ2K_E_ARGUMENT);
     // every status has its own text
     const nj2k_status_t all[] = {NJ2K_OK, NJ2K_TRUNCATED, NJ2K_E_NEED_DATA, NJ2K_E_ARGUMENT, NJ2K_E_NOT_JPEG2000,

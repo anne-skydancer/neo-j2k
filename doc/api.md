@@ -33,7 +33,7 @@
 ## Limits (owner decision D10)
 
 `nj2k_decoder_limits_init()` fills a profile, `nj2k_decoder_set_limits()` gives it to a decoder before
-`nj2k_read_header()`. Every limit is checked from the headers before what it bounds is allocated; a field
+`nj2k_read_header()` (after it the call changes nothing and fails with `NJ2K_E_STATE`, as the fork's 1a). Every limit is checked from the headers before what it bounds is allocated; a field
 of 0 is no limit, and a decoder without limits has none.
 
 | Profile | Tiles | Components | Layers | Side at the decoded level | Working memory |

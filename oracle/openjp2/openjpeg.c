@@ -182,16 +182,16 @@ const char* OPJ_CALLCONV opj_version(void)
 /* DECOMPRESSION FUNCTIONS*/
 
 /* Handlers with the exact type of their table entry (no call through a cast) */
-static void opj_j2k_decoder_set_limits_handler(void * p_codec,
+static OPJ_BOOL opj_j2k_decoder_set_limits_handler(void * p_codec,
         const opj_decoder_limits_t * p_limits)
 {
-    opj_j2k_decoder_set_limits((opj_j2k_t *)p_codec, p_limits);
+    return opj_j2k_decoder_set_limits((opj_j2k_t *)p_codec, p_limits);
 }
 
-static void opj_jp2_decoder_set_limits_handler(void * p_codec,
+static OPJ_BOOL opj_jp2_decoder_set_limits_handler(void * p_codec,
         const opj_decoder_limits_t * p_limits)
 {
-    opj_jp2_decoder_set_limits((opj_jp2_t *)p_codec, p_limits);
+    return opj_jp2_decoder_set_limits((opj_jp2_t *)p_codec, p_limits);
 }
 
 opj_codec_t* OPJ_CALLCONV opj_create_decompress(OPJ_CODEC_FORMAT p_format)
@@ -489,11 +489,13 @@ OPJ_BOOL OPJ_CALLCONV opj_decoder_limits_init(opj_decoder_limits_t *p_limits,
     case OPJ_DECODER_LIMITS_SL_TEXTURE:
         /* The caps follow the viewer's own rules (at most 8 components, 2048 pixels
          * per side at the decoded resolution, 256 MiB for a raw image) and bound what
-         * a hostile header can make the decoder allocate: about 6 MB of tile
+         * a hostile header can make the decoder allocate and do: about 6 MB of tile
          * parameters for 1,024 tiles, 128 MiB of samples (2048 x 2048 x 8 x 4 bytes)
-         * at the decoded resolution, and 256 MiB for the decode of one tile; 64
-         * layers bound the packets a tile can declare. They are far above the
-         * textures Second Life serves (one tile, up to 5 components, 8 layers). */
+         * at the decoded resolution, and 256 MiB for all the tiles of one decode,
+         * which also bounds its work; 64 layers bound the packets a tile can
+         * declare. They are far above the textures Second Life serves (one tile, up
+         * to 5 components, 8 layers), and 1,024 tiles keep tiled local files of up
+         * to 16,384 pixels per side (512 x 512 tiles) decodable. */
         p_limits->max_tiles = 1024;
         p_limits->max_components = 8;
         p_limits->max_layers = 64;
@@ -517,8 +519,12 @@ OPJ_BOOL OPJ_CALLCONV opj_decoder_set_limits(opj_codec_t *p_codec,
             return OPJ_FALSE;
         }
 
-        l_codec->m_codec_data.m_decompression.opj_decoder_set_limits(
-            l_codec->m_codec, p_limits);
+        if (!l_codec->m_codec_data.m_decompression.opj_decoder_set_limits(
+                    l_codec->m_codec, p_limits)) {
+            opj_event_msg(&(l_codec->m_event_mgr), EVT_ERROR,
+                          "opj_decoder_set_limits must be called before opj_read_header.\n");
+            return OPJ_FALSE;
+        }
         return OPJ_TRUE;
     }
     return OPJ_FALSE;

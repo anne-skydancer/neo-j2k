@@ -620,18 +620,19 @@ typedef struct opj_dparameters {
 #define OPJ_HAVE_DECODER_LIMITS 1
 
 /**
- * Resource limits of a decoder, set with opj_decoder_set_limits().
+ * Resource limits of a decoder, set with opj_decoder_set_limits() before opj_read_header().
  *
  * The decoder checks each limit from the codestream's headers before it allocates what the
  * limit bounds, and refuses a codestream that exceeds one: opj_read_header() or opj_decode()
- * then fails with an error message. A limit of 0 means no limit, and a decoder that is given
- * no limits behaves as OpenJPEG always did. Fill the structure with opj_decoder_limits_init()
- * and change single fields afterwards if needed.
+ * then fails with an error message. A limit of 0 means no limit; with every limit at 0, the
+ * default of every decoder, the limits change nothing. Fill the structure with
+ * opj_decoder_limits_init() and change single fields afterwards if needed.
  * */
 typedef struct opj_decoder_limits {
     /** Tiles of the image (SIZ marker), checked when the main header is read. */
     OPJ_UINT32 max_tiles;
-    /** Components of the image (SIZ marker), checked when the main header is read. */
+    /** Components of the image (SIZ marker), checked when the main header is read, and the
+     * components a JP2 palette (pclr box) would expand the image to. */
     OPJ_UINT32 max_components;
     /** Quality layers (COD marker of the main header and of each tile), checked as each
      * COD marker is read. */
@@ -639,11 +640,15 @@ typedef struct opj_decoder_limits {
     /** Width and height of every component at the decoded resolution, after the reduce
      * factor, checked when opj_decode() or opj_get_decoded_tile() starts. */
     OPJ_UINT32 max_decoded_side;
-    /** Bytes the decoder may allocate, checked against two needs computed from the headers,
-     * each on its own: the tile parameters of the whole codestream (when the main header is
-     * read), and the decode of one tile (code-block and precinct structures of every
-     * resolution, samples at the decoded resolution, packet iterator table), checked before
-     * each of those allocations. */
+    /** Bytes that one decode (an opj_decode() or opj_get_decoded_tile() call, or the tiles
+     * read with opj_read_tile_header() after opj_read_header()) allocates for what the
+     * headers determine, summed over its tiles: the tile parameters of the main header and,
+     * for each tile before anything is allocated for it, its resolution, precinct and
+     * code-block structures of every resolution, tag trees, samples at the decoded
+     * resolution and packet iterator table. Not counted: what the compressed data adds as it
+     * is read (the data itself, more code-block segments, data chunks); the output image of
+     * a multi-tile decode, the buffers of a decode area and a JP2 palette's components (all
+     * bounded by max_decoded_side and max_components); Tier-1 and wavelet work buffers. */
     OPJ_UINT64 max_memory;
 } opj_decoder_limits_t;
 
@@ -651,7 +656,7 @@ typedef struct opj_decoder_limits {
 #define OPJ_DECODER_LIMITS_NONE        0
 /**
  * Second Life textures: 1,024 tiles, 8 components, 64 quality layers, 2,048 pixels per
- * side at the decoded resolution and 256 MiB of working memory.
+ * side at the decoded resolution and 256 MiB for one decode.
  */
 #define OPJ_DECODER_LIMITS_SL_TEXTURE  1
 
@@ -1397,7 +1402,10 @@ OPJ_API OPJ_BOOL OPJ_CALLCONV opj_setup_decoder(opj_codec_t *p_codec,
  * will be disabled.
  * If strict decoding is disabled, the decoder will decode partial
  * bitstreams as much as possible without erroring, and the TPSOT fixing logic
- * will be enabled.
+ * will be enabled. A packet whose header the data cuts, or whose EPH marker it
+ * leaves out, then counts as absent and the decode goes on, so a hostile
+ * codestream can make it work longer than strict decoding, which fails there:
+ * bound that work with opj_decoder_set_limits().
  *
  * @param p_codec       decompressor handler
  * @param strict        OPJ_TRUE to enable strict decoding, OPJ_FALSE to disable
@@ -1415,14 +1423,17 @@ OPJ_API OPJ_BOOL OPJ_CALLCONV opj_decoder_set_strict_mode(opj_codec_t *p_codec,
  * @param profile       OPJ_DECODER_LIMITS_NONE or OPJ_DECODER_LIMITS_SL_TEXTURE.
  *
  * @return OPJ_TRUE if the profile is known. With an unknown profile the limits are set to
- *         OPJ_DECODER_LIMITS_NONE and OPJ_FALSE is returned.
+ *         OPJ_DECODER_LIMITS_NONE and OPJ_FALSE is returned, so a caller that needs the
+ *         limits must check the result.
  */
 OPJ_API OPJ_BOOL OPJ_CALLCONV opj_decoder_limits_init(
     opj_decoder_limits_t *p_limits, OPJ_UINT32 profile);
 
 /**
  * Sets the resource limits of a decoder (see opj_decoder_limits_t).
- * Call it after opj_setup_decoder() and before opj_read_header(). The limits are copied.
+ * Call it after opj_setup_decoder() and before opj_read_header(): limits checked at the
+ * main header would come too late afterwards, so a call after opj_read_header() changes
+ * nothing and fails. The limits are copied.
  *
  * @param p_codec       decompressor handler
  * @param p_limits      the limits

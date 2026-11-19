@@ -661,30 +661,30 @@ whole	packed_ppm_sop_eph_97.j2k	viewer	2	1454	1	e5fc219397a0478f
 whole	packed_ppm_sop_eph_97.j2k	viewer	3	1454	1	0e487730b9a97684
 whole	packed_ppm_sop_eph_97.j2k	viewer	4	1454	1	9ef5cc77ffa84fcb
 whole	packed_ppm_sop_eph_97.j2k	viewer	5	1454	1	9ef5cc77ffa84fcb
-cuts	packed_ppm_sop_eph_97.j2k	plain	0	1	1	1453	636	cfae519ddf1f9e24
-cuts	packed_ppm_sop_eph_97.j2k	plain	0	1	13	112	49	df1bbfebe1bb4f12
-cuts	packed_ppm_sop_eph_97.j2k	plain	1	1	1	1453	636	d3c1a921bd81c787
-cuts	packed_ppm_sop_eph_97.j2k	plain	1	1	13	112	49	3fb49d8a350f3e2d
-cuts	packed_ppm_sop_eph_97.j2k	plain	2	1	1	1453	650	92a9d7deaa43cf3d
-cuts	packed_ppm_sop_eph_97.j2k	plain	2	1	13	112	50	0d1f331500b60c1a
-cuts	packed_ppm_sop_eph_97.j2k	plain	3	1	1	1453	650	375ec45510b76986
-cuts	packed_ppm_sop_eph_97.j2k	plain	3	1	13	112	50	25c49fc8ccd667f5
-cuts	packed_ppm_sop_eph_97.j2k	plain	4	1	1	1453	650	f62ba52f138d163a
-cuts	packed_ppm_sop_eph_97.j2k	plain	4	1	13	112	50	c7d9ac9cbce11b4e
+cuts	packed_ppm_sop_eph_97.j2k	plain	0	1	1	1453	1062	dfe55e7119bc78b1
+cuts	packed_ppm_sop_eph_97.j2k	plain	0	1	13	112	81	4dc1b525122693cc
+cuts	packed_ppm_sop_eph_97.j2k	plain	1	1	1	1453	1062	2f3e9e82f7b81b88
+cuts	packed_ppm_sop_eph_97.j2k	plain	1	1	13	112	81	6e13a02f83e75dfd
+cuts	packed_ppm_sop_eph_97.j2k	plain	2	1	1	1453	1062	1fffa2d8b4fc979b
+cuts	packed_ppm_sop_eph_97.j2k	plain	2	1	13	112	81	d896d74959fa3599
+cuts	packed_ppm_sop_eph_97.j2k	plain	3	1	1	1453	1062	c9eaefa975fe0efd
+cuts	packed_ppm_sop_eph_97.j2k	plain	3	1	13	112	81	3bd351fd1a19412a
+cuts	packed_ppm_sop_eph_97.j2k	plain	4	1	1	1453	1062	46d9dd68cf98162d
+cuts	packed_ppm_sop_eph_97.j2k	plain	4	1	13	112	81	17b6266400fd1803
 cuts	packed_ppm_sop_eph_97.j2k	plain	5	1	1	1453	0	61064b68c749eae2
 cuts	packed_ppm_sop_eph_97.j2k	plain	5	1	13	112	0	fd6f501a0cff02fe
-cuts	packed_ppm_sop_eph_97.j2k	viewer	0	1	1	1453	636	0e26f9414fb96230
-cuts	packed_ppm_sop_eph_97.j2k	viewer	0	1	13	112	49	049dd802016ab01c
-cuts	packed_ppm_sop_eph_97.j2k	viewer	1	1	1	1453	636	344b8b4f4a7bf1e4
-cuts	packed_ppm_sop_eph_97.j2k	viewer	1	1	13	112	49	b02a1c247b12a9f7
-cuts	packed_ppm_sop_eph_97.j2k	viewer	2	1	1	1453	650	aef07ea38107ab25
-cuts	packed_ppm_sop_eph_97.j2k	viewer	2	1	13	112	50	581b0a14a17395fc
-cuts	packed_ppm_sop_eph_97.j2k	viewer	3	1	1	1453	650	9763c7b3d8a7fa2b
-cuts	packed_ppm_sop_eph_97.j2k	viewer	3	1	13	112	50	1d57a3b7b6384721
-cuts	packed_ppm_sop_eph_97.j2k	viewer	4	1	1	1453	650	ee4f7864b27ae2e7
-cuts	packed_ppm_sop_eph_97.j2k	viewer	4	1	13	112	50	9b4faf118b1f348b
-cuts	packed_ppm_sop_eph_97.j2k	viewer	5	1	1	1453	650	ee4f7864b27ae2e7
-cuts	packed_ppm_sop_eph_97.j2k	viewer	5	1	13	112	50	9b4faf118b1f348b
+cuts	packed_ppm_sop_eph_97.j2k	viewer	0	1	1	1453	1062	df8e55795cd3cc85
+cuts	packed_ppm_sop_eph_97.j2k	viewer	0	1	13	112	81	aa97bbb3b6d8d141
+cuts	packed_ppm_sop_eph_97.j2k	viewer	1	1	1	1453	1062	f39dcd46089d1082
+cuts	packed_ppm_sop_eph_97.j2k	viewer	1	1	13	112	81	877078af9c5ee4a7
+cuts	packed_ppm_sop_eph_97.j2k	viewer	2	1	1	1453	1062	124cd7327c97a894
+cuts	packed_ppm_sop_eph_97.j2k	viewer	2	1	13	112	81	67ca8ab3b0d1623c
+cuts	packed_ppm_sop_eph_97.j2k	viewer	3	1	1	1453	1062	1ed7d18e12ae9a11
+cuts	packed_ppm_sop_eph_97.j2k	viewer	3	1	13	112	81	400fc2704186607e
+cuts	packed_ppm_sop_eph_97.j2k	viewer	4	1	1	1453	1062	d105e9f7ca2efd00
+cuts	packed_ppm_sop_eph_97.j2k	viewer	4	1	13	112	81	e6c9f9f2a12577d3
+cuts	packed_ppm_sop_eph_97.j2k	viewer	5	1	1	1453	1062	d105e9f7ca2efd00
+cuts	packed_ppm_sop_eph_97.j2k	viewer	5	1	13	112	81	e6c9f9f2a12577d3
 whole	packed_ppm_tiles_97.j2k	plain	0	2357	1	60e24ddd7fd4b586
 whole	packed_ppm_tiles_97.j2k	plain	1	2357	1	0aa134ffce625956
 whole	packed_ppm_tiles_97.j2k	plain	2	2357	1	990e9db258c011ab

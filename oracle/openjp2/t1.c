@@ -1761,11 +1761,15 @@ static void opj_t1_clbl_decode_processor(void* user_data, opj_tls_t* tls)
 
 #ifdef OPJ_CAPTURE_T1_REFERENCES
     if (!opj_capture_t1(cblk, band, tilec, tccp, resno, datap,
-                       cblk_w, cblk_h, &t1->mqc, job->check_pterm,
-                       job->p_manager_mutex)) {
-        if (job->p_manager_mutex) { opj_mutex_lock(job->p_manager_mutex); }
+                        cblk_w, cblk_h, &t1->mqc, job->check_pterm,
+                        job->p_manager_mutex)) {
+        if (job->p_manager_mutex) {
+            opj_mutex_lock(job->p_manager_mutex);
+        }
         opj_event_msg(job->p_manager, EVT_ERROR, "Tier-1 reference capture failed\n");
-        if (job->p_manager_mutex) { opj_mutex_unlock(job->p_manager_mutex); }
+        if (job->p_manager_mutex) {
+            opj_mutex_unlock(job->p_manager_mutex);
+        }
         *(job->pret) = OPJ_FALSE;
         opj_free(job);
         return;
@@ -2059,11 +2063,6 @@ static OPJ_BOOL opj_t1_decode_cblk(opj_t1_t *t1,
     opj_mqc_setstate(mqc, T1_CTXNO_UNI, 0, 46);
     opj_mqc_setstate(mqc, T1_CTXNO_AGG, 0, 3);
     opj_mqc_setstate(mqc, T1_CTXNO_ZC, 0, 4);
-
-    if (cblk->corrupted) {
-        assert(cblk->numchunks == 0);
-        return OPJ_TRUE;
-    }
 
     /* Even if we have a single chunk, in multi-threaded decoding */
     /* the insertion of our synthetic marker might potentially override */
