@@ -15,7 +15,8 @@
 // - the oracle reads the header too, behind the header filter only (applied to the codestream of a
 //   JP2 file), and its read and neo-j2k's must agree: the outcome, the image and the codestream
 //   information (header_difference), at the input's reduce factor. A difference aborts unless the
-//   main header shows a departure doc/departures.md lists for it (DP-5 to DP-8).
+//   main header, or a JP2 file's boxes, show a departure doc/departures.md lists for it (DP-5 to
+//   DP-8, DP-11).
 #include <neoj2k/neoj2k.h>
 
 #include <cstddef>
@@ -269,6 +270,47 @@ std::span<const std::uint8_t> jp2_codestream(std::span<const std::uint8_t> file)
     return {};
 }
 
+// The departure (DP-11) a JP2 file's boxes show, or null. A box OpenJPEG skips sets its state to
+// JP2_STATE_UNKNOWN (0x7FFFFFFF), which claims every box read: after it OpenJPEG takes a JP2 header
+// box with no file type box before it, and reads image boxes that come before the JP2 header box as
+// if they were in it. Only an image box outside the JP2 header box, before it, brings that about in
+// a file that both readers otherwise take alike (an unknown box right after the signature is refused
+// by both), so such a box explains a difference; walked as jp2_codestream walks the boxes.
+const char* jp2_departure(std::span<const std::uint8_t> file)
+{
+    std::size_t at = 0;
+    while (file.size() - at >= 8) {
+        std::uint64_t length = be32(file, at), header = 8;
+        const std::uint32_t type = be32(file, at + 4);
+        if (length == 1) {
+            if (file.size() - at < 16 || be32(file, at + 8) != 0) {
+                break;
+            }
+            length = be32(file, at + 12);
+            header = 16;
+        }
+        switch (type) {
+        case 0x6A703268:  // jp2h
+        case 0x6A703263:  // jp2c
+            return nullptr;
+        case 0x69686472:  // ihdr
+        case 0x636F6C72:  // colr
+        case 0x62706363:  // bpcc
+        case 0x70636C72:  // pclr
+        case 0x636D6170:  // cmap
+        case 0x63646566:  // cdef
+            return "DP-11: an image box before the JP2 header box";
+        default:
+            break;
+        }
+        if (length < header || length > file.size() - at) {
+            break;
+        }
+        at += std::size_t(length);
+    }
+    return nullptr;
+}
+
 // OpenJPEG's markers of a main header (j2k.c, the handlers whose states include the main header's),
 // SIZ apart: it reads them, scans past any other marker for the next one it knows, and refuses
 // PLT, PPT, SOP and a second SIZ there.
@@ -428,7 +470,8 @@ void compare_with_oracle(const std::uint8_t* data, std::size_t size, std::span<c
     rq.jp2 = jp2;
     const nj2k::test::HeaderFacts a = oracle->header(rq), b = neo->header(rq);
     const std::string diff = nj2k::test::header_difference(a, b);
-    if (diff.empty() || header_departure(codestream, reduce)) {
+    if (diff.empty() || header_departure(codestream, reduce) ||
+        (jp2 && jp2_departure(std::span<const std::uint8_t>(data, size)))) {
         return;
     }
     std::fprintf(stderr,

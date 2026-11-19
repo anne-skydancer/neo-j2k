@@ -628,6 +628,41 @@ void test_jp2()
         d::Jp2Header* jp2 = nullptr;
         CHECK(d::read_jp2_boxes(src, arena, msg, jp2) == NJ2K_OK && jp2 && jp2->numcomps == 3 && jp2->bpcc == nullptr);
     }
+    // DP-11: a box OpenJPEG skips sets its state to JP2_STATE_UNKNOWN (0x7FFFFFFF), which claims the
+    // file type and JP2 header boxes read (fuzz regression header-jp2-image-box-before-ftyp). An
+    // image box between the signature and a JP2 header box, with no file type box: OpenJPEG reads
+    // the file, neo-j2k refuses it (the file type box must be second). A file type box, an unknown
+    // box, then a greyscale colour box before the JP2 header box (whose colour is sRGB): OpenJPEG
+    // takes the greyscale one, neo-j2k ignores it as outside the JP2 header box.
+    {
+        Writer jp2h;
+        jp2h.u32(8 + 14).u32(0x69686472).u32(32).u32(32).u16(3).u8(7).u8(7).u8(0).u8(0);
+        jp2h.u32(8 + 7).u32(0x636F6C72).u8(1).u8(0).u8(0).u32(16);
+        Writer no_ftyp;
+        no_ftyp.u32(12).u32(0x6A502020).u32(0x0D0A870A).u32(20).u32(0x62706363).u32(0x6A703220).u32(0).u32(0x6A703220);
+        no_ftyp.u32(8 + std::uint32_t(jp2h.b.size())).u32(0x6A703268).bytes(jp2h.b);
+        no_ftyp.u32(8 + std::uint32_t(data->size())).u32(0x6A703263).bytes(*data);
+        Writer grey;
+        grey.u32(12).u32(0x6A502020).u32(0x0D0A870A).u32(20).u32(0x66747970).u32(0x6A703220).u32(0).u32(0x6A703220);
+        grey.u32(8 + 4).u32(0x786D6C20).u32(0x3C782F3E);  // 'xml ', "<x/>"
+        grey.u32(8 + 7).u32(0x636F6C72).u8(1).u8(0).u8(0).u32(17);
+        grey.u32(8 + std::uint32_t(jp2h.b.size())).u32(0x6A703268).bytes(jp2h.b);
+        grey.u32(8 + std::uint32_t(data->size())).u32(0x6A703263).bytes(*data);
+        Request rq;
+        rq.jp2 = true;
+        rq.data = no_ftyp.b.data();
+        rq.size = no_ftyp.b.size();
+        const HeaderFacts a1 = oracle->header(rq), b1 = neo->header(rq);
+        CHECK_MSG(a1.ok && !b1.ok, "no file type box: oracle %d, neo-j2k %d", int(a1.ok), int(b1.ok));
+        Read r;
+        read_header(r, no_ftyp.b, o);
+        CHECK(!r.ok && r.status == NJ2K_E_HEADER);
+        rq.data = grey.b.data();
+        rq.size = grey.b.size();
+        const HeaderFacts a2 = oracle->header(rq), b2 = neo->header(rq);
+        CHECK_MSG(a2.ok && b2.ok && a2.color_space == NJ2K_CLRSPC_GRAY && b2.color_space == NJ2K_CLRSPC_SRGB,
+                  "colour box before the JP2 header box: oracle %d, neo-j2k %d", a2.color_space, b2.color_space);
+    }
 }
 
 // Components of different precision and sign: a codestream may have them without a word, as in

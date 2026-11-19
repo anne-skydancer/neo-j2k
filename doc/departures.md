@@ -6,8 +6,9 @@
 neo-j2k follows OpenJPEG 2.5.4 on every valid complete stream, and the standard where OpenJPEG is wrong
 on cut or invalid input (plan T5). Each departure is listed here with the test that holds it. There is no
 compatibility switch. The header fuzz target compares every header read with the oracle's and stops on a
-difference that the main header does not explain by one of DP-5 to DP-8. Departures are numbered DP-n and the oracle's known defects OD-n (`doc/oracle.md`),
-apart from the owner's decisions D1-D15 and the fork audit's findings O1-O3.
+difference that the main header, or a JP2 file's boxes, do not explain by one of DP-5 to DP-8 and DP-11.
+Departures are numbered DP-n and the oracle's known defects OD-n (`doc/oracle.md`), apart from the
+owner's decisions D1-D15 and the fork audit's findings O1-O3.
 
 | # | Case | OpenJPEG 2.5.4 | neo-j2k | Test |
 |---|---|---|---|---|
@@ -21,3 +22,4 @@ apart from the owner's decisions D1-D15 and the fork audit's findings O1-O3.
 | DP-8 | Values OpenJPEG lets through | an unknown progression order (an error message, then the decode goes on with no progression); a reserved quantization style (read as expounded) | refused (`NJ2K_E_HEADER`) | `header_unit` (`test_header_rules`, with the oracle reading both) |
 | DP-9 | `nj2k_get_cstr_info`'s precinct sizes | `opj_get_cstr_info` copies `numresolutions` bytes of the per-resolution arrays, not elements, so only the first quarter of the resolutions get their sizes | every resolution's precinct size; the other fields as OpenJPEG gives them (`compno` 0, the step sizes of 1 or 3 x resolutions - 2 bands) | `header_facts` compares the bytes OpenJPEG fills |
 | DP-10 | A stream whose read function returns 0 | called again for ever | the stream ends (`NJ2K_E_NEED_DATA` for a header) | `header_unit` (`test_api_rules`) |
+| DP-11 | JP2 boxes after a box the reader skips (an unknown box, or an image box outside the JP2 header box) | the skip sets its state to `JP2_STATE_UNKNOWN`, which is 0x7FFFFFFF and so claims every box read: it then takes a JP2 header box with no file type box before it, reads image boxes that come before the JP2 header box as if they were in it (their image header or colour counts, the JP2 header box's own are ignored), and refuses a later file type box | the file type box must be the second box, and an image box outside the JP2 header box is ignored before it and read after it (as OpenJPEG reads one after it), as ISO 15444-1 I.4 and I.5.3 have the order | `header_unit` (`test_jp2`: an image box where the file type box belongs, read by the oracle; a colour box before the JP2 header box, which gives the oracle its colour space); `fuzz/regressions/header-jp2-image-box-before-ftyp.bin` |
