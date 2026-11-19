@@ -55,8 +55,12 @@ case starts to pass, so the list follows the pin.
   recorded (`numsegs`) only when its data is read, so once the data runs out the later packed headers are
   parsed as if those code-blocks had never been included, and the parse goes astray; EPH makes it fail,
   and without EPH it would go unnoticed. A build without the fix's segment close-up fails the same way, so
-  the defect is OpenJPEG's, not the fix's. It bears on stage 1a's exhaustion exit (audit B3 asked for packed-header streams in its gate).
-  neo-j2k keeps the complete layers here (`doc/departures.md`, D-4).
+  the defect is OpenJPEG's, not the fix's. It bears on stage 1a's exhaustion exit (audit B3 asked for
+  packed-header streams in its gate). neo-j2k keeps the complete layers here (`doc/departures.md`, D-4).
+- **O-2: a tile whose tile-parts hold no data bytes is refused.** With packed headers, a tile whose packets
+  are all empty has no bytes after SOD; that is valid, but `opj_j2k_decode_tile` refuses a tile without
+  data. Kept as `corpus/generated/edge_ppt_empty_tiles_97.j2k` (the reference records the refusal);
+  candidate departure D-3.
 - **O-3: a tile-part's declared length is allocated before it is read.** In non-strict mode
   `opj_j2k_read_sod` (`j2k.c:5016-5046`) only warns when `Psot` exceeds what is left of the stream and then
   allocates all of it. `sl_32_rgb_97.j2k` (782 bytes) with `Psot` set to `0xFFFFFF00` decodes normally and
@@ -74,7 +78,3 @@ case starts to pass, so the list follows the pin.
   (8-bit, no mode switches) do not reach it. The round-trip target skips TERMALL above 8 bits meanwhile;
   the input is `fuzz/regressions/roundtrip-o4-mqc-termall-16bit.bin`; neo-j2k's encoder bounds its MQ
   output (stage 6a).
-- **O-2: a tile whose tile-parts hold no data bytes is refused.** With packed headers, a tile whose packets
-  are all empty has no bytes after SOD; that is valid, but `opj_j2k_decode_tile` refuses a tile without
-  data. Kept as `corpus/generated/edge_ppt_empty_tiles_97.j2k` (the reference records the refusal);
-  candidate departure D-3.
