@@ -164,15 +164,27 @@ if(NJ2K_SANITIZE)
     message(STATUS "neo-j2k: AddressSanitizer runtime ${NJ2K_ASAN_RUNTIME}")
     # cl.exe's objects name their ASan libraries for the linker; clang-cl's do not, its driver adds
     # them, and MSBuild's ClangCL toolset (as Ninja with clang-cl) links without the driver. So they
-    # come here, as clang-cl -### shows them for /MD and for /MT.
+    # come here, as clang-cl -### shows them for /MD and for /MT. The names are LLVM 20's and later's
+    # (the runtime thunks): the configure stops when this clang-cl's runtime folder lacks one, rather
+    # than leave the link to fail on undefined __asan_* symbols. CI builds the /MD case
+    # (windows-clang-cl-asan); the /MT one is checked here only.
     if(NJ2K_CLANG_CL)
       if(NJ2K_MSVC_STATIC_RUNTIME)
-        add_link_options("${_nj2k_asan_dir}/clang_rt.asan_dynamic-x86_64.lib"
-                         "/wholearchive:${_nj2k_asan_dir}/clang_rt.asan_static_runtime_thunk-x86_64.lib")
+        set(_nj2k_asan_thunk "clang_rt.asan_static_runtime_thunk-x86_64.lib")
+        set(_nj2k_asan_include)
       else()
-        add_link_options("${_nj2k_asan_dir}/clang_rt.asan_dynamic-x86_64.lib" /include:__asan_seh_interceptor
-                         "/wholearchive:${_nj2k_asan_dir}/clang_rt.asan_dynamic_runtime_thunk-x86_64.lib")
+        set(_nj2k_asan_thunk "clang_rt.asan_dynamic_runtime_thunk-x86_64.lib")
+        set(_nj2k_asan_include /include:__asan_seh_interceptor)
       endif()
+      foreach(_nj2k_lib IN ITEMS clang_rt.asan_dynamic-x86_64.lib ${_nj2k_asan_thunk})
+        if(NOT EXISTS "${_nj2k_asan_dir}/${_nj2k_lib}")
+          message(FATAL_ERROR "neo-j2k: the AddressSanitizer library ${_nj2k_lib} is not in '${_nj2k_asan_dir}', "
+                              "where ${CMAKE_CXX_COMPILER} keeps its runtime; this build links the runtime as "
+                              "clang-cl 20 and later name it")
+        endif()
+      endforeach()
+      add_link_options("${_nj2k_asan_dir}/clang_rt.asan_dynamic-x86_64.lib" ${_nj2k_asan_include}
+                       "/wholearchive:${_nj2k_asan_dir}/${_nj2k_asan_thunk}")
     endif()
   endif()
 endif()

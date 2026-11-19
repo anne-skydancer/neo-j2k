@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: BSD-2-Clause
 # Copyright (c) 2026, Anne Skydancer (neo-j2k)
 #
-# Build and test on every pull request and on main: Windows (MSVC, clang-cl, MSVC with
+# Build and test on every pull request and on main: Windows (MSVC, clang-cl, MSVC and clang-cl with
 # AddressSanitizer), Linux (GCC 15, Clang, the scalar build, Clang with AddressSanitizer and
 # UndefinedBehaviorSanitizer) and Ubuntu 24.04 (GCC 14). Every job runs the oracle against its
 # reference tables, so the oracle's output is checked to be the same on every compiler and
@@ -64,7 +64,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        preset: [windows-msvc, windows-clang-cl, windows-msvc-asan]
+        preset: [windows-msvc, windows-clang-cl, windows-msvc-asan, windows-clang-cl-asan]
     env:
       NJ2K_TESTDATA: ${{ github.workspace }}/.testdata/openjpeg-data
     steps:
@@ -79,8 +79,9 @@ jobs:
       - name: Conformance data (fetch)
         shell: bash
         run: python -I tools/fetch_testdata.py
-      # windows-msvc-asan: the build puts the AddressSanitizer runtime beside every program
-      # (cmake/NJ2KFlags.cmake), so nothing here adds it to PATH and the tests prove the copies
+      # windows-msvc-asan, windows-clang-cl-asan: the build puts the AddressSanitizer runtime beside
+      # every program (cmake/NJ2KFlags.cmake), so nothing here adds it to PATH and the tests prove the
+      # copies; the clang-cl one also proves the runtime libraries its link names
       - name: Configure
         run: cmake --preset ${{ matrix.preset }}
       - name: Build
