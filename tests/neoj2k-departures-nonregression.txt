@@ -1,0 +1,9 @@
+# SPDX-License-Identifier: BSD-2-Clause
+# Copyright (c) 2026, Anne Skydancer (neo-j2k)
+#
+# Files of OpenJPEG's non-regression data (tools/fetch_testdata.py --all) where neo-j2k departs from
+# the oracle on purpose (doc/departures.md): <file> <departure>. nj2k_diff compare leaves them out
+# and fails when a listed file is not among its inputs.
+4241ac039aba57e6a9c948d519d94216_asan_heap-oob_14650f2_7469_602.jp2 DP-6: fewer quantization step sizes than sub-bands, refused
+dwt_interleave_h.gsr105.jp2 DP-6: fewer quantization step sizes than sub-bands, refused
+v4dwt_interleave_h.gsr105.j2k DP-6: fewer quantization step sizes than sub-bands, refused

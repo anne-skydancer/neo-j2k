@@ -4,7 +4,8 @@
 // nj2k_diff: the differential, cut-point and reference runner.
 //
 //   compare  --a SPEC --b SPEC --files LIST [--mode M] [--reduce R] [--kinds K] [--reduce-policy P]
-//            [--cut-max N] [--cut-from N] [--cut-step N] [--csv FILE] [--allow-diff]
+//            [--cut-max N] [--cut-from N] [--cut-step N] [--csv FILE] [--allow-diff] [--jp2]
+//            [--departures FILE]
 //            Decodes every request with both backends and compares outcome (decoded or refused),
 //            geometry and every sample. Kinds: full (whole file), budget (the viewer's byte budget at
 //            the reduce level, when it cuts), first (600 bytes at reduce 5), cuts (every prefix of
@@ -15,7 +16,11 @@
 //            per file, reduce level, mode and step over its cut points (files of cut-min < size <=
 //            cut-max bytes; the prefixes from --cut-from to the file size, every step bytes).
 //   verify   --a SPEC --ref FILE --root DIR [--only FILE] [--cut-steps S] [--no-whole] [--no-cuts]
-//            Decodes the lines of a reference table again and compares.
+//            [--departures FILE]
+//            Decodes the lines of a reference table again and compares. --departures lists files
+//            (one per line, "<file> <departure>") where the backend departs from the oracle on
+//            purpose (doc/departures.md): their lines are not compared, and each listed file must
+//            have lines in the table, so the list cannot go stale.
 //   decode   --a SPEC --files LIST [--bytes N] [--reduce R] [--layers L] [--mode M]
 //            Describes single requests.
 //   layers   --a SPEC --files LIST [--reduce R] [--ref KNOWN]
@@ -70,6 +75,8 @@ struct Args {
     std::string only;
     int layers = 0;
     bool allow_diff = false, whole = true, cuts = true, cut_steps_given = false;
+    bool jp2 = false;  // compare: JP2 and JPH files too, read by the JP2 codec
+    std::string departures;  // verify, compare: files where the backend departs from the oracle on purpose
 };
 
 [[noreturn]] void usage(const char* msg)
@@ -116,6 +123,8 @@ Args parse(int argc, char** argv)
         else if (k == "--bytes") a.bytes = std::stoul(next());
         else if (k == "--layers") a.layers = std::stoi(next());
         else if (k == "--no-whole") a.whole = false;
+        else if (k == "--jp2") a.jp2 = true;
+        else if (k == "--departures") a.departures = next();
         else if (k == "--no-cuts") a.cuts = false;
         else if (k == "--cut-modes") {
             for (const auto& m : split(next(), ',')) {
@@ -159,10 +168,10 @@ struct Input {
     int grid_w = 0, grid_h = 0;  // the size the viewer stores and budgets with: the tile grid's
 };
 
-std::vector<Input> load_inputs(const std::string& files, const std::string& root)
+std::vector<Input> load_inputs(const std::string& files, const std::string& root, bool with_jp2 = false)
 {
     std::vector<Input> out;
-    for (const auto& path : expand_inputs(files)) {
+    for (const auto& path : expand_inputs(files, with_jp2)) {
         auto data = read_file(path);
         if (!data) {
             std::fprintf(stderr, "nj2k_diff: cannot read %s\n", path.c_str());
@@ -271,21 +280,53 @@ bool reduce_wanted(const Input& in, int r, const Args& a)
     return a.reduce_policy == "all" || r < std::max(in.resolutions, 1);
 }
 
+// Files where a backend departs from the oracle on purpose: "<file> <departure>" per line.
+std::map<std::string, std::string> read_departures(const std::string& path)
+{
+    std::map<std::string, std::string> out;
+    if (path.empty()) {
+        return out;
+    }
+    std::ifstream in(path);
+    if (!in) {
+        usage(("cannot read " + path).c_str());
+    }
+    std::string line;
+    while (std::getline(in, line)) {
+        if (!line.empty() && line.back() == '\r') {
+            line.pop_back();
+        }
+        if (line.empty() || line[0] == '#') {
+            continue;
+        }
+        const auto sp = line.find_first_of(" \t");
+        out[line.substr(0, sp)] = sp == std::string::npos ? std::string() : line.substr(sp + 1);
+    }
+    return out;
+}
+
 int cmd_compare(const Args& a)
 {
     if (a.a.empty() || a.b.empty() || a.files.empty()) {
         usage("compare needs --a, --b and --files");
     }
     auto A = backend(a.a), B = backend(a.b);
-    const auto inputs = load_inputs(a.files, a.root);
+    const auto inputs = load_inputs(a.files, a.root, a.jp2);
     std::FILE* csv = a.csv.empty() ? nullptr : std::fopen(a.csv.c_str(), "w");
     if (csv) {
         std::fprintf(csv, "file,mode,kind,bytes,reduce,a_ok,a_stage,a_hash,b_ok,b_stage,b_hash,same\n");
     }
     struct Tally { std::size_t decodes = 0, same = 0, both_ok = 0, both_refused = 0, stage_differs = 0; };
     std::map<std::string, Tally> tally;
-    std::size_t differences = 0;
+    std::size_t differences = 0, departed = 0;
+    const auto departures = read_departures(a.departures);
+    std::map<std::string, bool> departure_seen;
     for (const auto& in : inputs) {
+        if (departures.count(base_name(in.path))) {
+            ++departed;  // a departure from the oracle on purpose, tested on its own
+            departure_seen[base_name(in.path)] = true;
+            continue;
+        }
         for (Mode mode : a.modes) {
             for (int r : a.reduce) {
                 if (!reduce_wanted(in, r, a)) {
@@ -299,6 +340,7 @@ int cmd_compare(const Args& a)
                         rq.reduce = r;
                         rq.mode = mode;
                         rq.capture = true;
+                        rq.jp2 = is_jp2_file(in.data.data(), in.data.size());
                         const Outcome x = A->decode(rq), y = B->decode(rq);
                         const bool eq = same(x, y, mode);
                         auto& t = tally[std::string(mode_name(mode)) + " " + kind];
@@ -338,6 +380,17 @@ int cmd_compare(const Args& a)
         total_same += t.same;
     }
     std::printf("total: %zu decodes, %zu identical, %zu different\n", total, total_same, differences);
+    if (departed) {
+        std::printf("%zu files left out as departures (%s)\n", departed, a.departures.c_str());
+    }
+    for (const auto& [file, why] : departures) {
+        if (!departure_seen.count(file)) {
+            // the list cannot go stale: every file it names is among the inputs
+            std::printf("DEPARTURE NOT AMONG THE INPUTS %s (a stale entry of %s)\n", file.c_str(),
+                        a.departures.c_str());
+            ++differences;
+        }
+    }
     return differences && !a.allow_diff ? 1 : 0;
 }
 
@@ -427,7 +480,9 @@ int cmd_verify(const Args& a)
     }
     std::map<std::string, Input> cache;
     std::string line;
-    std::size_t lines = 0, whole = 0, cuts = 0, bad = 0, cut_decodes = 0;
+    std::size_t lines = 0, whole = 0, cuts = 0, bad = 0, cut_decodes = 0, departed = 0;
+    const auto departures = read_departures(a.departures);
+    std::map<std::string, std::size_t> departure_lines;
     while (std::getline(in, line)) {
         if (!line.empty() && line.back() == '\r') {
             line.pop_back();
@@ -447,6 +502,11 @@ int cmd_verify(const Args& a)
         }
         if (f[0] == "cuts" && f.size() >= 9 && a.cut_steps_given &&
                 std::find(a.cut_steps.begin(), a.cut_steps.end(), std::stoi(f[5])) == a.cut_steps.end()) {
+            continue;
+        }
+        if (departures.count(f[1])) {
+            ++departed;
+            ++departure_lines[f[1]];
             continue;
         }
         ++lines;
@@ -504,6 +564,18 @@ int cmd_verify(const Args& a)
     }
     std::printf("verify %s against %s: %zu lines (%zu whole-file decodes, %zu cut digests over %zu decodes), %zu mismatches\n",
                 A->name().c_str(), a.ref.c_str(), lines, whole, cuts, cut_decodes, bad);
+    if (departed) {
+        std::printf("%zu lines left out as departures (%s)\n", departed, a.departures.c_str());
+    }
+    if (a.only.empty()) {
+        for (const auto& [file, why] : departures) {
+            if (!departure_lines.count(file)) {
+                std::printf("DEPARTURE WITHOUT LINES %s: not in %s (a stale entry of %s)\n", file.c_str(),
+                            a.ref.c_str(), a.departures.c_str());
+                ++bad;
+            }
+        }
+    }
     if (lines == 0) {
         // a check that checks nothing must not pass: a renamed --only file, a --cut-steps value the
         // table does not hold, or an empty table

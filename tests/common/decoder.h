@@ -117,11 +117,14 @@ public:
     virtual void alloc_reset() {}
 };
 
-// "oracle", "neoj2k", or "lib:<path>[=<name>]" (an OpenJPEG-ABI shared library). Every backend
-// decodes on the calling thread: making one clears OPJ_NUM_THREADS (single_thread_openjpeg).
+// "oracle", "neoj2k", "neoj2k-memory" (neo-j2k's own memory path, one codec kept across
+// requests; the viewer's request only), or "lib:<path>[=<name>]" (an OpenJPEG-ABI shared library).
+// Every backend decodes on the calling thread: making one clears OPJ_NUM_THREADS
+// (single_thread_openjpeg).
 std::unique_ptr<Backend> make_backend(const std::string& spec, std::string* error = nullptr);
 std::unique_ptr<Backend> make_oracle_backend();
 std::unique_ptr<Backend> make_neoj2k_backend();
+std::unique_ptr<Backend> make_neoj2k_memory_backend();
 std::unique_ptr<Backend> make_library_backend(const std::string& path, const std::string& name, std::string* error);
 
 // Viewer behaviour shared by every backend (indra/llimage, llimagej2coj, release line).

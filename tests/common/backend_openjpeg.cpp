@@ -158,6 +158,9 @@ std::unique_ptr<Backend> make_backend(const std::string& spec, std::string* erro
     if (spec == "neoj2k") {
         return make_neoj2k_backend();
     }
+    if (spec == "neoj2k-memory") {
+        return make_neoj2k_memory_backend();
+    }
     if (spec.rfind("lib:", 0) == 0) {
         std::string path = spec.substr(4), name;
         const auto eq = path.rfind('=');
@@ -170,7 +173,7 @@ std::unique_ptr<Backend> make_backend(const std::string& spec, std::string* erro
         return make_library_backend(path, name, error);
     }
     if (error) {
-        *error = "unknown backend '" + spec + "' (oracle, neoj2k, lib:<path>[=<name>])";
+        *error = "unknown backend '" + spec + "' (oracle, neoj2k, neoj2k-memory, lib:<path>[=<name>])";
     }
     return nullptr;
 }
