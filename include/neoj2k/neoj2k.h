@@ -1924,7 +1924,9 @@ typedef NJ2K_INT32 nj2k_status_t;
 #define NJ2K_E_NOT_JPEG2000     (-3)
 /** A header is invalid. */
 #define NJ2K_E_HEADER           (-4)
-/** Valid, but not supported: JPEG 2000 Part 2 extensions; HT code-blocks until the HT module. */
+/** Valid, but not supported: JPEG 2000 Part 2 extensions; HT code-blocks until the HT module; a
+ * JP2 file read from a stream whose length is not given (nj2k_stream_set_user_data_length()), which
+ * OpenJPEG cannot read either. */
 #define NJ2K_E_UNSUPPORTED      (-5)
 /** A decoder limit, or the reduce factor under NJ2K_REDUCE_EXACT, refuses the codestream. */
 #define NJ2K_E_LIMIT            (-6)
@@ -1941,8 +1943,8 @@ typedef NJ2K_INT32 nj2k_status_t;
  * The status of the codec's last call that reports one: nj2k_setup_decoder(),
  * nj2k_decoder_set_strict_mode(), nj2k_decoder_set_limits(), nj2k_decoder_set_reduce_policy(),
  * nj2k_read_header(), nj2k_set_decoded_resolution_factor(), nj2k_set_decoded_components(),
- * nj2k_get_decoded_dimensions(), and the decoding functions. NJ2K_OK for a codec that has made
- * none of these calls yet; NJ2K_E_ARGUMENT for a null codec.
+ * nj2k_get_decoded_dimensions(), nj2k_get_cstr_info(), and the decoding functions. NJ2K_OK for a
+ * codec that has made none of these calls yet; NJ2K_E_ARGUMENT for a null codec.
  */
 NJ2K_API nj2k_status_t NJ2K_CALLCONV nj2k_get_status(nj2k_codec_t *p_codec);
 

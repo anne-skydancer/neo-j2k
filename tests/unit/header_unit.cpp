@@ -2,12 +2,14 @@
 // Copyright (c) 2026, Anne Skydancer (neo-j2k)
 //
 // Stage 1b: the header model and the limits. Statuses (NEED_DATA at every cut inside a header, never
-// damage), the limit profiles, the fork audit's probe rows (S2, S3) and the plan audit's (A1) with
-// the memory they make neo-j2k allocate, marker precedence (W7), quantization counts (W8), Psot = 0
-// (W5), the reduce policy (W4) and the reduce setter (S1), the allocator hook with failure injection,
-// a header model that owns its bytes (plan audit D5), the decoded dimensions against the oracle's
-// decodes, and header reads of mutated headers. The oracle (OpenJPEG at the pinned fork commit) is
-// linked beside neo-j2k; the internal header reader is reached through the static library.
+// damage), the limit profiles, JP2 reading (streams without a length, the codestream box's length,
+// the bits-per-component box), component depths and their warning, the fork audit's probe rows (S2,
+// S3) and the plan audit's (A1) with the memory they make neo-j2k allocate, marker precedence (W7),
+// quantization counts (W8), Psot = 0 (W5), the reduce policy (W4) and the reduce setter (S1), the
+// allocator hook with failure injection, a header model that owns its bytes (plan audit D5), the
+// decoded dimensions against the oracle's decodes, and header reads of mutated headers. The oracle
+// (OpenJPEG at the pinned fork commit) is linked beside neo-j2k; the internal header reader is
+// reached through the static library.
 #include <openjpeg.h>
 
 #include <neoj2k/neoj2k.h>
@@ -32,6 +34,7 @@
 
 // the library's internals (by their path: src/ is no include directory)
 #include "../../src/header.h"
+#include "../../src/jp2.h"
 
 using namespace nj2k::test;
 namespace fs = std::filesystem;
@@ -226,6 +229,8 @@ struct Options {
     int reduce = -1;  // set in the parameters (before the header) when >= 0
     std::uint32_t policy = NJ2K_REDUCE_EXACT;
     std::size_t buffer = 0;  // the stream's buffer size; 0: the bytes'
+    bool no_length = false;  // the stream does not give its length (as a pipe)
+    std::string* warnings = nullptr;  // collects the warnings when set
 };
 
 void read_header(Read& r, const std::uint8_t* data, std::size_t size, const Options& o = {})
@@ -236,6 +241,9 @@ void read_header(Read& r, const std::uint8_t* data, std::size_t size, const Opti
         return;
     }
     nj2k_set_error_handler(r.codec, collect, &r.errors);
+    if (o.warnings) {
+        nj2k_set_warning_handler(r.codec, collect, o.warnings);
+    }
     nj2k_dparameters_t p;
     nj2k_set_default_decoder_parameters(&p);
     if (o.reduce >= 0) {
@@ -249,6 +257,9 @@ void read_header(Read& r, const std::uint8_t* data, std::size_t size, const Opti
     }
     nj2k::MemoryReader reader(std::span<const std::uint8_t>(data, size));
     auto stream = reader.make_stream(o.buffer);
+    if (stream && o.no_length) {
+        nj2k_stream_set_user_data_length(stream.get(), 0);  // 0: not given
+    }
     r.ok = stream && nj2k_read_header(stream.get(), r.codec, &r.image);
     r.status = nj2k_get_status(r.codec);
 }
@@ -256,6 +267,64 @@ void read_header(Read& r, const std::uint8_t* data, std::size_t size, const Opti
 void read_header(Read& r, const Bytes& b, const Options& o = {})
 {
     read_header(r, b.data(), b.size(), o);
+}
+
+// The oracle's header read (non-strict, as the fuzz target and the viewer's header pass), its
+// warnings collected when asked; with_length false makes a stream that does not give its length.
+bool oracle_read(const Bytes& b, bool jp2, bool with_length = true, std::string* warnings = nullptr)
+{
+    struct Pos {
+        const Bytes* b;
+        std::size_t at;
+    } pos{&b, 0};
+    opj_codec_t* codec = opj_create_decompress(jp2 ? OPJ_CODEC_JP2 : OPJ_CODEC_J2K);
+    opj_dparameters_t params;
+    opj_set_default_decoder_parameters(&params);
+    opj_setup_decoder(codec, &params);
+    opj_decoder_set_strict_mode(codec, OPJ_FALSE);
+    opj_set_error_handler(codec, [](const char*, void*) {}, nullptr);
+    if (warnings) {
+        opj_set_warning_handler(codec, collect, warnings);
+    }
+    opj_stream_t* s = opj_stream_create(b.empty() ? 1 : b.size(), OPJ_TRUE);
+    opj_stream_set_user_data(s, &pos, nullptr);
+    if (with_length) {
+        opj_stream_set_user_data_length(s, b.size());
+    }
+    opj_stream_set_read_function(s, [](void* out, OPJ_SIZE_T n, void* user) -> OPJ_SIZE_T {
+        auto* p = static_cast<Pos*>(user);
+        if (p->at >= p->b->size()) {
+            return static_cast<OPJ_SIZE_T>(-1);
+        }
+        const std::size_t k = std::min<std::size_t>(n, p->b->size() - p->at);
+        std::memcpy(out, p->b->data() + p->at, k);
+        p->at += k;
+        return k;
+    });
+    opj_stream_set_skip_function(s, [](OPJ_OFF_T n, void* user) -> OPJ_OFF_T {
+        auto* p = static_cast<Pos*>(user);
+        const OPJ_OFF_T to = OPJ_OFF_T(p->at) + n;
+        if (to < 0 || to > OPJ_OFF_T(p->b->size())) {
+            p->at = to < 0 ? 0 : p->b->size();
+            return -1;
+        }
+        p->at = std::size_t(to);
+        return n;
+    });
+    opj_stream_set_seek_function(s, [](OPJ_OFF_T to, void* user) -> OPJ_BOOL {
+        auto* p = static_cast<Pos*>(user);
+        if (to < 0 || to > OPJ_OFF_T(p->b->size())) {
+            return OPJ_FALSE;
+        }
+        p->at = std::size_t(to);
+        return OPJ_TRUE;
+    });
+    opj_image_t* image = nullptr;
+    const bool ok = opj_read_header(s, codec, &image) != 0;
+    opj_image_destroy(image);
+    opj_stream_destroy(s);
+    opj_destroy_codec(codec);
+    return ok;
 }
 
 // ---- the tests --------------------------------------------------------------------------------------
@@ -362,10 +431,10 @@ void test_need_data()
 // A JP2 file around a corpus codestream: signature, file type, header (image header, colour), and
 // the codestream box; and the same cut at every byte before the codestream.
 Bytes jp2_wrap(const Bytes& j2k, std::uint32_t w, std::uint32_t h, std::uint16_t nc, std::uint32_t enumcs,
-               const Bytes& icc = {})
+               const Bytes& icc = {}, std::uint8_t bpc = 7)
 {
     Writer ihdr;
-    ihdr.u32(h).u32(w).u16(nc).u8(7).u8(7).u8(0).u8(0);
+    ihdr.u32(h).u32(w).u16(nc).u8(bpc).u8(7).u8(0).u8(0);
     Writer colr;
     if (icc.empty()) {
         colr.u8(1).u8(0).u8(0).u32(enumcs);
@@ -469,6 +538,133 @@ void test_jp2()
         Read r;
         read_header(r, file);
         CHECK(r.status == NJ2K_E_NOT_JPEG2000);
+    }
+    // From a stream whose length is not given no box is read: its size would be all there is to
+    // go by, and 28 bytes can declare a file type box of 4 GiB. OpenJPEG reads no JP2 file from
+    // such a stream either.
+    {
+        Writer bomb;
+        bomb.u32(12).u32(0x6A502020).u32(0x0D0A870A).u32(0xFFFFFFF0u).u32(0x66747970).u32(0x6A703220).u32(0);
+        CHECK(bomb.b.size() == 28);
+        nj2k_decoder_limits_t sl{};
+        nj2k_decoder_limits_init(&sl, NJ2K_DECODER_LIMITS_SL_TEXTURE);
+        const Bytes* const inputs[2] = {&bomb.b, &file};
+        const nj2k_decoder_limits_t* const profiles[2] = {nullptr, &sl};
+        for (const Bytes* input : inputs) {
+            for (const nj2k_decoder_limits_t* lim : profiles) {
+                Counting c;
+                nj2k_allocator_t hook = c.hook();
+                Options po = o;
+                po.allocator = &hook;
+                po.limits = lim;
+                po.no_length = true;
+                Read r;
+                read_header(r, *input, po);
+                CHECK_MSG(!r.ok && r.status == NJ2K_E_UNSUPPORTED, "status %d", r.status);
+                CHECK_MSG(c.peak < 16 * 1024, "%zu bytes", c.peak);
+            }
+        }
+        // the same bytes with their length given: the box is found short before it is allocated
+        Counting c;
+        nj2k_allocator_t hook = c.hook();
+        Options po = o;
+        po.allocator = &hook;
+        Read r;
+        read_header(r, bomb.b, po);
+        CHECK(!r.ok && r.status == NJ2K_E_NEED_DATA && c.peak < 16 * 1024);
+#if defined(NDEBUG)
+        // the oracle, which asserts on a stream without a length in builds without NDEBUG
+        CHECK(oracle_read(file, true) && !oracle_read(file, true, false));
+#endif
+    }
+    auto oracle = make_oracle_backend(), neo = make_neoj2k_backend();
+    auto same_as_oracle = [&](const Bytes& f, bool reads, const char* what) {
+        Request rq;
+        rq.data = f.data();
+        rq.size = f.size();
+        rq.jp2 = true;
+        const HeaderFacts a = oracle->header(rq), b = neo->header(rq);
+        CHECK_MSG(a.ok == reads && header_difference(a, b).empty(), "%s: %s", what, header_difference(a, b).c_str());
+    };
+    // the codestream box is taken whatever its length says, and read to the end, as OpenJPEG does:
+    // a length too short for its own header, and an XL length of 4 GiB or more
+    {
+        const std::size_t box = file.size() - data->size() - 8;
+        for (std::uint32_t length : {2u, 7u}) {
+            Bytes f = file;
+            f[box] = 0;
+            f[box + 1] = 0;
+            f[box + 2] = 0;
+            f[box + 3] = std::uint8_t(length);
+            same_as_oracle(f, true, "short codestream box");
+        }
+        Bytes xl(file.begin(), file.begin() + std::ptrdiff_t(box));
+        Writer w;
+        w.u32(1).u32(0x6A703263).u32(1).u32(0x00000010).bytes(*data);
+        xl.insert(xl.end(), w.b.begin(), w.b.end());
+        same_as_oracle(xl, true, "codestream box of 4 GiB and more");
+        Read r;
+        read_header(r, xl, o);
+        CHECK_MSG(r.ok, "%s", r.errors.c_str());
+    }
+    // a bits-per-component box before the image header, empty as numcomps then is: read, and it
+    // gives no values (the image header then says 3 components)
+    {
+        Writer jp2h;
+        jp2h.u32(8).u32(0x62706363);  // bpcc, empty
+        jp2h.u32(8 + 14).u32(0x69686472).u32(32).u32(32).u16(3).u8(255).u8(7).u8(0).u8(0);
+        jp2h.u32(8 + 7).u32(0x636F6C72).u8(1).u8(0).u8(0).u32(16);
+        Writer f;
+        f.u32(12).u32(0x6A502020).u32(0x0D0A870A).u32(20).u32(0x66747970).u32(0x6A703220).u32(0).u32(0x6A703220);
+        f.u32(8 + std::uint32_t(jp2h.b.size())).u32(0x6A703268).bytes(jp2h.b);
+        f.u32(8 + std::uint32_t(data->size())).u32(0x6A703263).bytes(*data);
+        same_as_oracle(f.b, true, "empty bpcc before ihdr");
+        namespace d = nj2k::detail;
+        d::Allocator sys = d::Allocator::system();
+        d::Arena arena;
+        arena.init(&sys);
+        d::Messages msg;
+        d::Source src(f.b.data(), f.b.size());
+        d::Jp2Header* jp2 = nullptr;
+        CHECK(d::read_jp2_boxes(src, arena, msg, jp2) == NJ2K_OK && jp2 && jp2->numcomps == 3 && jp2->bpcc == nullptr);
+    }
+}
+
+// Components of different precision and sign: a codestream may have them without a word, as in
+// OpenJPEG's J2K decoder; a JP2 file whose image header gives one depth for all (BPC != 255) gets
+// OpenJPEG's warning, and one whose BPC is 255 does not. The oracle warns in the same cases.
+void test_varying_depth()
+{
+    Siz s;  // 8-bit, 12-bit and signed 8-bit components
+    Writer siz;
+    siz.u16(0).u32(s.x1).u32(s.y1).u32(0).u32(0).u32(s.x1).u32(s.y1).u32(0).u32(0).u16(3);
+    siz.u8(7).u8(1).u8(1).u8(11).u8(1).u8(1).u8(0x87).u8(1).u8(1);
+    Cod c;
+    Writer cs;
+    cs.u16(0xFF4F).segment(0xFF51, siz.b).segment(0xFF52, c.body()).segment(0xFF5C, qcd_none(16));
+    cs.u16(0xFF90).u16(10).u16(0).u32(14).u8(0).u8(1).u16(0xFF93).u16(0xFFD9);
+    const auto warned = [](const std::string& text) { return text.find("Despite JP2 BPC!=255") != std::string::npos; };
+    struct Case {
+        const char* name;
+        Bytes bytes;
+        bool jp2, warns;
+    };
+    const Case cases[] = {
+        {"codestream", cs.b, false, false},
+        {"JP2, BPC 7", jp2_wrap(cs.b, 32, 32, 3, 16, {}, 7), true, true},
+        {"JP2, BPC 255", jp2_wrap(cs.b, 32, 32, 3, 16, {}, 255), true, false},
+    };
+    for (const Case& k : cases) {
+        std::string neo_warnings, oracle_warnings;
+        Options o;
+        o.format = k.jp2 ? NJ2K_CODEC_JP2 : NJ2K_CODEC_J2K;
+        o.warnings = &neo_warnings;
+        Read r;
+        read_header(r, k.bytes, o);
+        CHECK_MSG(r.ok, "%s: %s", k.name, r.errors.c_str());
+        CHECK_MSG(warned(neo_warnings) == k.warns, "%s: %s", k.name, neo_warnings.c_str());
+        CHECK_MSG(oracle_read(k.bytes, k.jp2, true, &oracle_warnings) && warned(oracle_warnings) == k.warns, "%s: oracle: %s",
+                  k.name, oracle_warnings.c_str());
     }
 }
 
@@ -784,23 +980,48 @@ void test_header_rules()
         CHECK(!p.ok && p.status == NJ2K_E_HEADER);
     }
     {
-        // an unknown progression order, a reserved quantization style, no components
+        // an unknown progression order and a reserved quantization style: refused, where OpenJPEG
+        // reads them (DP-8)
         Cod bad = c;
         bad.prg = 5;
+        const Bytes prg = codestream(s, bad);
         Read r;
-        read_header(r, codestream(s, bad));
+        read_header(r, prg);
         CHECK(!r.ok && r.status == NJ2K_E_HEADER);
+        CHECK(oracle_read(prg, false));
         Writer q;
         q.u16(0xFF4F).segment(0xFF51, s.body()).segment(0xFF52, c.body()).segment(0xFF5C, Bytes{0x43, 0x48, 0x00});
         q.u16(0xFF90).u16(10).u16(0).u32(14).u8(0).u8(1).u16(0xFF93).u16(0xFFD9);
         Read rq;
         read_header(rq, q.b);
         CHECK(!rq.ok && rq.status == NJ2K_E_HEADER);
+        CHECK(oracle_read(q.b, false));
+    }
+    {
+        // refused by both (no departure): a SIZ with no components, and PPM markers whose Nppm
+        // fields add up to no packet header bytes (OpenJPEG's opj_malloc(0) gives NULL for them)
         Siz none = s;
         none.comps = 0;
+        const Bytes no_comps = codestream(none, c);
         Read rn;
-        read_header(rn, codestream(none, c));
+        read_header(rn, no_comps);
         CHECK(!rn.ok && rn.status == NJ2K_E_HEADER);
+        CHECK(!oracle_read(no_comps, false));
+        Writer ppm;
+        ppm.segment(0xFF60, Bytes{0x00, 0x00, 0x00, 0x00, 0x00}).segment(0xFF60, Bytes{0x01, 0x00, 0x00, 0x00, 0x00});
+        const Bytes empty_ppm = main_with(ppm.b);
+        Read rp;
+        read_header(rp, empty_ppm);
+        CHECK_MSG(!rp.ok && rp.status == NJ2K_E_HEADER, "status %d", rp.status);
+        CHECK(!oracle_read(empty_ppm, false));
+        // with one packet header byte the same markers read, in both
+        Writer one;
+        one.segment(0xFF60, Bytes{0x00, 0x00, 0x00, 0x00, 0x01, 0x80});
+        const Bytes one_ppm = main_with(one.b);
+        Read ro;
+        read_header(ro, one_ppm);
+        CHECK_MSG(ro.ok, "%s", ro.errors.c_str());
+        CHECK(oracle_read(one_ppm, false));
     }
     {
         // HT code-blocks: the header reads (stage 1c refuses the decode until the HT module);
@@ -816,13 +1037,15 @@ void test_header_rules()
         CHECK(!m.ok && m.status == NJ2K_E_UNSUPPORTED);
     }
     {
-        // SIZ must follow SOC
+        // SIZ must follow SOC: an unknown marker segment before it is refused, where OpenJPEG scans
+        // past it for the SIZ and reads the header (DP-7)
         Writer w;
-        w.u16(0xFF4F).segment(0xFF64, Bytes{0x00, 0x01, 'x'}).segment(0xFF51, s.body()).segment(0xFF52, c.body());
-        w.segment(0xFF5C, qcd_none(16)).u16(0xFF90);
+        w.u16(0xFF4F).segment(0xFF6A, Bytes{0x00, 0x01}).segment(0xFF51, s.body()).segment(0xFF52, c.body());
+        w.segment(0xFF5C, qcd_none(16)).u16(0xFF90).u16(10).u16(0).u32(14).u8(0).u8(1).u16(0xFF93).u16(0xFFD9);
         Read r;
         read_header(r, w.b);
         CHECK(!r.ok && r.status == NJ2K_E_HEADER);
+        CHECK(oracle_read(w.b, false));
     }
     {
         // a tile-part header with an unknown marker segment: skipped by its length (OpenJPEG fails
@@ -1094,17 +1317,28 @@ void test_allocator()
 }
 
 // The header model owns its bytes (plan audit D5): with the input freed after the header read, the
-// codestream information, the dimensions and the component selection still work (AddressSanitizer
-// builds see any read of the freed buffer).
+// codestream information, the dimensions and the component selection still work, and the packed
+// packet headers (PPM, merged, and their markers; PPT) still hold what a read of a copy that stays
+// alive holds. The freed input is overwritten first, so a pointer into it gives other bytes in any
+// build; AddressSanitizer builds also see the read itself.
 void test_owned_bytes()
 {
     const auto file = read_file(g_corpus + "/packed_ppm.j2k");
-    CHECK(file.has_value());
-    if (!file) {
+    const auto ppt_file = read_file(g_corpus + "/packed_ppt.j2k");
+    CHECK(file.has_value() && ppt_file.has_value());
+    if (!file || !ppt_file) {
         return;
     }
-    auto* copy = static_cast<std::uint8_t*>(std::malloc(file->size()));
-    std::memcpy(copy, file->data(), file->size());
+    auto freed_copy = [](const Bytes& b) {
+        auto* copy = static_cast<std::uint8_t*>(std::malloc(b.size()));
+        std::memcpy(copy, b.data(), b.size());
+        return copy;
+    };
+    auto release = [](std::uint8_t* copy, std::size_t size) {
+        std::memset(copy, 0xA5, size);
+        std::free(copy);
+    };
+    std::uint8_t* copy = freed_copy(*file);
     nj2k::Codec codec = nj2k::make_decoder();
     nj2k_image_t* image = nullptr;
     {
@@ -1112,8 +1346,7 @@ void test_owned_bytes()
         auto stream = reader.make_stream();
         CHECK(nj2k_read_header(stream.get(), codec.get(), &image));
     }
-    std::memset(copy, 0xA5, file->size());
-    std::free(copy);
+    release(copy, file->size());
     nj2k_codestream_info_v2_t* info = nj2k_get_cstr_info(codec.get());
     CHECK(info && info->nbcomps == 3 && info->m_default_tile_info.numlayers == 3);
     nj2k_destroy_cstr_info(&info);
@@ -1122,6 +1355,61 @@ void test_owned_bytes()
     CHECK(nj2k_set_decoded_resolution_factor(codec.get(), 2));
     CHECK(nj2k_get_decoded_dimensions(codec.get(), image) && image->comps[0].w == 12 && image->comps[0].h == 10);
     nj2k_image_destroy(image);
+
+    // the packed packet headers, through the reader stage 1c reads them with
+    namespace d = nj2k::detail;
+    d::Allocator sys = d::Allocator::system();
+    d::Messages msg;
+    d::HeaderSettings hs{};
+    auto same_chunks = [](const d::ArenaList<d::PackedChunk>& a, const d::ArenaList<d::PackedChunk>& b) {
+        if (a.size != b.size || a.size == 0) {
+            return false;
+        }
+        for (std::uint32_t i = 0; i < a.size; ++i) {
+            if (a.data[i].z != b.data[i].z || a.data[i].size != b.data[i].size ||
+                std::memcmp(a.data[i].data, b.data[i].data, a.data[i].size) != 0) {
+                return false;
+            }
+        }
+        return true;
+    };
+    {
+        d::Arena kept_arena, arena;
+        kept_arena.init(&sys);
+        arena.init(&sys);
+        d::Source kept_src(file->data(), file->size());
+        d::MainHeader* kept = nullptr;
+        CHECK(d::read_main_header(kept_src, kept_arena, msg, hs, kept) == NJ2K_OK && kept && kept->ppm_size > 0);
+        std::uint8_t* input = freed_copy(*file);
+        d::Source src(input, file->size());
+        d::MainHeader* mh = nullptr;
+        CHECK(d::read_main_header(src, arena, msg, hs, mh) == NJ2K_OK && mh);
+        release(input, file->size());
+        if (kept && mh) {
+            CHECK(mh->ppm_size == kept->ppm_size && std::memcmp(mh->ppm_data, kept->ppm_data, std::size_t(kept->ppm_size)) == 0);
+            CHECK(same_chunks(mh->ppm_chunks, kept->ppm_chunks));
+            CHECK(mh->ppm_lengths.size == kept->ppm_lengths.size && mh->ppm_lengths.size > 0);
+        }
+    }
+    {
+        d::Arena kept_arena, arena;
+        kept_arena.init(&sys);
+        arena.init(&sys);
+        d::Source kept_src(ppt_file->data(), ppt_file->size());
+        d::MainHeader* kept = nullptr;
+        d::TilePartHeader tp{};
+        CHECK(d::read_main_header(kept_src, kept_arena, msg, hs, kept) == NJ2K_OK && kept &&
+              d::read_tile_part_header(kept_src, kept_arena, msg, hs, *kept, kept->end, tp) == NJ2K_OK);
+        std::uint8_t* input = freed_copy(*ppt_file);
+        d::Source src(input, ppt_file->size());
+        d::MainHeader* mh = nullptr;
+        CHECK(d::read_main_header(src, arena, msg, hs, mh) == NJ2K_OK && mh &&
+              d::read_tile_part_header(src, arena, msg, hs, *mh, mh->end, tp) == NJ2K_OK);
+        release(input, ppt_file->size());
+        const d::TileOverrides* a = mh ? mh->overrides(tp.tile) : nullptr;
+        const d::TileOverrides* b = kept ? kept->overrides(tp.tile) : nullptr;
+        CHECK(a && b && same_chunks(a->ppt, b->ppt));
+    }
 }
 
 // The rest of the API's order and argument rules.
@@ -1249,6 +1537,7 @@ int main(int argc, char** argv)
     test_limits_api();
     test_need_data();
     test_jp2();
+    test_varying_depth();
     test_probe_rows();
     test_bombs(argv[2], argv[3]);
     test_precedence();

@@ -292,7 +292,9 @@ NJ2K_API NJ2K_BOOL NJ2K_CALLCONV nj2k_read_header(nj2k_stream_t* p_stream, nj2k_
         if (st == NJ2K_OK) {
             hs.ihdr_w = d->jp2->w;
             hs.ihdr_h = d->jp2->h;
-            hs.varying_depth = d->jp2->bpc == 255;
+            // OpenJPEG's J2K decoder takes components of any depth (j2k.c); a JP2 file whose image
+            // header gives one depth for all (BPC != 255) has differing ones warned about (jp2.c)
+            hs.allow_varying_depth = d->jp2->bpc == 255;
         }
     }
     if (st == NJ2K_OK) {

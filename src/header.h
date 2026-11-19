@@ -211,8 +211,10 @@ struct TilePartHeader {
 // What the codec tells the header reader.
 struct HeaderSettings {
     nj2k_decoder_limits_t limits;
-    bool dump;              // NJ2K_DPARAMETERS_DUMP_FLAG: the JP2 image header is not compared with SIZ
-    bool varying_depth;     // JP2: the image header says the component depths vary (BPC 255)
+    bool dump;  // NJ2K_DPARAMETERS_DUMP_FLAG: the JP2 image header is not compared with SIZ
+    // Components may differ in precision and sign without a warning: always for a codestream, and
+    // in a JP2 file when its image header says so (BPC 255), as OpenJPEG has it
+    bool allow_varying_depth = true;
     std::uint32_t ihdr_w, ihdr_h;  // JP2 image header size, 0 when there is none
 };
 

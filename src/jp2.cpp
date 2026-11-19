@@ -157,7 +157,9 @@ struct Reader {
         if (n != jp2.numcomps) {
             return fail(msg, NJ2K_E_HEADER, "Bad BPCC header box (bad size)\n");
         }
-        jp2.bpcc = p;
+        // an empty box (before the image header, which sets numcomps) gives no values: the image
+        // header then sets numcomps, and the pointer would promise bytes the box never had
+        jp2.bpcc = n ? p : nullptr;
         return NJ2K_OK;
     }
 
@@ -419,7 +421,16 @@ nj2k_status_t read_jp2_boxes(Source& src, Arena& arena, const Messages& msg, Jp2
                 return need_data(msg);
             }
             if (be32(h + 8) != 0) {
-                return fail(msg, NJ2K_E_HEADER, "Cannot handle box sizes higher than 2^32\n");
+                if (!header) {
+                    return fail(msg, NJ2K_E_HEADER, "Cannot handle box sizes higher than 2^32\n");
+                }
+                // OpenJPEG stops reading boxes here and, the JP2 header read, reads the codestream
+                // from this point (jp2.c): a codestream box of 4 GiB or more is read that way
+                msg.emit(Messages::Warning, "Cannot handle box sizes higher than 2^32\n");
+                jp2->codestream = src.tell();
+                jp2->codestream_length = 0;
+                out = jp2;
+                return NJ2K_OK;
             }
             length = be32(h + 12);
             header_size = 16;
@@ -428,11 +439,11 @@ nj2k_status_t read_jp2_boxes(Source& src, Arena& arena, const Messages& msg, Jp2
             if (!header) {
                 return fail(msg, NJ2K_E_HEADER, "bad placed jpeg codestream\n");
             }
-            if (length != 0 && length < header_size) {
-                return fail(msg, NJ2K_E_HEADER, "invalid box size %llu (%x)\n", static_cast<unsigned long long>(length), type);
-            }
+            // OpenJPEG takes the codestream box before it looks at the box's length and reads the
+            // codestream to the end of the stream (jp2.c), so a length that cannot even hold the
+            // box's own header is read as 0, to the end
             jp2->codestream = src.tell();
-            jp2->codestream_length = length ? length - header_size : 0;
+            jp2->codestream_length = length >= header_size ? length - header_size : 0;
             out = jp2;
             return NJ2K_OK;
         }
@@ -467,6 +478,14 @@ nj2k_status_t read_jp2_boxes(Source& src, Arena& arena, const Messages& msg, Jp2
             continue;
         }
         const std::int64_t left = src.bytes_left();
+        if (left < 0 && size > 0) {
+            // Without the stream's length a box's size is all there is to go by, and it may say up
+            // to 4 GiB in a few bytes: no allocation on its word. OpenJPEG reads no box from such a
+            // stream either (its bytes left are then 0: "do not even try to malloc if we can't
+            // read", jp2.c), so a JP2 file needs the length (nj2k_stream_set_user_data_length).
+            return fail(msg, NJ2K_E_UNSUPPORTED,
+                        "Cannot read the JP2 boxes: the stream's length is not given (nj2k_stream_set_user_data_length)\n");
+        }
         if (left >= 0 && std::uint64_t(left) < size) {
             src.skip(std::uint64_t(left));
             return need_data(msg);

@@ -488,7 +488,7 @@ nj2k_status_t read_siz(const Messages& msg, Arena& arena, const HeaderSettings& 
     for (std::uint32_t i = 0; i < csiz; ++i) {
         const std::uint8_t* c = p + 36 + 3 * i;
         const std::uint32_t prec = (c[0] & 0x7Fu) + 1, sgnd = c[0] >> 7, dx = c[1], dy = c[2];
-        if (!set.dump && !set.varying_depth && i > 0 && (c[0] != p[36])) {
+        if (!set.dump && !set.allow_varying_depth && i > 0 && (c[0] != p[36])) {
             msg.emit(Messages::Warning,
                      "Despite JP2 BPC!=255, precision and/or sgnd values for comp[%u] is different than comp[0]:\n"
                      "        [0] prec(%u) sgnd(%u) [%u] prec(%u) sgnd(%u)\n",
@@ -587,11 +587,13 @@ nj2k_status_t merge_ppm(const Messages& msg, Arena& arena, MainHeader& mh) noexc
             return fail(msg, NJ2K_E_HEADER, "Corrupted PPM markers\n");
         }
         if (pass == 0) {
+            // Packed packet headers that hold no byte at all: OpenJPEG refuses them too (its
+            // opj_malloc(0) gives NULL, "Not enough memory to read PPM marker"), here for what it is
+            if (total == 0) {
+                return fail(msg, NJ2K_E_HEADER, "Corrupted PPM markers: the packet headers hold no bytes\n");
+            }
             // every byte counted comes from the markers, so this is no larger than they are
             mh.ppm_size = total;
-            if (total == 0) {
-                break;
-            }
             merged = static_cast<std::uint8_t*>(arena.allocate(std::size_t(total), 1));
             if (!merged) {
                 return arena_failure(msg, arena);
