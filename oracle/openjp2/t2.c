@@ -157,6 +157,15 @@ static OPJ_BOOL opj_t2_init_seg(opj_tcd_cblk_dec_t* cblk,
                                 OPJ_UINT32 cblksty,
                                 OPJ_UINT32 first);
 
+/**
+Leave out the passes a packet header announced for the code-blocks of one precinct
+(the packet is absent); what earlier packets gave the code-blocks stays.
+@param res      Resolution of the packet
+@param precno   Precinct of the packet
+*/
+static void opj_t2_drop_new_passes(opj_tcd_resolution_t *res,
+                                   OPJ_UINT32 precno);
+
 /*@}*/
 
 /*@}*/
@@ -415,6 +424,14 @@ OPJ_BOOL opj_t2_decode_packets(opj_tcd_t* tcd,
 #endif
     opj_packet_info_t *l_pack_info = 00;
     opj_image_comp_t* l_img_comp = 00;
+    /* Non-strict decoding (CVE-2023-39327): once the tile's data is exhausted and
+     * no packed packet headers (PPM, PPT) are left, every remaining packet is
+     * absent; it is not read, only counted for the decoded resolutions */
+    OPJ_BOOL l_exhausted = OPJ_FALSE;
+    /* components whose resno_decoded can no longer change: when all can't, the
+     * remaining packets are not even visited */
+    OPJ_UINT32 l_nb_comps_final = 0;
+    OPJ_BOOL l_done = OPJ_FALSE;
 
     OPJ_ARG_NOT_USED(p_cstr_index);
 
@@ -502,6 +519,30 @@ OPJ_BOOL opj_t2_decode_packets(opj_tcd_t* tcd,
                                     l_current_pi->precno, l_current_pi->layno, skip_packet ? "skipped" : "kept");
                 */
             }
+            if (l_exhausted) {
+                /* An absent packet: its visit would change only the decoded
+                 * resolution of its component, as below */
+                const OPJ_UINT32 l_compno = l_current_pi->compno;
+                const OPJ_UINT32 l_last_resno =
+                    p_tile->comps[l_compno].minimum_num_resolutions - 1;
+                l_img_comp = &(l_image->comps[l_compno]);
+                if (l_img_comp->resno_decoded < l_last_resno) {
+                    if (!skip_packet) {
+                        first_pass_failed[l_compno] = OPJ_FALSE;
+                        l_img_comp->resno_decoded = opj_uint_max(l_current_pi->resno,
+                                                    l_img_comp->resno_decoded);
+                    } else if (first_pass_failed[l_compno] &&
+                               l_img_comp->resno_decoded == 0) {
+                        l_img_comp->resno_decoded = l_last_resno;
+                    }
+                    if (l_img_comp->resno_decoded >= l_last_resno &&
+                            ++l_nb_comps_final == l_image->numcomps) {
+                        l_done = OPJ_TRUE;
+                        break;
+                    }
+                }
+                continue;
+            }
             if (!skip_packet) {
                 l_nb_bytes_read = 0;
 
@@ -538,6 +579,26 @@ OPJ_BOOL opj_t2_decode_packets(opj_tcd_t* tcd,
             l_current_data += l_nb_bytes_read;
             p_max_len -= l_nb_bytes_read;
 
+            if (p_max_len == 0 && !l_cp->strict &&
+                    !(l_cp->ppm == 1 && l_cp->ppm_len != 0) &&
+                    !(l_tcp->ppt == 1 && l_tcp->ppt_len != 0)) {
+                /* The tile's data is exhausted: every remaining packet would read
+                 * an empty header and be absent */
+                OPJ_UINT32 l_compno;
+                l_exhausted = OPJ_TRUE;
+                l_nb_comps_final = 0;
+                for (l_compno = 0; l_compno < l_image->numcomps; ++l_compno) {
+                    if (l_image->comps[l_compno].resno_decoded + 1U >=
+                            p_tile->comps[l_compno].minimum_num_resolutions) {
+                        ++l_nb_comps_final;
+                    }
+                }
+                if (l_nb_comps_final == l_image->numcomps) {
+                    l_done = OPJ_TRUE;
+                    break;
+                }
+            }
+
             /* INDEX >> */
 #ifdef TODO_MSD
             if (p_cstr_info) {
@@ -570,6 +631,11 @@ OPJ_BOOL opj_t2_decode_packets(opj_tcd_t* tcd,
         ++l_current_pi;
 
         opj_free(first_pass_failed);
+
+        if (l_done) {
+            /* no remaining packet can change the decoded image */
+            break;
+        }
     }
     /* INDEX >> */
 #ifdef TODO_MSD
@@ -1005,6 +1071,29 @@ static OPJ_BOOL opj_t2_encode_packet(OPJ_UINT32 tileno,
     return OPJ_TRUE;
 }
 
+static void opj_t2_drop_new_passes(opj_tcd_resolution_t *res,
+                                   OPJ_UINT32 precno)
+{
+    OPJ_UINT32 bandno, cblkno;
+    opj_tcd_band_t *l_band = res->bands;
+
+    for (bandno = 0; bandno < res->numbands; ++bandno, ++l_band) {
+        opj_tcd_precinct_t *l_prc;
+        opj_tcd_cblk_dec_t *l_cblk;
+        OPJ_UINT32 l_nb_code_blocks;
+
+        if (opj_tcd_is_band_empty(l_band)) {
+            continue;
+        }
+        l_prc = &l_band->precincts[precno];
+        l_cblk = l_prc->cblks.dec;
+        l_nb_code_blocks = l_prc->cw * l_prc->ch;
+        for (cblkno = 0; cblkno < l_nb_code_blocks; ++cblkno, ++l_cblk) {
+            l_cblk->numnewpasses = 0;
+        }
+    }
+}
+
 static OPJ_BOOL opj_t2_skip_packet(opj_t2_t* p_t2,
                                    opj_tcd_tile_t *p_tile,
                                    opj_tcp_t *p_tcp,
@@ -1111,12 +1200,19 @@ static OPJ_BOOL opj_t2_read_packet_header(opj_t2_t* p_t2,
     /* SOP markers */
 
     if (p_tcp->csty & J2K_CP_CSTY_SOP) {
-        /* SOP markers are allowed (i.e. optional), just warn */
+        /* SOP markers are allowed (i.e. optional), just warn, once per tile
+         * (CVE-2023-39327: a warning for each of a million packets) */
         if (p_max_length < 6) {
-            opj_event_msg(p_manager, EVT_WARNING,
-                          "Not enough space for expected SOP marker\n");
+            if (!p_t2->sop_warned) {
+                p_t2->sop_warned = OPJ_TRUE;
+                opj_event_msg(p_manager, EVT_WARNING,
+                              "Not enough space for expected SOP marker\n");
+            }
         } else if ((*l_current_data) != 0xff || (*(l_current_data + 1) != 0x91)) {
-            opj_event_msg(p_manager, EVT_WARNING, "Expected SOP marker\n");
+            if (!p_t2->sop_warned) {
+                p_t2->sop_warned = OPJ_TRUE;
+                opj_event_msg(p_manager, EVT_WARNING, "Expected SOP marker\n");
+            }
         } else {
             l_current_data += 6;
         }
@@ -1164,7 +1260,8 @@ static OPJ_BOOL opj_t2_read_packet_header(opj_t2_t* p_t2,
         opj_bio_destroy(l_bio);
 
         if (l_cut && !l_cp->strict) {
-            /* fork-audit fix: the data ended inside this packet header */
+            /* The data ended inside this packet header: the packet is absent, and the
+             * rest of the tile's data counts as read */
             *p_is_data_present = OPJ_FALSE;
             *p_data_read = p_max_length;
             return OPJ_TRUE;
@@ -1176,7 +1273,8 @@ static OPJ_BOOL opj_t2_read_packet_header(opj_t2_t* p_t2,
             if ((*l_modified_length_ptr - (OPJ_UINT32)(l_header_data -
                     *l_header_data_start)) < 2U) {
                 if (!l_cp->strict) {
-                    /* fork-audit fix: the data ended before the EPH marker */
+                    /* The data ended before the EPH marker: the packet is
+                     * absent, and the rest of the tile's data counts as read */
                     *p_is_data_present = OPJ_FALSE;
                     *p_data_read = p_max_length;
                     return OPJ_TRUE;
@@ -1350,30 +1448,19 @@ static OPJ_BOOL opj_t2_read_packet_header(opj_t2_t* p_t2,
 
     {
         const OPJ_BOOL l_aligned = opj_bio_inalign(l_bio);
-        const OPJ_BOOL l_cut = !l_aligned || l_bio->overrun;
-        if (l_cut && !l_cp->strict) {
-            /* fork-audit fix: the data ended inside this packet header. Header bits past the
-             * end would read as zeros and could announce passes that have no data: the packet
-             * counts as absent, and everything earlier packets gave stays. */
+        if ((!l_aligned || l_bio->overrun) && !l_cp->strict) {
+            /* The data ended inside this packet header (the bit reader ran past the
+             * end, or the stuffed byte after 0xFF is missing). Header bits past the end
+             * read as zeros and could announce passes that have no data: the packet is
+             * absent, everything earlier packets gave stays, and the rest of the tile's
+             * data counts as read */
             opj_bio_destroy(l_bio);
-            l_band = l_res->bands;
-            for (bandno = 0; bandno < l_res->numbands; ++bandno, ++l_band) {
-                if (opj_tcd_is_band_empty(l_band)) {
-                    continue;
-                }
-                l_cblk = l_band->precincts[p_pi->precno].cblks.dec;
-                l_nb_code_blocks = l_band->precincts[p_pi->precno].cw *
-                                   l_band->precincts[p_pi->precno].ch;
-                for (cblkno = 0; cblkno < l_nb_code_blocks; ++cblkno, ++l_cblk) {
-                    l_cblk->numnewpasses = 0;
-                }
-            }
+            opj_t2_drop_new_passes(l_res, p_pi->precno);
             *p_is_data_present = OPJ_FALSE;
             *p_data_read = p_max_length;
             return OPJ_TRUE;
         }
         if (!l_aligned) {
-            /* strict mode: unchanged */
             opj_bio_destroy(l_bio);
             return OPJ_FALSE;
         }
@@ -1388,20 +1475,10 @@ static OPJ_BOOL opj_t2_read_packet_header(opj_t2_t* p_t2,
         if ((*l_modified_length_ptr - (OPJ_UINT32)(l_header_data -
                 *l_header_data_start)) < 2U) {
             if (!l_cp->strict) {
-                /* fork-audit fix: the data ended before the EPH marker; the passes
-                 * this header announced have no data and are left out */
-                l_band = l_res->bands;
-                for (bandno = 0; bandno < l_res->numbands; ++bandno, ++l_band) {
-                    if (opj_tcd_is_band_empty(l_band)) {
-                        continue;
-                    }
-                    l_cblk = l_band->precincts[p_pi->precno].cblks.dec;
-                    l_nb_code_blocks = l_band->precincts[p_pi->precno].cw *
-                                       l_band->precincts[p_pi->precno].ch;
-                    for (cblkno = 0; cblkno < l_nb_code_blocks; ++cblkno, ++l_cblk) {
-                        l_cblk->numnewpasses = 0;
-                    }
-                }
+                /* The data ended before the EPH marker: the passes this header
+                 * announced have no data, the packet is absent, and the rest of
+                 * the tile's data counts as read */
+                opj_t2_drop_new_passes(l_res, p_pi->precno);
                 *p_is_data_present = OPJ_FALSE;
                 *p_data_read = p_max_length;
                 return OPJ_TRUE;
@@ -1482,9 +1559,9 @@ static OPJ_BOOL opj_t2_read_packet_data(opj_t2_t* p_t2,
             }
 
             if (partial_buffer) {
-                /* fork-audit fix: the packet's data ended before this code-block's
-                 * contribution. Leave this packet's passes out and keep everything the
-                 * earlier packets gave the code-block (old: all of it was dropped). */
+                /* The packet's data ended before this code-block's contribution:
+                 * this packet's passes are left out, and everything earlier packets
+                 * gave the code-block stays */
                 l_cblk->numnewpasses = 0;
                 continue;
             }
@@ -1514,14 +1591,20 @@ static OPJ_BOOL opj_t2_read_packet_data(opj_t2_t* p_t2,
                                       p_pi->compno);
                         return OPJ_FALSE;
                     } else {
-                        opj_event_msg(p_manager, EVT_WARNING,
-                                      "read: segment too long (%d) with max (%d) for codeblock %d (p=%d, b=%d, r=%d, c=%d)\n",
-                                      l_seg->newlen, p_max_length, cblkno, p_pi->precno, bandno, p_pi->resno,
-                                      p_pi->compno);
-                        /* fork-audit fix: keep the codeword segments completed before the
-                         * cut (and all earlier data); drop the cut segment and the passes
-                         * after it. A segment opened for this packet that got no data is
-                         * closed again, so real_num_segs counts only segments with data. */
+                        if (!p_t2->cut_warned) {
+                            p_t2->cut_warned = OPJ_TRUE;
+                            opj_event_msg(p_manager, EVT_WARNING,
+                                          "read: segment too long (%d) with max (%d) for codeblock %d (p=%d, b=%d, r=%d, c=%d)\n",
+                                          l_seg->newlen, p_max_length, cblkno, p_pi->precno, bandno, p_pi->resno,
+                                          p_pi->compno);
+                        }
+                        /* The data ended inside this code-block's contribution. Keep
+                         * the codeword segments this packet completed before the cut
+                         * and everything earlier packets gave; drop the cut segment
+                         * and the passes after it. A segment opened for this packet
+                         * that got no data is closed again, so real_num_segs counts
+                         * only segments with data. The code-blocks after this one get
+                         * no new passes from this packet */
                         partial_buffer = OPJ_TRUE;
                         if (l_seg->numpasses == 0 && l_cblk->numsegs > 0) {
                             --l_cblk->numsegs;
@@ -1664,10 +1747,13 @@ static OPJ_BOOL opj_t2_skip_packet_data(opj_t2_t* p_t2,
                                       p_pi->compno);
                         return OPJ_FALSE;
                     } else {
-                        opj_event_msg(p_manager, EVT_WARNING,
-                                      "skip: segment too long (%d) with max (%d) for codeblock %d (p=%d, b=%d, r=%d, c=%d)\n",
-                                      l_seg->newlen, p_max_length, cblkno, p_pi->precno, bandno, p_pi->resno,
-                                      p_pi->compno);
+                        if (!p_t2->cut_warned) {
+                            p_t2->cut_warned = OPJ_TRUE;
+                            opj_event_msg(p_manager, EVT_WARNING,
+                                          "skip: segment too long (%d) with max (%d) for codeblock %d (p=%d, b=%d, r=%d, c=%d)\n",
+                                          l_seg->newlen, p_max_length, cblkno, p_pi->precno, bandno, p_pi->resno,
+                                          p_pi->compno);
+                        }
 
                         *p_data_read = p_max_length;
                         return OPJ_TRUE;

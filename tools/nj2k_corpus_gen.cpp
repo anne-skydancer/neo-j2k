@@ -570,7 +570,7 @@ bool same_decodes(const Bytes& a, const Bytes& b, int numres, std::string& err)
         Request rb{b.data(), b.size(), r, 0, Mode::Plain, false};
         const Outcome x = oracle->decode(ra), y = oracle->decode(rb);
         if (!x.ok || !y.ok || x.hash != y.hash) {
-            err = "packed stream decodes differently at reduce " + std::to_string(r) + " (" + y.stage + " " +
+            err = "the rewritten stream decodes differently at reduce " + std::to_string(r) + " (" + y.stage + " " +
                   y.last_error + ")";
             return false;
         }
@@ -581,14 +581,12 @@ bool same_decodes(const Bytes& a, const Bytes& b, int numres, std::string& err)
 bool build(const Spec& s, Bytes& out, std::string& err)
 {
     if (s.psot0) {
-        // The rewrite must decode as its source. With an EOC that holds for OpenJPEG 2.5.4: it takes
-        // a Psot = 0 tile-part to the stream's end less 2 bytes. Without one it dropped the last 2
-        // data bytes (plan W5), which the oracle's pin keeps since the fork's stage 1a.
+        // The rewrite must decode as its source, with an EOC and without: OpenJPEG 2.5.4 took a
+        // Psot = 0 tile-part to the stream's end less 2 bytes, so without an EOC it dropped the last
+        // 2 data bytes (plan W5); the oracle keeps them since the fork's stage 1a.
         Bytes src;
-        if (!encode(s, s.sop, s.eph, src, err) || !last_psot_zero(src, s.psot0 == 2, out, err)) {
-            return false;
-        }
-        if (s.psot0 == 1 && !same_decodes(src, out, s.numres, err)) {
+        if (!encode(s, s.sop, s.eph, src, err) || !last_psot_zero(src, s.psot0 == 2, out, err) ||
+                !same_decodes(src, out, s.numres, err)) {
             return false;
         }
     } else if (s.packed == Packed::None) {

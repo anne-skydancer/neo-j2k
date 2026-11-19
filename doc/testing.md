@@ -67,8 +67,9 @@ the tile grid's, tiles x tile size), `first` (600 bytes at reduce 5), `cuts` (ev
   layers, 1 to 6 resolutions, image and tile origins, tiles, precincts, code-block sizes, SOP, EPH, every
   mode switch, PLT, TLM, POC, and what OpenJPEG's encoder cannot write, rewritten from its output: PPM
   and PPT (from SOP+EPH streams), and a last tile-part of Psot = 0, one tile and four, with EOC and
-  without (`psot0_*`). The PPM, PPT and Psot = 0 rewrites with EOC are checked to decode as their
-  sources at every reduce level; without EOC, OpenJPEG 2.5.4 drops the last two data bytes (plan W5).
+  without (`psot0_*`). Each rewrite is checked to decode as its source at every reduce level (the
+  Psot = 0 ones without EOC only since the 1a pin: OpenJPEG 2.5.4 drops their last two data bytes, plan
+  W5).
   `nj2k_corpus_gen --verify corpus/generated` encodes again and compares.
 - **ISO 15444-4 and OpenJPEG's data**: fetched at test time (`tools/fetch_testdata.py`, pinned commit).
 - **Second Life textures**: the owner's private corpus stays on the owner's PC; lists of local paths go to
@@ -76,7 +77,8 @@ the tile grid's, tiles x tile size), `first` (600 bytes at reduce 5), `cuts` (ev
 
 ## Re-recording the reference tables
 
-Only when the oracle's output changes on purpose (a new pin):
+Only when the oracle's output changes on purpose (a new pin), and only after the suite has run against the
+tables as they are, so that every changed line is one the new pin explains (`doc/oracle.md`):
 
 ```
 nj2k_diff record --a oracle --files corpus/generated --root corpus/generated \

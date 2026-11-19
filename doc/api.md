@@ -14,6 +14,13 @@
   against neo-j2k unchanged and links `neoj2k`; `OPJ_STATIC` selects the static library as it does for
   OpenJPEG. `include/neoj2k/compat/` holds `openjpeg.h` and `opj_config.h` for code that includes those
   names. The tests compile their OpenJPEG request code against it (`tests/common/backend_neoj2k.cpp`).
+- The surface D5 mirrors is the oracle's `openjpeg.h`: OpenJPEG 2.5.4 plus the fork's stage 1a additions,
+  its decoder limits API (`opj_decoder_limits_t`, `opj_decoder_limits_init`, `opj_decoder_set_limits`,
+  `OPJ_HAVE_DECODER_LIMITS`, `OPJ_DECODER_LIMITS_NONE`, `OPJ_DECODER_LIMITS_SL_TEXTURE`). Once the viewer
+  sets the Second Life limits through it, switching to neo-j2k is a link change only if those calls map.
+  Stage 1b adds them under the mirrored names (`nj2k_decoder_limits*`, `NJ2K_DECODER_LIMITS_*`,
+  `NJ2K_HAVE_DECODER_LIMITS`) with neo-j2k's limit profiles; until then `gen_compat.py` lists them as
+  pending for 1b (`PENDING`), and fails on any other name without a mapping.
 - `include/neoj2k/neoj2k.hpp`: a header-only C++20 wrapper: owning handles, a memory reader over borrowed
   bytes (one stream at a time, its buffer sized to the bytes), everything `noexcept`, calling nothing but
   the C ABI.

@@ -7,13 +7,15 @@ oracle/PIN names the repository, the commit and the patches (in oracle/patches/,
 The library sources the shipped package compiles (no GPU back-ends, no tools) are copied to
 oracle/openjp2/ with the fork's LICENSE.
 
-usage: oracle_sync.py [--verify] [--commit SHA] [--source DIR]
+usage: oracle_sync.py [--verify] [--commit SHA] [--patches L] [--source DIR [--allow-dirty]]
   (no option)    fetch the pinned commit, apply the patches, replace oracle/openjp2/
   --verify       do the same in a temporary folder and compare with oracle/openjp2/; exit 1 on any difference
   --commit SHA   pin another commit (written to oracle/PIN; give --patches '' to drop the patches)
   --patches L    space-separated patch list for a new pin
-  --source DIR   take the sources from a local checkout of the fork instead of fetching
-                 (its HEAD must be the pinned commit unless --allow-dirty)
+  --source DIR   take the sources from a local checkout of the fork instead of fetching: its HEAD must
+                 be the pinned commit and the vendored files must be unchanged there
+  --allow-dirty  with --source, take the checkout as it is (local experiments only: the copy then
+                 differs from the pin, and --verify in CI refuses it)
 
 Needs git. The fetch is one commit deep: GitHub serves any reachable commit by its hash.
 """
@@ -60,12 +62,20 @@ def read_pin():
     return pin
 
 
+# oracle/PIN's comment, the same for every pin, so that it cannot go stale; what a pin is and why
+# it is pinned belongs in doc/oracle.md
+PIN_HEADER = [
+    "# SPDX-License-Identifier: BSD-2-Clause",
+    "# Copyright (c) 2026, Anne Skydancer (neo-j2k)",
+    "#",
+    "# The test oracle: OpenJPEG's library sources from the fork at this commit, plus the patches listed",
+    "# (oracle/patches/, applied in order), vendored under oracle/openjp2/ by tools/oracle_sync.py, which",
+    "# also verifies the copy in CI. What the commit is and why it is the pin: doc/oracle.md.",
+]
+
+
 def write_pin(pin):
-    lines = []
-    with open(PIN, encoding="utf-8") as f:
-        for line in f:
-            if line.startswith("#"):
-                lines.append(line.rstrip("\n"))
+    lines = list(PIN_HEADER)
     lines.append("repo=" + pin["repo"])
     lines.append("commit=" + pin["commit"])
     lines.append("patches=" + " ".join(pin["patches"]))
@@ -82,6 +92,21 @@ def fetch(pin, work):
     git(["init", "-q", work], cwd=None)
     git(["fetch", "-q", "--depth", "1", pin["repo"], pin["commit"]], cwd=work)
     git(["checkout", "-q", "FETCH_HEAD"], cwd=work)
+
+
+def check_source(src, commit):
+    """A local checkout may stand in for the fetch only at the pinned commit, with the vendored files
+    unchanged: otherwise its files would be vendored under a pin they are not."""
+    head = subprocess.run(["git", "-C", src, "rev-parse", "HEAD"], capture_output=True, text=True,
+                          check=True).stdout.strip()
+    if head != commit:
+        return "%s is at %s, not at the pinned %s" % (src, head[:12], commit[:12])
+    paths = [LIBDIR + "/" + name for name in SOURCES + HEADERS] + ["LICENSE"]
+    dirty = subprocess.run(["git", "-C", src, "status", "--porcelain", "--"] + paths, capture_output=True,
+                           text=True, check=True).stdout.strip()
+    if dirty:
+        return "%s has changes in vendored files:\n%s" % (src, dirty)
+    return None
 
 
 def copy_source_tree(src, work):
@@ -144,12 +169,21 @@ def main():
     ap.add_argument("--commit")
     ap.add_argument("--patches")
     ap.add_argument("--source")
+    ap.add_argument("--allow-dirty", action="store_true")
     a = ap.parse_args()
     pin = read_pin()
     if a.commit:
         pin["commit"] = a.commit
     if a.patches is not None:
         pin["patches"] = a.patches.split()
+    if a.allow_dirty and not a.source:
+        ap.error("--allow-dirty goes with --source")
+    if a.source and not a.allow_dirty:
+        problem = check_source(a.source, pin["commit"])
+        if problem:
+            print("oracle_sync: " + problem + " (--allow-dirty takes it anyway, for local experiments)",
+                  file=sys.stderr)
+            return 1
     with tempfile.TemporaryDirectory(prefix="nj2k-oracle-") as tmp:
         work = os.path.join(tmp, "src")
         staged = stage(pin, work, a.source)
