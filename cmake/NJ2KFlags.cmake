@@ -162,6 +162,18 @@ if(NJ2K_SANITIZE)
                           "AddressSanitizer component")
     endif()
     message(STATUS "neo-j2k: AddressSanitizer runtime ${NJ2K_ASAN_RUNTIME}")
+    # cl.exe's objects name their ASan libraries for the linker; clang-cl's do not, its driver adds
+    # them, and MSBuild's ClangCL toolset (as Ninja with clang-cl) links without the driver. So they
+    # come here, as clang-cl -### shows them for /MD and for /MT.
+    if(NJ2K_CLANG_CL)
+      if(NJ2K_MSVC_STATIC_RUNTIME)
+        add_link_options("${_nj2k_asan_dir}/clang_rt.asan_dynamic-x86_64.lib"
+                         "/wholearchive:${_nj2k_asan_dir}/clang_rt.asan_static_runtime_thunk-x86_64.lib")
+      else()
+        add_link_options("${_nj2k_asan_dir}/clang_rt.asan_dynamic-x86_64.lib" /include:__asan_seh_interceptor
+                         "/wholearchive:${_nj2k_asan_dir}/clang_rt.asan_dynamic_runtime_thunk-x86_64.lib")
+      endif()
+    endif()
   endif()
 endif()
 
