@@ -50,6 +50,10 @@ packed_ppm_sop_eph_97.j2k	1454	48	40	3	8	9/7	LRCP	3	5	SOP,EPH,PPM
 packed_ppt_tiles.j2k	8670	64	48	3	8	5/3	LRCP	3	4	tiles,PPT
 packed_ppm_tiles_97.j2k	2357	64	48	3	8	9/7	LRCP	2	4	tiles,PPM
 edge_ppt_empty_tiles_97.j2k	561	64	48	3	8	9/7	LRCP	2	4	tiles,PPT,oracle-refuses
+psot0_sop_97.j2k	1724	48	48	3	8	9/7	LRCP	8	5	SOP,Psot=0
+psot0_sop_noeoc_97.j2k	1740	48	48	3	8	9/7	LRCP	8	5	SOP,Psot=0,no-EOC
+psot0_tiles_97.j2k	2958	100	80	3	8	9/7	LRCP	2	5	tiles,Psot=0
+psot0_tiles_noeoc_97.j2k	2940	100	80	3	8	9/7	LRCP	2	5	tiles,Psot=0,no-EOC
 prec12_g.j2k	2349	40	40	1	12	5/3	LRCP	1	4	-
 prec16_g_97.j2k	1075	40	40	1	16	9/7	LRCP	2	4	-
 sgnd8_rgb.j2k	4325	40	40	3	8	5/3	LRCP	1	4	signed

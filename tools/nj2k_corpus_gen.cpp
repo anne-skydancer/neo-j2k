@@ -11,9 +11,10 @@
 // the decoder must reproduce and what Second Life never sends: sizes from 1x1 to 4096, 1 to 5
 // components, 8/12/16-bit and signed samples, subsampling, 5/3 and 9/7, all five progressions,
 // 1 to 8 layers, 1 to 6 resolutions, image and tile origins, tiles, precincts, code-block sizes,
-// SOP, EPH, every mode switch, PLT, TLM, POC, and packed packet headers (PPM, PPT), which OpenJPEG's
-// encoder cannot write: those are rewritten from SOP+EPH streams here and checked to decode exactly
-// as their sources at every reduce level.
+// SOP, EPH, every mode switch, PLT, TLM, POC, and what OpenJPEG's encoder cannot write, rewritten
+// here: packed packet headers (PPM, PPT) from SOP+EPH streams, and a last tile-part of Psot = 0
+// (it runs to the end of the codestream), with and without EOC. A rewrite is checked to decode
+// exactly as its source at every reduce level.
 #include <openjpeg.h>
 
 #include <algorithm>
@@ -54,6 +55,7 @@ struct Spec {
     Packed packed = Packed::None;
     bool packed_keeps_markers = false;  // PPM/PPT that keep SOP and EPH
     bool oracle_refuses = false;        // an edge case the oracle refuses (the rewrite is checked on its source)
+    int psot0 = 0;                      // 1: the last tile-part's Psot set to 0; 2: and the EOC dropped
     unsigned seed = 1;
     int texture = 24;  // texture amplitude, in 8-bit steps
 };
@@ -158,6 +160,18 @@ std::vector<Spec> specs()
     // (doc/departures.md, candidate DP-3).
     add({.name = "edge_ppt_empty_tiles_97", .w = 64, .h = 48, .comps = 3, .tw = 32, .th = 32, .irreversible = true,
          .numres = 4, .rates = rates({24, 8}), .packed = Packed::Ppt, .oracle_refuses = true});
+
+    // a last tile-part of Psot = 0, which runs to the end of the codestream (ISO 15444-1 A.4.2),
+    // with EOC and without (a cut stream ends so too): one tile with SOP and eight layers, and four
+    // tiles (only the last tile-part may have Psot = 0)
+    add({.name = "psot0_sop_97", .w = 48, .h = 48, .comps = 3, .irreversible = true, .numres = 5,
+         .rates = rates({512, 256, 128, 64, 32, 16, 8, 4}), .sop = true, .psot0 = 1});
+    add({.name = "psot0_sop_noeoc_97", .w = 48, .h = 48, .comps = 3, .irreversible = true, .numres = 5,
+         .rates = rates({512, 256, 128, 64, 32, 16, 8, 4}), .sop = true, .psot0 = 2});
+    add({.name = "psot0_tiles_97", .w = 100, .h = 80, .comps = 3, .tw = 64, .th = 64, .irreversible = true,
+         .numres = 5, .rates = rates({32, 8}), .psot0 = 1, .texture = 12});
+    add({.name = "psot0_tiles_noeoc_97", .w = 100, .h = 80, .comps = 3, .tw = 64, .th = 64, .irreversible = true,
+         .numres = 5, .rates = rates({32, 8}), .psot0 = 2, .texture = 12});
 
     // precision, sign, subsampling, code-block sizes
     add({.name = "prec12_g", .w = 40, .h = 40, .comps = 1, .prec = 12, .numres = 4});
@@ -525,6 +539,28 @@ bool pack_headers(const Bytes& in, Packed how, bool keep_markers, Bytes& out, st
     return true;
 }
 
+// The last tile-part's Psot set to 0, and (drop_eoc) the final EOC dropped.
+bool last_psot_zero(const Bytes& in, bool drop_eoc, Bytes& out, std::string& err)
+{
+    const auto mh = parse_main_header(in, &err);
+    if (!mh) {
+        return false;
+    }
+    const auto tps = scan_tile_parts(in, *mh);
+    if (tps.empty() || in.size() < 2 || in[in.size() - 2] != 0xFF || in[in.size() - 1] != 0xD9) {
+        err = "no tile-part, or no EOC at the end";
+        return false;
+    }
+    out = in;
+    const std::size_t sot = tps.back().sot;
+    put16(out, sot + 6, 0);
+    put16(out, sot + 8, 0);
+    if (drop_eoc) {
+        out.resize(out.size() - 2);
+    }
+    return true;
+}
+
 // The packed stream must decode exactly as its source, at every reduce level.
 bool same_decodes(const Bytes& a, const Bytes& b, int numres, std::string& err)
 {
@@ -544,7 +580,18 @@ bool same_decodes(const Bytes& a, const Bytes& b, int numres, std::string& err)
 
 bool build(const Spec& s, Bytes& out, std::string& err)
 {
-    if (s.packed == Packed::None) {
+    if (s.psot0) {
+        // The rewrite must decode as its source. With an EOC that holds for OpenJPEG 2.5.4: it takes
+        // a Psot = 0 tile-part to the stream's end less 2 bytes. Without one it dropped the last 2
+        // data bytes (plan W5), which the oracle's pin keeps since the fork's stage 1a.
+        Bytes src;
+        if (!encode(s, s.sop, s.eph, src, err) || !last_psot_zero(src, s.psot0 == 2, out, err)) {
+            return false;
+        }
+        if (s.psot0 == 1 && !same_decodes(src, out, s.numres, err)) {
+            return false;
+        }
+    } else if (s.packed == Packed::None) {
         if (!encode(s, s.sop, s.eph, out, err)) {
             return false;
         }
@@ -653,6 +700,8 @@ int main(int argc, char** argv)
         feat(s.sub != 1, "subsampled");
         feat(s.cbw != 64 || s.cbh != 64, "code-block-size");
         feat(s.oracle_refuses, "oracle-refuses");
+        feat(s.psot0 != 0, "Psot=0");
+        feat(s.psot0 == 2, "no-EOC");
         char line[512];
         std::snprintf(line, sizeof(line), "%s\t%zu\t%d\t%d\t%d\t%d\t%s\t%s\t%zu\t%d\t%s\n", file.c_str(), data.size(), s.w,
                       s.h, s.comps, s.prec, s.irreversible ? "9/7" : "5/3", s.poc ? "POC" : prog_name(s.prog),

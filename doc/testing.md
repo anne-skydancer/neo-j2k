@@ -61,13 +61,15 @@ the tile grid's, tiles x tile size), `first` (600 bytes at reduce 5), `cuts` (ev
 
 ## The corpora
 
-- **Generated** (`corpus/generated`, committed, 59 files, 226 KB): written by `nj2k_corpus_gen` with the
+- **Generated** (`corpus/generated`, committed, 63 files, 236 KB): written by `nj2k_corpus_gen` with the
   oracle's encoder; `MANIFEST.tsv` lists each file's features. It covers 1x1 to 4096 px, 1 to 5
   components, 8, 12, 16-bit and signed samples, subsampling, 5/3 and 9/7, the five progressions, 1 to 8
   layers, 1 to 6 resolutions, image and tile origins, tiles, precincts, code-block sizes, SOP, EPH, every
-  mode switch, PLT, TLM, POC, and PPM and PPT (rewritten from SOP+EPH streams, then checked to decode as
-  their sources at every reduce level). `nj2k_corpus_gen --verify corpus/generated` encodes again and
-  compares.
+  mode switch, PLT, TLM, POC, and what OpenJPEG's encoder cannot write, rewritten from its output: PPM
+  and PPT (from SOP+EPH streams), and a last tile-part of Psot = 0, one tile and four, with EOC and
+  without (`psot0_*`). The PPM, PPT and Psot = 0 rewrites with EOC are checked to decode as their
+  sources at every reduce level; without EOC, OpenJPEG 2.5.4 drops the last two data bytes (plan W5).
+  `nj2k_corpus_gen --verify corpus/generated` encodes again and compares.
 - **ISO 15444-4 and OpenJPEG's data**: fetched at test time (`tools/fetch_testdata.py`, pinned commit).
 - **Second Life textures**: the owner's private corpus stays on the owner's PC; lists of local paths go to
   `--files`.
