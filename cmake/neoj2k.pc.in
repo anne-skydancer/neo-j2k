@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: BSD-2-Clause
+# Copyright (c) 2026, Anne Skydancer (neo-j2k)
+prefix=@CMAKE_INSTALL_PREFIX@
+libdir=${prefix}/@CMAKE_INSTALL_LIBDIR@
+includedir=${prefix}/@CMAKE_INSTALL_INCLUDEDIR@
+
+Name: neoj2k
+Description: JPEG 2000 Part 1 codec
+Version: @PROJECT_VERSION@
+Libs: -L${libdir} -lneoj2k
+Cflags: -I${includedir}

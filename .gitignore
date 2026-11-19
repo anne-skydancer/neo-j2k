@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: BSD-2-Clause
+/build/
+/out/
+/.testdata/
+/.fixture-tmp/
+/CMakeUserPresets.json
+*.user
+.vs/
+.vscode/
+__pycache__/
+*.pyc

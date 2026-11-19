@@ -1,0 +1,94 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": { "major": 3, "minor": 25, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": { "NJ2K_WERROR": "ON" }
+    },
+    {
+      "name": "windows-base",
+      "hidden": true,
+      "inherits": "base",
+      "generator": "Visual Studio 18 2026",
+      "architecture": "x64",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" }
+    },
+    {
+      "name": "linux-base",
+      "hidden": true,
+      "inherits": "base",
+      "generator": "Ninja",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "RelWithDebInfo" },
+      "condition": { "type": "notEquals", "lhs": "${hostSystemName}", "rhs": "Windows" }
+    },
+    { "name": "windows-msvc", "displayName": "Windows, MSVC", "inherits": "windows-base" },
+    { "name": "windows-clang-cl", "displayName": "Windows, clang-cl", "inherits": "windows-base", "toolset": "ClangCL" },
+    {
+      "name": "windows-msvc-asan",
+      "displayName": "Windows, MSVC, AddressSanitizer",
+      "inherits": "windows-base",
+      "cacheVariables": { "NJ2K_SANITIZE": "address", "NJ2K_BUILD_BENCH": "OFF" }
+    },
+    { "name": "linux-gcc", "displayName": "Linux, GCC", "inherits": "linux-base" },
+    {
+      "name": "linux-gcc-scalar",
+      "displayName": "Linux, GCC, scalar build (baseline x86-64)",
+      "inherits": "linux-base",
+      "cacheVariables": { "NJ2K_SIMD": "SCALAR" }
+    },
+    {
+      "name": "linux-clang",
+      "displayName": "Linux, Clang",
+      "inherits": "linux-base",
+      "cacheVariables": { "CMAKE_C_COMPILER": "clang", "CMAKE_CXX_COMPILER": "clang++" }
+    },
+    {
+      "name": "linux-clang-asan-ubsan",
+      "displayName": "Linux, Clang, AddressSanitizer and UndefinedBehaviorSanitizer",
+      "inherits": "linux-clang",
+      "cacheVariables": { "NJ2K_SANITIZE": "address;undefined", "NJ2K_BUILD_BENCH": "OFF" }
+    },
+    {
+      "name": "linux-clang-fuzz",
+      "displayName": "Linux, Clang, libFuzzer targets with ASan and UBSan",
+      "inherits": "linux-clang",
+      "cacheVariables": {
+        "NJ2K_SANITIZE": "address;undefined",
+        "NJ2K_BUILD_FUZZERS": "ON",
+        "NJ2K_BUILD_TESTS": "OFF",
+        "NJ2K_BUILD_TOOLS": "OFF",
+        "NJ2K_BUILD_BENCH": "OFF",
+        "CMAKE_C_FLAGS": "-fsanitize=fuzzer-no-link",
+        "CMAKE_CXX_FLAGS": "-fsanitize=fuzzer-no-link"
+      }
+    }
+  ],
+  "buildPresets": [
+    { "name": "windows-msvc", "configurePreset": "windows-msvc", "configuration": "RelWithDebInfo" },
+    { "name": "windows-clang-cl", "configurePreset": "windows-clang-cl", "configuration": "RelWithDebInfo" },
+    { "name": "windows-msvc-asan", "configurePreset": "windows-msvc-asan", "configuration": "RelWithDebInfo" },
+    { "name": "linux-gcc", "configurePreset": "linux-gcc" },
+    { "name": "linux-gcc-scalar", "configurePreset": "linux-gcc-scalar" },
+    { "name": "linux-clang", "configurePreset": "linux-clang" },
+    { "name": "linux-clang-asan-ubsan", "configurePreset": "linux-clang-asan-ubsan" },
+    { "name": "linux-clang-fuzz", "configurePreset": "linux-clang-fuzz" }
+  ],
+  "testPresets": [
+    {
+      "name": "test-base",
+      "hidden": true,
+      "output": { "outputOnFailure": true },
+      "execution": { "noTestsAction": "error", "jobs": 4 }
+    },
+    { "name": "windows-msvc", "inherits": "test-base", "configurePreset": "windows-msvc", "configuration": "RelWithDebInfo" },
+    { "name": "windows-clang-cl", "inherits": "test-base", "configurePreset": "windows-clang-cl", "configuration": "RelWithDebInfo" },
+    { "name": "windows-msvc-asan", "inherits": "test-base", "configurePreset": "windows-msvc-asan", "configuration": "RelWithDebInfo" },
+    { "name": "linux-gcc", "inherits": "test-base", "configurePreset": "linux-gcc" },
+    { "name": "linux-gcc-scalar", "inherits": "test-base", "configurePreset": "linux-gcc-scalar" },
+    { "name": "linux-clang", "inherits": "test-base", "configurePreset": "linux-clang" },
+    { "name": "linux-clang-asan-ubsan", "inherits": "test-base", "configurePreset": "linux-clang-asan-ubsan" }
+  ]
+}
