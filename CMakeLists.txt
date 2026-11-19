@@ -78,6 +78,8 @@ endif()
 if(NJ2K_BUILD_TESTS OR NJ2K_BUILD_FUZZERS)
   add_subdirectory(fuzz)
 endif()
+# Windows AddressSanitizer builds: the runtime DLL beside every program (cmake/NJ2KFlags.cmake)
+nj2k_asan_runtime_beside_programs()
 
 message(STATUS "neo-j2k ${PROJECT_VERSION}: SIMD ${NJ2K_SIMD}, static ${NJ2K_BUILD_STATIC}, shared ${NJ2K_BUILD_SHARED}, "
                "OpenSim profile ${NJ2K_PROFILE_OPENSIM}, tests ${NJ2K_BUILD_TESTS}, fuzzers ${NJ2K_BUILD_FUZZERS}, "

@@ -18,6 +18,12 @@ failures on the console, never in a dialog (`console_reports()`, `tests/common/c
 error-reporting box, and `abort()`, `assert()` and the debug C runtime write to stderr), and the replay
 driver turns a fuzz target's abort into exit code 134 after the target's report.
 
+Windows AddressSanitizer builds (`windows-msvc-asan`, or `NJ2K_SANITIZE=address` with MSVC or clang-cl)
+need the compiler's runtime, `clang_rt.asan_dynamic-x86_64.dll`, which is not on `PATH`. The configure
+finds it where the compiler keeps it, or stops, and the build copies it beside every program (the test
+programs, the fuzz drivers and libFuzzer targets, the tools) before any of them links, on every build:
+no program of such a build starts without it, and nothing needs adding to `PATH`.
+
 | Test | What it proves |
 |---|---|
 | `api_unit` | neo-j2k's structures have OpenJPEG's layout (the decoder limits too); its parameter defaults and image functions behave as OpenJPEG's (compared with the oracle); the version, engine string (at most 31 characters) and CPU check keep their contracts; the test helpers read real codestreams; neo-j2k's header read gives the oracle's facts through the compatibility header |

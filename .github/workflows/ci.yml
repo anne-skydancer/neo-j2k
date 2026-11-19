@@ -79,14 +79,8 @@ jobs:
       - name: Conformance data (fetch)
         shell: bash
         run: python -I tools/fetch_testdata.py
-      - name: AddressSanitizer runtime on PATH
-        if: matrix.preset == 'windows-msvc-asan'
-        shell: pwsh
-        run: |
-          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -property installationPath
-          $dll = Get-ChildItem "$vs\VC\Tools\MSVC\*\bin\Hostx64\x64\clang_rt.asan_dynamic-x86_64.dll" | Select-Object -Last 1
-          if (-not $dll) { throw "no MSVC AddressSanitizer runtime" }
-          $dll.DirectoryName | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+      # windows-msvc-asan: the build puts the AddressSanitizer runtime beside every program
+      # (cmake/NJ2KFlags.cmake), so nothing here adds it to PATH and the tests prove the copies
       - name: Configure
         run: cmake --preset ${{ matrix.preset }}
       - name: Build
