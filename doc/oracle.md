@@ -75,9 +75,10 @@ and the nightly table did not. Run the comparisons with `nj2k_diff compare` (`do
 
 Each has an input and a check that fails once the defect is gone, so the list follows the pin:
 `tests/oracle-known-defects.txt` (the layer-boundary check), `tests/oracle-known-resource-defects.txt`
-(heap requests, through the counting oracle module) and `oracle_known_defect.od4`; the inputs are in
-`tests/known-defects` and `corpus/generated`. They are numbered OD-n, apart from the owner's decisions
-D1-D15 and the fork audit's findings O1-O3.
+(heap requests, through the counting oracle module), `oracle_known_defect.od4` and
+`oracle_known_defect.od6`; the inputs are in `tests/known-defects`, `corpus/generated` and
+`fuzz/regressions`. They are numbered OD-n, apart from the owner's decisions D1-D15 and the fork
+audit's findings O1-O3.
 
 - **OD-1: a cut packed-header stream with EPH markers is refused.** `corpus/generated/packed_ppm_sop_eph_97.j2k`
   (PPM, SOP, EPH, three layers) cut where layer 2 starts (484 bytes), or anywhere before layer 3, gives
@@ -128,3 +129,24 @@ D1-D15 and the fork audit's findings O1-O3.
   set by the viewer. Input: `tests/known-defects/od5-fullres-cblk4-2048-rgba.j2k`. neo-j2k keeps
   header-only state for the resolutions it drops (plan section 2.11) and its limits bound the rest
   (stage 1b); the fuzz filter bounds the full-resolution code-blocks meanwhile.
+- **OD-6: the encoder's two guard bits overflow unchecked.** OpenJPEG's encoder gives every component
+  two guard bits (`opj_j2k_setup_encoder`, `j2k.c:8435-8438` at the pin; only the `GUARD_BITS=` option
+  of `opj_encoder_set_extra_options` changes it) and never checks that a code-block fits its band. A
+  band holds Mb = precision + gain + guard bits - 1 bit planes (gain 0 for LL, 1 for HL and LH, 2 for
+  HH), and the 5/3 transform can grow a band by up to 1.5 in each direction at every level, against
+  the factor of 4 two guard bits leave. A code-block that needs more bit planes than its band holds
+  gets a negative zero-bit-plane count (`t2.c:825`), which the tag tree writes as 0: the decoder reads
+  its passes from the wrong bit plane, and the samples come back different, with no message from
+  either end. The lossless round-trip fuzzer found it (ClusterFuzzLite with ASan on the stage-0 pull
+  request, run 44467415713): a 33 x 31 image of two signed 1-bit components at five resolutions, whose
+  second component reaches 4 in the coarsest LL band, where two bit planes hold 3; 127 of that
+  component's 1,023 samples come back different. With `GUARD_BITS=3` the image round-trips; at one to
+  four resolutions, or at 2 bits, the same samples do too. The round-trip target computes the
+  transform the encoder applies (the DC level shift, the RCT, the 5/3 levels) and compares the samples
+  only where every band fits; it still encodes and decodes the others. Input:
+  `fuzz/regressions/roundtrip-guard-bit-overflow.bin`; `oracle_known_defect.od6` checks that it still
+  comes back different with the guard off. The viewer's reversible uploads have the same two guard
+  bits (8-bit samples, the colour transform, six resolutions from 64 px), so a contrived texture could
+  come back different; real textures were not measured, nor the 9/7 path, which has the same guard
+  bits. neo-j2k's encoder keeps D9's byte identity wherever OpenJPEG's stream holds the image; what it
+  writes where it does not (more guard bits, or a refusal) is for stage 6a.

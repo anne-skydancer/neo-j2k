@@ -16,3 +16,8 @@ the entry, and move a fuzz-found input to `fuzz/regressions` when neo-j2k is hel
 `od3` and `od5` are made by `fuzz/make_inputs.py --known-defects`, from `corpus/generated/sl_32_rgb_97.j2k`
 and from nothing; `od4` is the round-trip fuzzer's own find. All are synthetic. They are resource bombs
 and a heap overflow: nothing but these checks may decode or encode them.
+
+OD-6's input is not here: the round-trip target runs it as a regression (without the comparison the
+defect spoils), so it stays in `fuzz/regressions/roundtrip-guard-bit-overflow.bin`, and
+`oracle_known_defect.od6` replays it with the guard off, on every compiler and platform: the samples
+must still come back different.

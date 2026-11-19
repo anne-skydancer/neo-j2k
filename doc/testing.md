@@ -26,6 +26,7 @@ driver turns a fuzz target's abort into exit code 134 after the target's report.
 | `oracle_layers` | a cut where a layer starts decodes exactly as the whole file limited to the layers before it (`cp_layer`): an oracle for cut semantics that does not depend on the truncation code (plan audit B5); the oracle's known cases are in `tests/oracle-known-defects.txt` |
 | `oracle_known_resources` | each input of `tests/known-defects` still makes the oracle ask the heap for what `tests/oracle-known-resource-defects.txt` says (OD-3, OD-5), through the counting oracle module (builds without sanitizers) |
 | `oracle_known_defect.od4` | with the round-trip target's guard off, its OD-4 input still makes the oracle's MQ encoder write past its buffer (AddressSanitizer builds) |
+| `oracle_known_defect.od6` | with the round-trip target's guard off, its OD-6 input (`fuzz/regressions`) still comes back with other samples: the oracle's encoder overflows its two guard bits (every compiler and platform) |
 | `conformance_class1` | ISO/IEC 15444-4 class 1, profiles 0 and 1, with the T.803 (2024) peak and MSE limits; skipped without the data |
 | `corpus_regenerates` | the oracle's encoder writes the committed corpus byte for byte on this compiler and platform: the encoder oracle that stage 6a's byte identity relies on |
 | `fuzz_replay.*` | the fuzz targets run over their seeds (the corpus; the decode seeds with option bytes, made by `fuzz_seeds.decode`; `fuzz/seeds/roundtrip`) and `fuzz/regressions` on every platform; a replay fails when no input gets past the target's filters and guards |
@@ -104,7 +105,8 @@ Targets (`fuzz/`):
   5 on its first 600 bytes and at reduce 2 on half the file, plain decodes at reduce 1-5, strict mode with
   one layer, a plain cut).
 - `roundtrip`: a small image and its coding from the input, encoded losslessly and decoded: every sample
-  must come back. Seeds: `fuzz/seeds/roundtrip`.
+  must come back, unless the transform outgrows the two guard bits the oracle's encoder gives each
+  band (OD-6): such an image is encoded and decoded without the comparison. Seeds: `fuzz/seeds/roundtrip`.
 
 Until neo-j2k decodes (stage 1c) they drive the oracle, behind filters (`fuzz/fuzz_common.h`) that keep
 OpenJPEG's known bombs out of the way (fork audit S2, S3; OD-3, OD-5). The header filter bounds the tiles
