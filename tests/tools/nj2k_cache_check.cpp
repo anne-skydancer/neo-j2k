@@ -109,7 +109,7 @@ int main(int argc, char** argv)
             nj2k::detail::Messages msg;
             nj2k::detail::HeaderSettings hs{};
             hs.limits = profile;
-            nj2k::detail::MemorySource src(slot.data(), n);
+            nj2k::detail::Source src(slot.data(), n);
             nj2k::detail::MainHeader* mh = nullptr;
             ++checks;
             const nj2k_status_t st = nj2k::detail::read_main_header(src, arena, msg, hs, mh);

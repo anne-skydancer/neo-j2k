@@ -282,7 +282,7 @@ NJ2K_API NJ2K_BOOL NJ2K_CALLCONV nj2k_read_header(nj2k_stream_t* p_stream, nj2k_
         return fail(d, NJ2K_E_STATE, "nj2k_read_header: the codec has read a header already, or failed\n");
     }
     d->arena.set_budget(d->limits.max_memory);
-    StreamSource src(*s);
+    Source src(*s);
     HeaderSettings hs{};
     hs.limits = d->limits;
     hs.dump = d->dump;

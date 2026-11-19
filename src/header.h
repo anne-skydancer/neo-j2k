@@ -44,32 +44,29 @@ inline constexpr std::uint16_t kRsizPart2 = 0x8000, kRsizHT = 0x4000;
 
 // ---- where the header bytes come from ---------------------------------------------------------
 
+struct Stream;
+
+// The bytes a header is read from: borrowed memory, or a host stream. A plain class, not an
+// interface: the library is built without RTTI, and code built with it (the tests, the fuzz
+// targets, whose UBSan checks virtual calls against type information) uses it too.
 class Source {
 public:
+    Source(const std::uint8_t* data, std::size_t size) noexcept : data_(data), size_(size) {}
+    explicit Source(Stream& stream) noexcept : stream_(&stream) {}
+
     // Reads up to n bytes; fewer only when the bytes end.
-    virtual std::size_t read(std::uint8_t* dst, std::size_t n) noexcept = 0;
+    std::size_t read(std::uint8_t* dst, std::size_t n) noexcept;
     // Skips n bytes; false when the bytes end first.
-    virtual bool skip(std::uint64_t n) noexcept = 0;
+    bool skip(std::uint64_t n) noexcept;
     // Bytes read or skipped since the start.
-    virtual std::uint64_t tell() const noexcept = 0;
+    std::uint64_t tell() const noexcept;
     // Bytes left, or -1 when unknown.
-    virtual std::int64_t bytes_left() const noexcept = 0;
-
-protected:
-    ~Source() = default;
-};
-
-class MemorySource final : public Source {
-public:
-    MemorySource(const std::uint8_t* data, std::size_t size) noexcept : data_(data), size_(size) {}
-    std::size_t read(std::uint8_t* dst, std::size_t n) noexcept override;
-    bool skip(std::uint64_t n) noexcept override;
-    std::uint64_t tell() const noexcept override { return at_; }
-    std::int64_t bytes_left() const noexcept override { return std::int64_t(size_ - at_); }
+    std::int64_t bytes_left() const noexcept;
 
 private:
-    const std::uint8_t* data_;
-    std::size_t size_;
+    Stream* stream_ = nullptr;
+    const std::uint8_t* data_ = nullptr;
+    std::size_t size_ = 0;
     std::size_t at_ = 0;
 };
 

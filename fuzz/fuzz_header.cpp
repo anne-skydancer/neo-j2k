@@ -156,7 +156,7 @@ void neo_tile_parts(const std::uint8_t* data, std::size_t size)
         arena.init(&a);
         Messages msg;
         HeaderSettings hs{};
-        MemorySource src(data, size);
+        Source src(data, size);
         MainHeader* mh = nullptr;
         if (read_main_header(src, arena, msg, hs, mh) == NJ2K_OK) {
             std::uint64_t sot = mh->end;

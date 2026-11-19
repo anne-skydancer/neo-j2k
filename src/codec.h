@@ -19,19 +19,6 @@
 
 namespace nj2k::detail {
 
-// A header Source over a host stream.
-class StreamSource final : public Source {
-public:
-    explicit StreamSource(Stream& s) noexcept : s_(s) {}
-    std::size_t read(std::uint8_t* dst, std::size_t n) noexcept override { return s_.read(dst, n); }
-    bool skip(std::uint64_t n) noexcept override { return s_.skip(n); }
-    std::uint64_t tell() const noexcept override { return s_.offset; }
-    std::int64_t bytes_left() const noexcept override { return s_.bytes_left(); }
-
-private:
-    Stream& s_;
-};
-
 struct Decoder {
     static constexpr std::uint32_t kMagic = 0x4E4A3244u;  // "NJ2D"
     enum class State : std::uint8_t { created, header, failed };

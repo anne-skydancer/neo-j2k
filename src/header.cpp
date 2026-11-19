@@ -55,6 +55,8 @@
 #include <cstdarg>
 #include <cstring>
 
+#include "stream.h"
+
 namespace nj2k::detail {
 
 namespace {
@@ -673,8 +675,11 @@ nj2k_status_t check_plt(const Messages& msg, const std::uint8_t* p, std::uint32_
 
 }  // namespace
 
-std::size_t MemorySource::read(std::uint8_t* dst, std::size_t n) noexcept
+std::size_t Source::read(std::uint8_t* dst, std::size_t n) noexcept
 {
+    if (stream_) {
+        return stream_->read(dst, n);
+    }
     const std::size_t take = n < size_ - at_ ? n : size_ - at_;
     if (take) {
         std::memcpy(dst, data_ + at_, take);
@@ -683,14 +688,27 @@ std::size_t MemorySource::read(std::uint8_t* dst, std::size_t n) noexcept
     return take;
 }
 
-bool MemorySource::skip(std::uint64_t n) noexcept
+bool Source::skip(std::uint64_t n) noexcept
 {
+    if (stream_) {
+        return stream_->skip(n);
+    }
     if (n > size_ - at_) {
         at_ = size_;
         return false;
     }
     at_ += std::size_t(n);
     return true;
+}
+
+std::uint64_t Source::tell() const noexcept
+{
+    return stream_ ? stream_->offset : at_;
+}
+
+std::int64_t Source::bytes_left() const noexcept
+{
+    return stream_ ? stream_->bytes_left() : std::int64_t(size_ - at_);
 }
 
 void Quantization::step(std::uint32_t band, std::uint32_t& expn, std::uint32_t& mant) const noexcept

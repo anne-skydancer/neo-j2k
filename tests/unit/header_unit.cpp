@@ -678,7 +678,7 @@ void test_precedence()
     arena.init(&sys);
     d::Messages msg;
     d::HeaderSettings hs{};
-    d::MemorySource src(main.b.data(), main.b.size());
+    d::Source src(main.b.data(), main.b.size());
     d::MainHeader* mh = nullptr;
     CHECK(d::read_main_header(src, arena, msg, hs, mh) == NJ2K_OK && mh && mh->end == sot);
     d::TilePartHeader tp{};
@@ -840,7 +840,7 @@ void test_header_rules()
         arena.init(&sys);
         d::Messages msg;
         d::HeaderSettings hs{};
-        d::MemorySource src(w.b.data(), w.b.size());
+        d::Source src(w.b.data(), w.b.size());
         d::MainHeader* mh = nullptr;
         d::TilePartHeader tp{};
         CHECK(d::read_main_header(src, arena, msg, hs, mh) == NJ2K_OK &&
@@ -850,7 +850,7 @@ void test_header_rules()
         w.b[sot + 7] = 0;
         w.b[sot + 8] = 0;
         w.b[sot + 9] = 16;
-        d::MemorySource again(w.b.data(), w.b.size());
+        d::Source again(w.b.data(), w.b.size());
         d::Arena arena2;
         arena2.init(&sys);
         CHECK(d::read_main_header(again, arena2, msg, hs, mh) == NJ2K_OK &&
@@ -875,7 +875,7 @@ void test_tile_parts()
         arena.init(&sys);
         d::Messages msg;
         d::HeaderSettings hs{};
-        d::MemorySource src(data.data(), data.size());
+        d::Source src(data.data(), data.size());
         d::MainHeader* mh = nullptr;
         if (d::read_main_header(src, arena, msg, hs, mh) != NJ2K_OK) {
             CHECK_MSG(false, "%s: main header", name.c_str());
