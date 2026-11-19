@@ -76,6 +76,12 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
     while (numres > 1 && ((w >> (numres - 1)) == 0 || (h >> (numres - 1)) == 0)) {
         --numres;
     }
+    // OpenJPEG's MQ encoder writes past the code-block buffer when every pass is terminated
+    // (TERMALL) on samples deeper than 8 bits (oracle defect O-4, doc/oracle.md): kept away from
+    // the oracle until neo-j2k's bounded encoder (stage 6a) takes this target over
+    if ((mode & 4) && prec > 8) {
+        return 0;
+    }
 
     std::vector<opj_image_cmptparm_t> cp(static_cast<std::size_t>(comps));
     for (auto& c : cp) {

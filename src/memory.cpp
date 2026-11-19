@@ -23,7 +23,7 @@ void heap_free(void* ptr) noexcept
     std::free(ptr);
 }
 
-void* aligned_alloc(std::size_t size) noexcept
+void* plane_alloc(std::size_t size) noexcept
 {
     if (size == 0) {
         return nullptr;
@@ -39,7 +39,7 @@ void* aligned_alloc(std::size_t size) noexcept
 #endif
 }
 
-void aligned_free(void* ptr) noexcept
+void plane_free(void* ptr) noexcept
 {
 #if defined(_WIN32)
     _aligned_free(ptr);

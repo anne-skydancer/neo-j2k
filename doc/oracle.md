@@ -65,6 +65,15 @@ case starts to pass, so the list follows the pin.
   ClusterFuzzLite on the stage-0 pull request (an out-of-memory at `j2k.c:5045`), then measured with
   `nj2k_diff decode`. Fix for the fork: in non-strict mode allocate at most the bytes left. The fuzz targets
   keep tile-parts above 64 MB away from the oracle meanwhile; neo-j2k never allocates from `Psot`.
+- **O-4: the MQ encoder writes past the code-block buffer** (fork audit S5, now confirmed). The lossless
+  round-trip fuzzer (ClusterFuzzLite, ASan) found a one-byte heap write past an 83-byte code-block buffer
+  (`opj_mqc_byteout`, `mqc.c:494`, from `opj_mqc_flush`, allocated at `tcd.c:1336`): a 28x2 image, three
+  16-bit signed components, 4x32 code-blocks, RESET and TERMALL, four layers, EPH. Every terminated pass
+  adds bytes the fixed margin of `opj_tcd_code_block_enc_allocate_data` does not cover; upstream PR #1649
+  reports the same with 16-bit input and TERMALL. Reproduced with MSVC's ASan as well. The viewer's uploads
+  (8-bit, no mode switches) do not reach it. The round-trip target skips TERMALL above 8 bits meanwhile;
+  the input is `fuzz/regressions/roundtrip-o4-mqc-termall-16bit.bin`; neo-j2k's encoder bounds its MQ
+  output (stage 6a).
 - **O-2: a tile whose tile-parts hold no data bytes is refused.** With packed headers, a tile whose packets
   are all empty has no bytes after SOD; that is valid, but `opj_j2k_decode_tile` refuses a tile without
   data. Kept as `corpus/generated/edge_ppt_empty_tiles_97.j2k` (the reference records the refusal);

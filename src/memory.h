@@ -14,9 +14,9 @@ void* heap_calloc(std::size_t count, std::size_t size) noexcept;
 void heap_free(void* ptr) noexcept;
 
 // Sample planes: 64-byte aligned (a cache line, and every SIMD width neo-j2k uses); nullptr for a
-// zero size, as OpenJPEG's opj_aligned_malloc. Free with aligned_free only.
+// zero size, as OpenJPEG's opj_aligned_malloc. Free with plane_free only.
 inline constexpr std::size_t kPlaneAlignment = 64;
-void* aligned_alloc(std::size_t size) noexcept;
-void aligned_free(void* ptr) noexcept;
+void* plane_alloc(std::size_t size) noexcept;
+void plane_free(void* ptr) noexcept;
 
 }  // namespace nj2k::detail

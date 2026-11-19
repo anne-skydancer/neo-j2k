@@ -22,6 +22,7 @@ a Defender-excluded `.fixture-tmp` for this).
 | `oracle_cuts.<file>` | the same for every cut point of every generated file up to 4 KB (every 13th one in sanitizer builds) |
 | `oracle_layers` | a cut where a layer starts decodes exactly as the whole file limited to the layers before it (`cp_layer`): an oracle for cut semantics that does not depend on the truncation code (plan audit B5) |
 | `conformance_class1` | ISO/IEC 15444-4 class 1, profiles 0 and 1, with the T.803 (2024) peak and MSE limits; skipped without the data |
+| `corpus_regenerates` | the oracle's encoder writes the committed corpus byte for byte on this compiler and platform: the encoder oracle that stage 6a's byte identity relies on |
 | `fuzz_replay.*` | the fuzz targets run over the corpus and `fuzz/regressions` on every platform |
 | `exports` | `neoj2k.dll` / `libneoj2k.so` export exactly the functions `neoj2k.h` declares, all `nj2k_*`, as `abi/exports.txt` lists |
 | `global_state` | the static library's objects hold no writable globals, no thread-local storage and no static initialisers; `nj2k_cpu_supported()`'s object needs nothing beyond baseline x86-64 |

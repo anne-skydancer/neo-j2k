@@ -77,8 +77,8 @@
 
 #include "memory.h"
 
-using nj2k::detail::aligned_alloc;
-using nj2k::detail::aligned_free;
+using nj2k::detail::plane_alloc;
+using nj2k::detail::plane_free;
 using nj2k::detail::heap_calloc;
 using nj2k::detail::heap_free;
 
@@ -118,12 +118,12 @@ extern "C" {
 
 NJ2K_API void* NJ2K_CALLCONV nj2k_image_data_alloc(NJ2K_SIZE_T size)
 {
-    return aligned_alloc(size);
+    return plane_alloc(size);
 }
 
 NJ2K_API void NJ2K_CALLCONV nj2k_image_data_free(void* ptr)
 {
-    aligned_free(ptr);
+    plane_free(ptr);
 }
 
 NJ2K_API nj2k_image_t* NJ2K_CALLCONV nj2k_image_create(NJ2K_UINT32 numcmpts, nj2k_image_cmptparm_t* cmptparms,
@@ -141,7 +141,7 @@ NJ2K_API nj2k_image_t* NJ2K_CALLCONV nj2k_image_create(NJ2K_UINT32 numcmpts, nj2
             return nullptr;
         }
         const NJ2K_SIZE_T bytes = static_cast<NJ2K_SIZE_T>(comp->w) * comp->h * sizeof(NJ2K_INT32);
-        comp->data = static_cast<NJ2K_INT32*>(aligned_alloc(bytes));
+        comp->data = static_cast<NJ2K_INT32*>(plane_alloc(bytes));
         if (!comp->data) {
             nj2k_image_destroy(image);
             return nullptr;
@@ -172,7 +172,7 @@ NJ2K_API void NJ2K_CALLCONV nj2k_image_destroy(nj2k_image_t* image)
     }
     if (image->comps) {
         for (NJ2K_UINT32 compno = 0; compno < image->numcomps; ++compno) {
-            aligned_free(image->comps[compno].data);
+            plane_free(image->comps[compno].data);
         }
         heap_free(image->comps);
     }

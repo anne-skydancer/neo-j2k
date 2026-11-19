@@ -94,6 +94,12 @@ endif()
 nj2k_add_test(conformance_class1 nj2k_conformance --a oracle --data "${NJ2K_TESTDATA}")
 set_tests_properties(conformance_class1 PROPERTIES SKIP_RETURN_CODE 77)
 
+# The oracle's encoder gives the committed corpus byte for byte on this compiler and platform (the
+# corpus was written on Windows with MSVC): the encoder oracle stage 6a relies on.
+if(NJ2K_BUILD_TOOLS)
+  nj2k_add_test(corpus_regenerates nj2k_corpus_gen --verify "${NJ2K_CORPUS}")
+endif()
+
 # Checks of the built library itself (Python, no third-party modules).
 find_package(Python3 COMPONENTS Interpreter)
 if(Python3_FOUND AND NOT NJ2K_SANITIZE)
