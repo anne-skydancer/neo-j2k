@@ -39,6 +39,7 @@
 #include "common.h"
 #include "decoder.h"
 #include "j2k_scan.h"
+#include "load.h"
 
 using namespace nj2k::test;
 
@@ -515,8 +516,9 @@ int cmd_decode(const Args& a)
                 if (o.ok) {
                     std::printf(" %ux%u x%u hash %s", o.comps[0].w, o.comps[0].h, o.numcomps, hex64(o.hash).c_str());
                 }
-                std::printf(", %u warnings, %u errors%s%s\n", o.warnings, o.errors, o.last_error.empty() ? "" : ": ",
-                            o.last_error.c_str());
+                std::printf(", %u warnings, %u errors%s%s; process peak commit %.0f MB\n", o.warnings, o.errors,
+                            o.last_error.empty() ? "" : ": ", o.last_error.c_str(),
+                            double(peak_commit_bytes()) / (1024.0 * 1024.0));
                 if (!o.warning_kinds.empty()) {
                     std::printf("    warnings: %s\n", o.warning_kinds.c_str());
                 }

@@ -83,9 +83,11 @@ if(NJ2K_BUILD_SHARED)
     VERSION ${PROJECT_VERSION}
     SOVERSION ${_nj2k_soversion})
   if(NOT WIN32)
-    target_link_options(neoj2k_shared PRIVATE
-      "LINKER:--version-script=${CMAKE_CURRENT_SOURCE_DIR}/neoj2k.map"
-      LINKER:--no-undefined)
+    target_link_options(neoj2k_shared PRIVATE "LINKER:--version-script=${CMAKE_CURRENT_SOURCE_DIR}/neoj2k.map")
+    # every symbol resolved at link time; not with sanitizers, whose runtime the program provides
+    if(NOT NJ2K_SANITIZE)
+      target_link_options(neoj2k_shared PRIVATE LINKER:--no-undefined)
+    endif()
     set_property(TARGET neoj2k_shared APPEND PROPERTY LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/neoj2k.map")
   endif()
   # The DLL keeps link-time code generation inside: its boundary is one call per image.

@@ -34,4 +34,9 @@ std::vector<std::string> busy_processes();
 
 int logical_cpus() noexcept;
 
+// The process's peak memory so far, in bytes: committed private memory on Windows (the commit a
+// resource bomb charges even when the pages are never touched), the peak virtual size (VmPeak)
+// elsewhere. 0 when the platform does not say.
+std::uint64_t peak_commit_bytes() noexcept;
+
 }  // namespace nj2k::test

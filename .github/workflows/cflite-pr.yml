@@ -23,6 +23,8 @@ on:
 
 permissions:
   contents: read
+  # ClusterFuzzLite keeps corpora and the base build as workflow artifacts
+  actions: read
 
 jobs:
   fuzz:

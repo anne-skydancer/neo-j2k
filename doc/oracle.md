@@ -57,6 +57,14 @@ case starts to pass, so the list follows the pin.
   and without EPH it would go unnoticed. A build without the fix's segment close-up fails the same way, so
   the defect is OpenJPEG's, not the fix's. It bears on stage 1a's exhaustion exit (audit B3 asked for packed-header streams in its gate).
   neo-j2k keeps the complete layers here (`doc/departures.md`, D-4).
+- **O-3: a tile-part's declared length is allocated before it is read.** In non-strict mode
+  `opj_j2k_read_sod` (`j2k.c:5016-5046`) only warns when `Psot` exceeds what is left of the stream and then
+  allocates all of it. `sl_32_rgb_97.j2k` (782 bytes) with `Psot` set to `0xFFFFFF00` decodes normally and
+  commits 4,105 MB per decode (1,027 MB with `Psot` = 1 GiB), in the shipped DLL and in the oracle, through
+  the viewer's request; a commit bomb on every decode thread, which no viewer guard sees. Found by
+  ClusterFuzzLite on the stage-0 pull request (an out-of-memory at `j2k.c:5045`), then measured with
+  `nj2k_diff decode`. Fix for the fork: in non-strict mode allocate at most the bytes left. The fuzz targets
+  keep tile-parts above 64 MB away from the oracle meanwhile; neo-j2k never allocates from `Psot`.
 - **O-2: a tile whose tile-parts hold no data bytes is refused.** With packed headers, a tile whose packets
   are all empty has no bytes after SOD; that is valid, but `opj_j2k_decode_tile` refuses a tile without
   data. Kept as `corpus/generated/edge_ppt_empty_tiles_97.j2k` (the reference records the refusal);

@@ -46,7 +46,7 @@ function(nj2k_oracle_flags target)
     target_compile_options(${target} PRIVATE /w /fp:precise /arch:AVX2
       $<$<NOT:$<CONFIG:Debug>>:/Oi /Gy /Gw>)
   elseif(NJ2K_CLANG_CL)
-    target_compile_options(${target} PRIVATE /w /fp:precise /arch:AVX2 /clang:-ffp-contract=off
+    target_compile_options(${target} PRIVATE /w /arch:AVX2 /clang:-ffp-contract=off
       $<$<NOT:$<CONFIG:Debug>>:/Oi /Gy /Gw>)
   else()
     target_compile_options(${target} PRIVATE -w -mavx2 -ffp-contract=off -fno-fast-math

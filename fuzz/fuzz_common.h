@@ -63,7 +63,18 @@ inline bool oracle_may_decode(std::span<const std::uint8_t> cs, int reduce)
     std::string why;
     const auto mh = test::parse_main_header(cs, &why);
     if (mh) {
-        return test::within_limits(*mh, reduce, limits);
+        if (!test::within_limits(*mh, reduce, limits)) {
+            return false;
+        }
+        // In non-strict mode OpenJPEG allocates every tile-part's declared length (Psot) before it
+        // reads, whatever is left of the stream: a 782-byte stream that declares 4 GB commits 4 GB
+        // (oracle defect O-3, doc/oracle.md)
+        for (const auto& tp : test::scan_tile_parts(cs, *mh)) {
+            if (tp.psot > (1u << 26)) {
+                return false;
+            }
+        }
+        return true;
     }
     // No complete main header. SIZ comes first and OpenJPEG allocates its tiles on reading it, so
     // a stream whose SIZ declares too much is kept away even when the rest is cut.

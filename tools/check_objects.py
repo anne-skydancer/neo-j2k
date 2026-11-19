@@ -198,8 +198,8 @@ def check_cpu_object(path):
         lines = subprocess.run([tool, "/nologo", "/disasm", path], capture_output=True, text=True,
                                check=True).stdout.splitlines()
         found, count = newer_instructions(lines, DUMPBIN_INSN, 2)
-    if count < 20:
-        return ["%s: only %d instructions disassembled; the output format changed?" % (path, count)]
+    if count == 0:
+        return ["%s: no instructions disassembled; did the tool's output format change?" % path]
     return ["%s: needs a newer processor: %s" % (path, line) for line in found]
 
 

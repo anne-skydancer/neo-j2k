@@ -25,12 +25,13 @@ endif()
 
 # No floating-point contraction anywhere (owner decision D2: decodes bit-identical to OpenJPEG
 # 2.5.4). cl.exe does not contract under /fp:precise; clang-cl does (the literature audit, A4), so
-# it gets -ffp-contract=off as well; GCC and Clang get it explicitly. Never fast-math.
+# it gets -ffp-contract=off, on its default precise model (/fp:precise on top would only be
+# overridden, which clang-cl reports); GCC and Clang get it explicitly. Never fast-math.
 function(nj2k_fp_strict target)
   if(NJ2K_CL)
     target_compile_options(${target} PRIVATE /fp:precise)
   elseif(NJ2K_CLANG_CL)
-    target_compile_options(${target} PRIVATE /fp:precise /clang:-ffp-contract=off)
+    target_compile_options(${target} PRIVATE /clang:-ffp-contract=off)
   else()
     target_compile_options(${target} PRIVATE -ffp-contract=off -fno-fast-math)
   endif()
@@ -74,7 +75,9 @@ function(nj2k_no_exceptions target)
     target_compile_options(${target} PRIVATE $<$<COMPILE_LANGUAGE:CXX>:/EHs-c- /GR->)
     target_compile_definitions(${target} PRIVATE $<$<COMPILE_LANGUAGE:CXX>:_HAS_EXCEPTIONS=0>)
   else()
-    target_compile_options(${target} PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-fno-exceptions -fno-rtti>)
+    # without RTTI the vptr check cannot work; sanitizer flag sets that include it (OSS-Fuzz's
+    # UBSan) would otherwise refuse to compile the library
+    target_compile_options(${target} PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-fno-exceptions -fno-rtti -fno-sanitize=vptr>)
   endif()
 endfunction()
 

@@ -17,6 +17,7 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#include <psapi.h>
 #include <tlhelp32.h>
 #else
 #include <dirent.h>
@@ -32,6 +33,31 @@ int logical_cpus() noexcept
 {
     const unsigned n = std::thread::hardware_concurrency();
     return n ? int(n) : 1;
+}
+
+std::uint64_t peak_commit_bytes() noexcept
+{
+#if defined(_WIN32)
+    PROCESS_MEMORY_COUNTERS pmc{};
+    pmc.cb = sizeof(pmc);
+    if (K32GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof(pmc))) {
+        return pmc.PeakPagefileUsage;
+    }
+    return 0;
+#else
+    std::ifstream in("/proc/self/status");
+    std::string key;
+    while (in >> key) {
+        if (key == "VmPeak:") {
+            std::uint64_t kb = 0;
+            in >> kb;
+            return kb * 1024;
+        }
+        std::string rest;
+        std::getline(in, rest);
+    }
+    return 0;
+#endif
 }
 
 #if defined(_WIN32)
