@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: BSD-2-Clause
+# Copyright (c) 2026, Anne Skydancer (neo-j2k)
+#
+# The test oracle: OpenJPEG as the viewer ships it, from the owner's fork, plus the patches below,
+# vendored under oracle/openjp2/ by tools/oracle_sync.py (which also verifies the copy in CI).
+# Stage 1a's hotfix (branch vkstorm-2.5.4-hotfix) is not pushed yet, so the pin is the shipped
+# commit plus the general truncation fix; when 1a lands, the pin moves to its commit and the
+# patch list empties (doc/oracle.md).
+repo=https://github.com/anne-skydancer/openjpeg.git
+commit=3b1a6a96ddf1c7765253db6089de2d8dd30f761f
+patches=0001-keep-layers-general.patch

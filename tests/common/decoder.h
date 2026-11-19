@@ -1,0 +1,89 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026, Anne Skydancer (neo-j2k)
+//
+// The decoders under test, behind one interface: the oracle (OpenJPEG at the pinned source, linked
+// statically), any library with OpenJPEG's ABI loaded at run time (the viewer's shipped
+// openjp2.dll, a fix build), and neo-j2k through its OpenJPEG compatibility header. The request
+// code is one source compiled once per API (replay.inl), so every backend is driven the same way.
+#pragma once
+
+#include <cstddef>
+#include <cstdint>
+#include <memory>
+#include <string>
+#include <vector>
+
+namespace nj2k::test {
+
+enum class Mode {
+    Plain,   // one codec, non-strict (partial codestreams decode), the reduce factor and layer limit
+    Strict,  // the same in strict mode (OpenJPEG's default)
+    Viewer,  // the viewer's request (llimagej2coj.cpp): header pass, then a second codec with the
+             // reduce factor set before the header, non-strict, the viewer's size guard, its
+             // geometry checks and its 8-bit bottom-up copy of up to four components
+};
+const char* mode_name(Mode m) noexcept;
+bool parse_mode(const std::string& s, Mode& m) noexcept;
+
+struct Request {
+    const std::uint8_t* data = nullptr;
+    std::size_t size = 0;  // the bytes the decoder sees: a whole file, or a prefix of it
+    int reduce = 0;        // discard level
+    int layers = 0;        // layers to decode, 0 for all (cp_layer); Plain and Strict only
+    Mode mode = Mode::Plain;
+    bool capture = false;  // keep the sample planes in the outcome
+};
+
+struct Component {
+    std::uint32_t w = 0, h = 0, dx = 0, dy = 0, x0 = 0, y0 = 0, prec = 0, sgnd = 0, factor = 0, resno_decoded = 0;
+};
+
+struct Outcome {
+    bool ok = false;
+    std::string stage;  // where a failure happened: codec, header, guard, decode, geometry
+    std::uint32_t x0 = 0, y0 = 0, x1 = 0, y1 = 0, numcomps = 0;
+    int color_space = 0;
+    std::vector<Component> comps;
+    std::vector<std::vector<std::int32_t>> planes;  // when captured
+    // hash: geometry and every sample of every component; 0 when !ok.
+    std::uint64_t hash = 0;
+    // viewer mode: FNV-1a of the viewer's 8-bit raw image (the checksum of the earlier benches)
+    std::uint64_t u8_hash = 0;
+    std::uint32_t warnings = 0, errors = 0;
+    std::string last_error;     // every error message, oldest first
+    std::string warning_kinds;  // each kind of warning once
+};
+
+class Backend {
+public:
+    virtual ~Backend() = default;
+    virtual const std::string& name() const noexcept = 0;
+    virtual Outcome decode(const Request& request) = 0;
+    // The viewer's upload encode of an 8-bit interleaved, bottom-up raw image (bench and encoder
+    // tests); false when the backend cannot encode yet.
+    virtual bool encode_upload(const std::uint8_t* raw, int width, int height, int comps, bool reversible,
+                               std::vector<std::uint8_t>& out) = 0;
+    // Heap calls since the last reset (allocations, reallocations, frees, bytes), when the backend
+    // can count them (the counting oracle module, neo-j2k's allocator hook later); false otherwise.
+    virtual bool alloc_counts(std::uint64_t out[4]) { (void)out; return false; }
+    virtual void alloc_reset() {}
+};
+
+// "oracle", "neoj2k", or "lib:<path>[=<name>]" (an OpenJPEG-ABI shared library).
+std::unique_ptr<Backend> make_backend(const std::string& spec, std::string* error = nullptr);
+std::unique_ptr<Backend> make_oracle_backend();
+std::unique_ptr<Backend> make_neoj2k_backend();
+std::unique_ptr<Backend> make_library_backend(const std::string& path, const std::string& name, std::string* error);
+
+// Viewer behaviour shared by every backend (indra/llimage, llimagej2coj, release line).
+namespace viewer {
+// LLImageJ2C::calcDataSizeJ2C: the bytes the fetcher asks for at a discard level.
+std::int64_t data_size_j2c(int w, int h, int discard);
+// LLJ2CReduce::reduceFactor: never ask for a coarser level than the codestream has.
+int reduce_factor(int requested_discard, int resolutions, int width, int height, int max_image_size = 4096);
+// LLJ2CDecodeGuard::decodeAllowed with MAX_IMAGE_COMPONENTS (8).
+bool decode_allowed(std::uint64_t width, std::uint64_t height, std::uint64_t components, unsigned reduce);
+constexpr std::size_t kFirstRequestBytes = 600;  // lltexturefetch: the first request of a texture
+}  // namespace viewer
+
+}  // namespace nj2k::test
