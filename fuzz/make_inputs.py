@@ -66,6 +66,11 @@ def cut_byte(size, keep):
 # ---- decode seeds ----------------------------------------------------------------------------------
 
 def decode_seeds(corpus, out):
+    # seeds of corpus files that are gone must not linger in a folder made earlier
+    if os.path.isdir(out):
+        for name in os.listdir(out):
+            if name.endswith(".bin"):
+                os.remove(os.path.join(out, name))
     count = 0
     for i, (name, cs) in enumerate(corpus_files(corpus)):
         stem = name[:-4]
