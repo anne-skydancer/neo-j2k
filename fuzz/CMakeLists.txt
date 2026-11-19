@@ -1,0 +1,95 @@
+# SPDX-License-Identifier: BSD-2-Clause
+# Copyright (c) 2026, Anne Skydancer (neo-j2k)
+#
+# Fuzz targets. With NJ2K_BUILD_FUZZERS they link libFuzzer: nj2k_fuzz_<target> (Clang on Linux,
+# where CI fuzzes; MSVC with /fsanitize=fuzzer for local runs on Windows). With the tests they also
+# build against a plain driver, nj2k_fuzz_<target>_replay, and CTest replays the seeds (the corpus,
+# the option-prefixed decode seeds of make_inputs.py, the round-trip seeds) and fuzz/regressions
+# through them on every compiler and platform. The filters' own test checks that the bombs of
+# fuzz/bombs stay away from the oracle.
+set(NJ2K_FUZZ_TARGETS header decode roundtrip)
+
+if(NJ2K_BUILD_FUZZERS)
+  if(NJ2K_CL)
+    # instrumentation for every object comes from the top level (NJ2K_FUZZ_COVERAGE); the engine's
+    # main() is linked into the fuzz programs only
+    set(_nj2k_engine "/fsanitize=fuzzer")
+  elseif(CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND NJ2K_GNU_LIKE)
+    # ClusterFuzzLite and OSS-Fuzz pass the engine in LIB_FUZZING_ENGINE and the sanitizer and
+    # coverage flags in CFLAGS/CXXFLAGS; a local build asks for libFuzzer itself.
+    if(DEFINED ENV{LIB_FUZZING_ENGINE})
+      set(_nj2k_engine "$ENV{LIB_FUZZING_ENGINE}")
+    else()
+      set(_nj2k_engine "-fsanitize=fuzzer")
+    endif()
+  else()
+    message(FATAL_ERROR "NJ2K_BUILD_FUZZERS needs Clang (libFuzzer) or MSVC")
+  endif()
+  separate_arguments(_nj2k_engine)
+  foreach(t IN LISTS NJ2K_FUZZ_TARGETS)
+    add_executable(nj2k_fuzz_${t} fuzz_${t}.cpp)
+    target_link_libraries(nj2k_fuzz_${t} PRIVATE nj2k_test_common)
+    if(NJ2K_CL)
+      target_compile_options(nj2k_fuzz_${t} PRIVATE /fsanitize=fuzzer)
+    endif()
+    target_link_options(nj2k_fuzz_${t} PRIVATE ${_nj2k_engine})
+    nj2k_fp_strict(nj2k_fuzz_${t})
+    nj2k_program_exceptions(nj2k_fuzz_${t})
+  endforeach()
+endif()
+
+if(NJ2K_BUILD_TESTS)
+  set(_nj2k_corpus "${PROJECT_SOURCE_DIR}/corpus/generated")
+  set(_nj2k_regressions "${CMAKE_CURRENT_SOURCE_DIR}/regressions")
+  foreach(t IN LISTS NJ2K_FUZZ_TARGETS)
+    add_executable(nj2k_fuzz_${t}_replay fuzz_${t}.cpp standalone_main.cpp)
+    target_link_libraries(nj2k_fuzz_${t}_replay PRIVATE nj2k_test_common)
+    nj2k_fp_strict(nj2k_fuzz_${t}_replay)
+    nj2k_program_exceptions(nj2k_fuzz_${t}_replay)
+  endforeach()
+
+  # The decode seeds with option bytes (viewer mode, reduce levels, cuts, layer limits) are made
+  # from the corpus by make_inputs.py, as the fuzz jobs make them.
+  find_package(Python3 COMPONENTS Interpreter)
+  set(_nj2k_decode_seeds)
+  if(Python3_FOUND)
+    set(_nj2k_decode_seeds "${CMAKE_CURRENT_BINARY_DIR}/seeds-decode")
+    add_test(NAME fuzz_seeds.decode
+             COMMAND "${Python3_EXECUTABLE}" -I "${CMAKE_CURRENT_SOURCE_DIR}/make_inputs.py"
+                     --decode-seeds "${_nj2k_decode_seeds}" --corpus "${_nj2k_corpus}")
+    set_tests_properties(fuzz_seeds.decode PROPERTIES FIXTURES_SETUP nj2k_decode_seeds)
+  endif()
+  add_test(NAME fuzz_replay.header COMMAND nj2k_fuzz_header_replay "${_nj2k_corpus}" "${_nj2k_regressions}")
+  add_test(NAME fuzz_replay.decode
+           COMMAND nj2k_fuzz_decode_replay "${_nj2k_corpus}" "${_nj2k_regressions}" ${_nj2k_decode_seeds})
+  if(_nj2k_decode_seeds)
+    set_tests_properties(fuzz_replay.decode PROPERTIES FIXTURES_REQUIRED nj2k_decode_seeds)
+  endif()
+  # the round-trip target reads coding parameters, not codestreams: its own seeds
+  add_test(NAME fuzz_replay.roundtrip
+           COMMAND nj2k_fuzz_roundtrip_replay "${CMAKE_CURRENT_SOURCE_DIR}/seeds/roundtrip" "${_nj2k_regressions}")
+
+  add_executable(nj2k_fuzz_filter_check filter_check.cpp)
+  target_link_libraries(nj2k_fuzz_filter_check PRIVATE nj2k_test_common)
+  nj2k_program_exceptions(nj2k_fuzz_filter_check)
+  add_test(NAME fuzz_filters COMMAND nj2k_fuzz_filter_check "${CMAKE_CURRENT_SOURCE_DIR}/bombs" "${_nj2k_corpus}")
+
+  # Known defect OD-4 (doc/oracle.md): with its guard off, the round-trip target's input must still
+  # make OpenJPEG's MQ encoder write past its buffer. Only AddressSanitizer sees the write; the
+  # check fails once the pinned oracle no longer has the defect, so the list follows the pin.
+  if("address" IN_LIST NJ2K_SANITIZE)
+    add_test(NAME oracle_known_defect.od4
+             COMMAND nj2k_fuzz_roundtrip_replay "${PROJECT_SOURCE_DIR}/tests/known-defects/od4-roundtrip-mqc-termall-16bit.bin")
+    set_tests_properties(oracle_known_defect.od4 PROPERTIES
+      ENVIRONMENT "NJ2K_FUZZ_UNGUARDED=1"
+      PASS_REGULAR_EXPRESSION "heap-buffer-overflow")
+  endif()
+  # Known defect OD-6: with its guard off, the round-trip target's regression input must still come
+  # back with other samples (OpenJPEG's encoder overflows its two guard bits), on every compiler and
+  # platform; the replay driver turns the target's abort into an exit code after its report.
+  add_test(NAME oracle_known_defect.od6
+           COMMAND nj2k_fuzz_roundtrip_replay "${_nj2k_regressions}/roundtrip-guard-bit-overflow.bin")
+  set_tests_properties(oracle_known_defect.od6 PROPERTIES
+    ENVIRONMENT "NJ2K_FUZZ_UNGUARDED=1"
+    PASS_REGULAR_EXPRESSION "round trip: component 1: [0-9]+ of 1023 samples differ")
+endif()

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BSD-2-Clause
 * text=auto eol=lf
 *.bat text eol=crlf
 *.cmd text eol=crlf

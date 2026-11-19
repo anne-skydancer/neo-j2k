@@ -1,0 +1,117 @@
+# SPDX-License-Identifier: BSD-2-Clause
+# Copyright (c) 2026, Anne Skydancer (neo-j2k)
+#
+# Nightly, on Linux only (the cheapest runner while the repository is private): every cut point of
+# the generated files up to 16 KB against the oracle's nightly reference table, in plain and viewer
+# mode; then ten minutes of libFuzzer per target with AddressSanitizer and UndefinedBehaviorSanitizer.
+# The fuzzers start from the corpus the earlier nights grew, kept in the Actions cache (merged down
+# to the inputs that add coverage), and from the seeds; findings are uploaded as an artifact.
+name: Nightly
+
+on:
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  OPENJPEG_DATA_COMMIT: 39524bd3a601d90ed8e0177559400d23945f96a9
+
+jobs:
+  cuts:
+    name: cut points up to 16 KB (gcc-15)
+    runs-on: ubuntu-26.04
+    timeout-minutes: 60
+    env:
+      CC: gcc-15
+      CXX: g++-15
+      NJ2K_TESTDATA: ${{ github.workspace }}/.testdata/openjpeg-data
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Toolchain
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ninja-build g++-15
+      - name: Conformance data (cache)
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: .testdata/openjpeg-data
+          key: openjpeg-data-class1-${{ env.OPENJPEG_DATA_COMMIT }}-linux
+      - name: Conformance data (fetch)
+        run: python3 -I tools/fetch_testdata.py
+      - name: Configure
+        run: cmake --preset linux-gcc -DNJ2K_TEST_NIGHTLY=ON
+      - name: Build
+        run: cmake --build --preset linux-gcc --parallel
+      - name: Test
+        run: ctest --preset linux-gcc --parallel 4
+
+  fuzz:
+    name: libFuzzer, 10 minutes a target
+    runs-on: ubuntu-26.04
+    timeout-minutes: 60
+    env:
+      CC: clang
+      CXX: clang++
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Toolchain
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ninja-build clang lld
+          v="$(clang -dumpversion | cut -d. -f1)"
+          sudo apt-get install -y -qq "libclang-rt-${v}-dev" || true
+      - name: Corpora of the earlier nights (cache)
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: work
+          key: nightly-fuzz-corpus-${{ github.run_id }}
+          restore-keys: nightly-fuzz-corpus-
+      - name: Configure
+        run: cmake --preset linux-clang-fuzz
+      - name: Build
+        run: cmake --build --preset linux-clang-fuzz --parallel
+      - name: Fuzz
+        run: |
+          set -uo pipefail
+          mkdir -p findings seeds/header seeds/decode seeds/roundtrip
+          cp corpus/generated/*.j2k seeds/header/
+          cp corpus/generated/*.j2k seeds/decode/
+          python3 -I fuzz/make_inputs.py --decode-seeds seeds/decode
+          cp fuzz/seeds/roundtrip/*.bin seeds/roundtrip/
+          status=0
+          for t in header decode roundtrip; do
+            fuzzer="build/linux-clang-fuzz/fuzz/nj2k_fuzz_$t"
+            mkdir -p "work/$t"
+            # new inputs go to the first folder: the corpus the cache keeps
+            if ! "$fuzzer" -max_total_time=600 -timeout=10 -rss_limit_mb=2560 -max_len=65536 \
+                 -dict=fuzz/j2k.dict -artifact_prefix="findings/$t-" "work/$t" "seeds/$t"; then
+              status=1
+            fi
+            # keep only the inputs that add coverage, so the cache stays small
+            rm -rf "work/$t.min" && mkdir -p "work/$t.min"
+            if "$fuzzer" -merge=1 -timeout=10 -rss_limit_mb=2560 "work/$t.min" "work/$t" "seeds/$t" > "merge-$t.log" 2>&1; then
+              rm -rf "work/$t" && mv "work/$t.min" "work/$t"
+            else
+              rm -rf "work/$t.min"
+            fi
+            echo "$t: $(find "work/$t" -type f | wc -l) inputs kept"
+          done
+          exit "$status"
+      - name: Keep the corpora (cache)
+        if: always()
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: work
+          key: nightly-fuzz-corpus-${{ github.run_id }}
+      - name: Upload findings
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: fuzz-findings
+          path: findings/

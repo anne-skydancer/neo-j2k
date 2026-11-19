@@ -1,0 +1,9 @@
+# SPDX-License-Identifier: BSD-2-Clause
+# Copyright (c) 2026, Anne Skydancer (neo-j2k)
+#
+# The test oracle: OpenJPEG's library sources from the fork at this commit, plus the patches listed
+# (oracle/patches/, applied in order), vendored under oracle/openjp2/ by tools/oracle_sync.py, which
+# also verifies the copy in CI. What the commit is and why it is the pin: doc/oracle.md.
+repo=https://github.com/anne-skydancer/openjpeg.git
+commit=dfcc4d1cb176ec551c10e470d478b0de1a75bfe6
+patches=

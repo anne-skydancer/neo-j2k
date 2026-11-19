@@ -1,0 +1,179 @@
+# SPDX-License-Identifier: BSD-2-Clause
+# Copyright (c) 2026, Anne Skydancer (neo-j2k)
+#
+# Build and test on every pull request and on main: Windows (MSVC, clang-cl, MSVC with
+# AddressSanitizer), Linux (GCC 15, Clang, the scalar build, Clang with AddressSanitizer and
+# UndefinedBehaviorSanitizer) and Ubuntu 24.04 (GCC 14). Every job runs the oracle against its
+# reference tables, so the oracle's output is checked to be the same on every compiler and
+# platform. The lint job checks the workflows, the generated compatibility header, the licence
+# headers and the vendored oracle against its pinned commit.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  OPENJPEG_DATA_COMMIT: 39524bd3a601d90ed8e0177559400d23945f96a9
+
+jobs:
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: actionlint
+        env:
+          ACTIONLINT_VERSION: 1.7.12
+          ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/actionlint.tar.gz"
+          curl -fsSL --retry 5 --retry-delay 10 -o "$archive" \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          echo "$ACTIONLINT_SHA256  $archive" | sha256sum -c -
+          tar -xzf "$archive" -C "$RUNNER_TEMP" actionlint
+          "$RUNNER_TEMP/actionlint" -color -shellcheck= -pyflakes= .github/workflows/*.yml
+      - name: Compatibility header is current and complete
+        run: python3 -I tools/gen_compat.py --check
+      - name: Licence headers
+        run: python3 -I tools/check_headers.py
+      - name: Check scripts
+        run: |
+          python3 -I tools/check_exports.py --selftest
+          python3 -I tools/check_objects.py --selftest
+      - name: Vendored oracle equals its pinned commit plus patches
+        run: python3 -I tools/oracle_sync.py --verify
+
+  windows:
+    name: windows (${{ matrix.preset }})
+    runs-on: windows-2025
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        preset: [windows-msvc, windows-clang-cl, windows-msvc-asan]
+    env:
+      NJ2K_TESTDATA: ${{ github.workspace }}/.testdata/openjpeg-data
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Conformance data (cache)
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: .testdata/openjpeg-data
+          key: openjpeg-data-class1-${{ env.OPENJPEG_DATA_COMMIT }}-windows
+      - name: Conformance data (fetch)
+        shell: bash
+        run: python -I tools/fetch_testdata.py
+      - name: AddressSanitizer runtime on PATH
+        if: matrix.preset == 'windows-msvc-asan'
+        shell: pwsh
+        run: |
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -property installationPath
+          $dll = Get-ChildItem "$vs\VC\Tools\MSVC\*\bin\Hostx64\x64\clang_rt.asan_dynamic-x86_64.dll" | Select-Object -Last 1
+          if (-not $dll) { throw "no MSVC AddressSanitizer runtime" }
+          $dll.DirectoryName | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+      - name: Configure
+        run: cmake --preset ${{ matrix.preset }}
+      - name: Build
+        run: cmake --build --preset ${{ matrix.preset }} --parallel
+      - name: Test
+        run: ctest --preset ${{ matrix.preset }}
+
+  linux:
+    name: linux (${{ matrix.preset }}, ${{ matrix.cc }})
+    runs-on: ubuntu-26.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { preset: linux-gcc, cc: gcc-15, cxx: g++-15, packages: g++-15 }
+          - { preset: linux-gcc-scalar, cc: gcc-15, cxx: g++-15, packages: g++-15 }
+          - { preset: linux-clang, cc: clang, cxx: clang++, packages: clang lld }
+          - { preset: linux-clang-asan-ubsan, cc: clang, cxx: clang++, packages: clang lld }
+    env:
+      CC: ${{ matrix.cc }}
+      CXX: ${{ matrix.cxx }}
+      NJ2K_TESTDATA: ${{ github.workspace }}/.testdata/openjpeg-data
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Toolchain
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ninja-build ${{ matrix.packages }}
+          if [ "$CC" = clang ]; then
+            v="$(clang -dumpversion | cut -d. -f1)"
+            sudo apt-get install -y -qq "libclang-rt-${v}-dev" || true
+          fi
+          "$CC" --version | head -n 1
+          cmake --version | head -n 1
+      - name: Conformance data (cache)
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: .testdata/openjpeg-data
+          key: openjpeg-data-class1-${{ env.OPENJPEG_DATA_COMMIT }}-linux
+      - name: Conformance data (fetch)
+        run: python3 -I tools/fetch_testdata.py
+      - name: Configure
+        run: cmake --preset ${{ matrix.preset }}
+      - name: Build
+        run: cmake --build --preset ${{ matrix.preset }} --parallel
+      - name: Test
+        run: ctest --preset ${{ matrix.preset }} --parallel 4
+
+  linux-lts:
+    name: linux-lts (ubuntu:24.04, gcc-14)
+    runs-on: ubuntu-26.04
+    timeout-minutes: 45
+    container:
+      image: ubuntu:24.04
+      options: --dns 168.63.129.16 --dns 8.8.8.8 --dns 1.1.1.1
+    env:
+      CC: gcc-14
+      CXX: g++-14
+      NJ2K_TESTDATA: ${{ github.workspace }}/.testdata/openjpeg-data
+    steps:
+      - name: Toolchain
+        run: |
+          set -eu
+          apt-get update -qq
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq g++-14 cmake ninja-build python3 git ca-certificates binutils
+          gcc-14 --version | head -n 1
+          cmake --version | head -n 1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Conformance data (cache)
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: .testdata/openjpeg-data
+          key: openjpeg-data-class1-${{ env.OPENJPEG_DATA_COMMIT }}-linux
+      - name: Conformance data (fetch)
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE/.testdata/openjpeg-data"
+          python3 -I tools/fetch_testdata.py
+      - name: Configure
+        run: cmake --preset linux-gcc
+      - name: Build
+        run: cmake --build --preset linux-gcc --parallel
+      - name: Test
+        run: ctest --preset linux-gcc --parallel 4
