@@ -31,12 +31,17 @@
 #include <malloc.h>
 #endif
 
+#include "departures.h"
 #include "fuzz_common.h"
 
 // the library's internals: the tile-part header reader (by its path: src/ is no include directory)
 #include "../src/header.h"
 
 namespace {
+
+using nj2k::fuzz::be16;
+using nj2k::fuzz::be32;
+using nj2k::fuzz::header_departure;
 
 struct Mem {
     const std::uint8_t* p;
@@ -230,16 +235,6 @@ void neo_tile_parts(const std::uint8_t* data, std::size_t size)
     }
 }
 
-std::uint32_t be16(std::span<const std::uint8_t> b, std::size_t p)
-{
-    return std::uint32_t(b[p]) << 8 | b[p + 1];
-}
-
-std::uint32_t be32(std::span<const std::uint8_t> b, std::size_t p)
-{
-    return be16(b, p) << 16 | be16(b, p + 2);
-}
-
 // The bytes OpenJPEG reads as the codestream of a JP2 file: its boxes walked by their lengths to the
 // first codestream box, or to a box header it cannot take (an XL length of 4 GiB or more), after
 // which it reads the codestream from where it stopped. Empty when it reaches no codestream.
@@ -307,146 +302,6 @@ const char* jp2_departure(std::span<const std::uint8_t> file)
             break;
         }
         at += std::size_t(length);
-    }
-    return nullptr;
-}
-
-// OpenJPEG's markers of a main header (j2k.c, the handlers whose states include the main header's),
-// SIZ apart: it reads them, scans past any other marker for the next one it knows, and refuses
-// PLT, PPT, SOP and a second SIZ there.
-bool openjpeg_main_header_marker(std::uint32_t m)
-{
-    switch (m) {
-    case 0xFF52: case 0xFF53: case 0xFF5E: case 0xFF5C: case 0xFF5D: case 0xFF5F: case 0xFF55: case 0xFF57:
-    case 0xFF60: case 0xFF63: case 0xFF64: case 0xFF74: case 0xFF78: case 0xFF50: case 0xFF59: case 0xFF75:
-    case 0xFF77:
-        return true;
-    default:
-        return false;
-    }
-}
-
-// Every marker OpenJPEG's header reader has a handler for, whatever the header (SIZ, SOT, PLT, PPT
-// and SOP too): one it stops at when it scans past a marker it does not know.
-bool openjpeg_knows(std::uint32_t m)
-{
-    return m == 0xFF51 || m == 0xFF90 || m == 0xFF58 || m == 0xFF61 || m == 0xFF91 || openjpeg_main_header_marker(m);
-}
-
-// The departure (doc/departures.md) a main header shows that lets neo-j2k's header read differ from
-// OpenJPEG's, or null when it shows none. Walked by the segment lengths, as neo-j2k reads it, up to
-// the first SOT or to where the bytes stop making segments (where both refuse).
-const char* header_departure(std::span<const std::uint8_t> cs, std::uint32_t reduce)
-{
-    if (cs.size() < 4 || cs[0] != 0xFF || cs[1] != 0x4F) {
-        return nullptr;
-    }
-    std::size_t pos = 2;
-    bool siz = false, coc = false, qcc = false;
-    std::uint32_t numcomps = 0, codings = 0, most_resolutions = 0, fewest_steps = UINT32_MAX;
-    while (cs.size() - pos >= 2) {
-        const std::uint32_t m = be16(cs, pos);
-        if (m == 0xFF90 || m < 0xFF00) {
-            break;  // SOT: the main header ends; no marker: both refuse
-        }
-        if (!siz && m != 0xFF51) {
-            return "DP-7: SIZ does not follow SOC";
-        }
-        if (m >= 0xFF30 && m <= 0xFF3F) {
-            // no segment: neo-j2k goes on to the next marker; OpenJPEG does not know the marker and
-            // scans ahead for one it knows, which comes to the same only when one follows at once
-            if (cs.size() - pos >= 4 && !openjpeg_knows(be16(cs, pos + 2))) {
-                return "DP-7: a marker without a segment, which OpenJPEG scans past";
-            }
-            pos += 2;
-            continue;
-        }
-        if (m == 0xFFD9 || m == 0xFF93 || m == 0xFF92) {
-            return "DP-7: EOC, SOD or EPH in the main header";
-        }
-        if (m >= 0xFF70 && m <= 0xFF7F) {
-            return "DP-7: a JPEG 2000 Part 2 marker";
-        }
-        if (m == 0xFF58 || m == 0xFF61 || m == 0xFF91 || (m == 0xFF51 && siz)) {
-            break;  // both refuse
-        }
-        if (m != 0xFF51 && !openjpeg_main_header_marker(m)) {
-            return "DP-7: a marker OpenJPEG does not know";
-        }
-        if (cs.size() - pos < 4) {
-            break;
-        }
-        const std::uint32_t length = be16(cs, pos + 2);
-        if (length < 2 || cs.size() - pos - 2 < length) {
-            break;
-        }
-        const std::size_t body = pos + 4, n = length - 2;
-        const std::size_t room = numcomps <= 256 ? 1 : 2;
-        // step sizes a QCD or QCC gives (its body from Sqcd on)
-        auto steps = [&](std::size_t at, std::size_t bytes) -> const char* {
-            if (bytes < 1) {
-                return nullptr;
-            }
-            const std::uint32_t style = cs[at] & 0x1F;
-            if (style > 2) {
-                return "DP-8: a reserved quantization style";
-            }
-            if (style != 1) {
-                const std::uint32_t count = std::uint32_t(style == 0 ? bytes - 1 : (bytes - 1) / 2);
-                fewest_steps = count < fewest_steps ? count : fewest_steps;
-            }
-            return nullptr;
-        };
-        switch (m) {
-        case 0xFF51:  // SIZ
-            siz = true;
-            numcomps = n >= 36 ? be16(cs, body + 34) : 0;
-            break;
-        case 0xFF52:  // COD
-            ++codings;
-            if (coc) {
-                return "DP-5: a COD after a COC";
-            }
-            if (n >= 2 && cs[body + 1] > 4) {
-                return "DP-8: a progression order above 4";
-            }
-            if (n >= 6 && cs[body + 5] + 1u > most_resolutions) {
-                most_resolutions = cs[body + 5] + 1u;
-            }
-            break;
-        case 0xFF53:  // COC
-            ++codings;
-            coc = true;
-            if (n >= room + 2 && cs[body + room + 1] + 1u > most_resolutions) {
-                most_resolutions = cs[body + room + 1] + 1u;
-            }
-            break;
-        case 0xFF5C:  // QCD
-            if (qcc) {
-                return "DP-5: a QCD after a QCC";
-            }
-            if (const char* why = steps(body, n)) {
-                return why;
-            }
-            break;
-        case 0xFF5D:  // QCC
-            qcc = true;
-            if (n > room) {
-                if (const char* why = steps(body + room, n - room)) {
-                    return why;
-                }
-            }
-            break;
-        default:
-            break;
-        }
-        pos += 2 + length;
-    }
-    if (reduce > 0 && codings > 1) {
-        return "DP-5: the reduce factor checked after precedence, not against each COD and COC";
-    }
-    if (most_resolutions > 0 && fewest_steps < 3 * most_resolutions - 2) {
-        return "DP-6: fewer step sizes than sub-bands";
     }
     return nullptr;
 }

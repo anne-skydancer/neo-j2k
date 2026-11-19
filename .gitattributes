@@ -7,3 +7,13 @@
 *.jp2 binary
 *.pgx binary
 *.bin binary
+*.jph binary
+*.ppm binary
+*.pgm binary
+*.pnm binary
+*.pam binary
+*.tif binary
+*.tiff binary
+*.png binary
+*.raw binary
+*.zst binary

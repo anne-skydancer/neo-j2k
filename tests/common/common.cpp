@@ -197,7 +197,9 @@ std::uint64_t now_ns() noexcept
 
 void keep_alive(const void* data, std::size_t n) noexcept
 {
-    static volatile std::uint8_t sink;
+    // written, never read: the store is what keeps the bytes alive (Clang's
+    // -Wunused-but-set-variable would warn in the fuzz builds)
+    [[maybe_unused]] static volatile std::uint8_t sink;
     if (n) {
         sink = static_cast<const std::uint8_t*>(data)[n - 1];
     }
