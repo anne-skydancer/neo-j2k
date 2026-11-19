@@ -162,6 +162,7 @@ struct Row {
 
 int main(int argc, char** argv)
 {
+    console_reports();
     const std::string opj_threads = single_thread_openjpeg();  // before any codec exists
     Args a;
     for (int i = 1; i < argc; ++i) {

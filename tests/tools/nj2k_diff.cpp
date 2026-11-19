@@ -693,6 +693,7 @@ int cmd_resources(const Args& a)
 
 int main(int argc, char** argv)
 {
+    console_reports();
     const Args a = parse(argc, argv);
     if (a.cmd == "compare") return cmd_compare(a);
     if (a.cmd == "record") return cmd_record(a);

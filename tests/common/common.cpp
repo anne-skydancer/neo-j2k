@@ -10,6 +10,13 @@
 #include <filesystem>
 #include <fstream>
 
+#if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <crtdbg.h>
+#include <windows.h>
+#endif
+
 namespace fs = std::filesystem;
 
 namespace nj2k::test {
@@ -212,6 +219,23 @@ std::string env_value(const char* name)
     }
 #endif
     return out;
+}
+
+void console_reports() noexcept
+{
+#if defined(_WIN32)
+    SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX);
+    _set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
+    _set_error_mode(_OUT_TO_STDERR);
+#if defined(_DEBUG)
+    _CrtSetReportMode(_CRT_WARN, _CRTDBG_MODE_FILE);
+    _CrtSetReportFile(_CRT_WARN, _CRTDBG_FILE_STDERR);
+    _CrtSetReportMode(_CRT_ERROR, _CRTDBG_MODE_FILE);
+    _CrtSetReportFile(_CRT_ERROR, _CRTDBG_FILE_STDERR);
+    _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
+    _CrtSetReportFile(_CRT_ASSERT, _CRTDBG_FILE_STDERR);
+#endif
+#endif
 }
 
 std::string single_thread_openjpeg()

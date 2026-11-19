@@ -65,6 +65,7 @@ const std::vector<Case>& cases()
 
 int main(int argc, char** argv)
 {
+    console_reports();
     std::string spec = "oracle", data;
     Mode mode = Mode::Plain;
     for (int i = 1; i < argc; ++i) {

@@ -639,6 +639,7 @@ const char* prog_name(OPJ_PROG_ORDER p)
 
 int main(int argc, char** argv)
 {
+    console_reports();
     (void)single_thread_openjpeg();  // the encoder runs on this thread (OPJ_NUM_THREADS cleared)
     if (argc != 3 || (std::string(argv[1]) != "--out" && std::string(argv[1]) != "--verify")) {
         std::fprintf(stderr, "usage: nj2k_corpus_gen --out DIR | --verify DIR\n");

@@ -70,6 +70,13 @@ void keep_alive(const void* data, std::size_t n) noexcept;
 // An environment variable's value, "" when it is not set.
 std::string env_value(const char* name);
 
+// Every failure reported on the console, never in a dialog, so a run on a desktop cannot stop on a
+// message box. On Windows: no Windows Error Reporting or critical-error box (for the processes this
+// one starts too), abort() writes nothing and exits with code 3, and assert() and the debug C
+// runtime's reports go to stderr. Nothing to do elsewhere. First thing in every program's main()
+// (the fuzz targets: fuzz_setup()).
+void console_reports() noexcept;
+
 // OpenJPEG starts worker threads when OPJ_NUM_THREADS is set (opj_j2k_create_decompress and
 // opj_j2k_create_compress read it), which would make timings and heap counts include its pool and
 // run its threaded paths where no ThreadSanitizer looks. The tests, tools, fuzz targets and the

@@ -345,6 +345,7 @@ void test_viewer_rules()
 
 int main()
 {
+    console_reports();
     test_version();
     test_cpu();
     test_defaults();

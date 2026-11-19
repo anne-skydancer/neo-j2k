@@ -20,6 +20,7 @@ namespace fs = std::filesystem;
 
 int main(int argc, char** argv)
 {
+    nj2k::test::console_reports();
     if (argc != 3) {
         std::fprintf(stderr, "usage: nj2k_fuzz_filter_check <bombs dir> <corpus dir>\n");
         return 2;

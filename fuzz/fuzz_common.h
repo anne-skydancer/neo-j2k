@@ -47,10 +47,11 @@ inline Input split_input(const std::uint8_t* data, std::size_t size)
     return in;
 }
 
-// Once per process, before the first codec: the oracle decodes and encodes on the calling thread.
+// Once per process, before the first codec: failures reported on the console, and the oracle
+// decoding and encoding on the calling thread.
 inline void fuzz_setup()
 {
-    static const bool once = (test::single_thread_openjpeg(), true);
+    static const bool once = (test::console_reports(), test::single_thread_openjpeg(), true);
     (void)once;
 }
 

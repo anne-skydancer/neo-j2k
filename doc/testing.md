@@ -13,7 +13,10 @@ ctest --preset windows-msvc            # NJ2K_TESTDATA (environment or CMake) po
 ```
 
 Compiled tests run with `TEMP`/`TMP`/`TMPDIR` in `NJ2K_TEST_TMP` when it is set (the owner's machine keeps
-a Defender-excluded `.fixture-tmp` for this).
+a Defender-excluded `.fixture-tmp` for this). Every test program, tool and fuzz driver reports its
+failures on the console, never in a dialog (`console_reports()`, `tests/common/common.h`: on Windows no
+error-reporting box, and `abort()`, `assert()` and the debug C runtime write to stderr), and the replay
+driver turns a fuzz target's abort into exit code 134 after the target's report.
 
 | Test | What it proves |
 |---|---|
