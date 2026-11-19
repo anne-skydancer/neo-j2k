@@ -20,7 +20,10 @@ driver turns a fuzz target's abort into exit code 134 after the target's report.
 
 | Test | What it proves |
 |---|---|
-| `api_unit` | neo-j2k's structures have OpenJPEG's layout; its parameter defaults and image functions behave as OpenJPEG's (compared with the oracle); the version, engine string (at most 31 characters) and CPU check keep their contracts; the test helpers read real codestreams |
+| `api_unit` | neo-j2k's structures have OpenJPEG's layout (the decoder limits too); its parameter defaults and image functions behave as OpenJPEG's (compared with the oracle); the version, engine string (at most 31 characters) and CPU check keep their contracts; the test helpers read real codestreams; neo-j2k's header read gives the oracle's facts through the compatibility header |
+| `header_unit` | stage 1b: the limit profiles (the Second Life one equal to the fork's, field for field); `NJ2K_E_NEED_DATA` at every cut inside every generated file's main header, and through a one-byte stream buffer; JP2 reading and its cuts; the fork audit's S2 and S3 probe rows and the plan audit's A1 rows (header state flat at 2,296 bytes whatever the header declares, and each refused by the Second Life profile before what it bounds is allocated); the fuzz bombs and the oracle's known resource defects; marker precedence (W7), quantization counts (W8), unknown and Part 2 markers and invalid values (DP-5 to DP-8); every tile-part header of every generated file against the test scanner (W5); the decoded dimensions against the oracle's decodes at every reduce level, the factor given before and after the header; the reduce policy (W4) and the setter (S1); the allocator hook, with every allocation of a header read failed in turn; the header model owning its bytes (the input freed after the read, plan audit D5); 128,000 header reads of mutated headers, every one balanced in the allocator |
+| `header_facts` | neo-j2k's header read gives the oracle's image and codestream information for every generated file at reduce 0-5, the factor in the parameters and set before the header, and every prefix through the main header refuses where the oracle refuses |
+| `header_facts_conformance` | the same over OpenJPEG's conformance data (ISO class 1, the other codestreams, and the JP2 files), prefixes up to 1 KB; present when the data was fetched before configuring |
 | `oracle_whole` | the oracle reproduces `corpus/generated/oracle-reference.tsv` for every generated file at reduce 0-5, in plain and in viewer mode: the same output on every compiler and platform in CI |
 | `oracle_cuts.<file>` | the same for every cut point of every generated file up to 4 KB (every 13th one in sanitizer builds) |
 | `oracle_layers` | a cut where a layer starts decodes exactly as the whole file limited to the layers before it (`cp_layer`): an oracle for cut semantics that does not depend on the truncation code (plan audit B5); the oracle's known cases are in `tests/oracle-known-defects.txt` |
@@ -45,9 +48,10 @@ Nightly (`NJ2K_TEST_NIGHTLY=ON`): `oracle_cuts_nightly`, every cut point of the 
 
 ## The runner: `nj2k_diff`
 
-Backends: `oracle` (linked), `neoj2k` (through the compatibility header; refuses until stage 1c), and
-`lib:<path>[=<name>]`, any library with OpenJPEG's ABI loaded at run time. Modes: `plain`, `strict`,
-`viewer` (the viewer's two-pass request, its reduce clamp, size guard, geometry checks and 8-bit copy).
+Backends: `oracle` (linked), `neoj2k` (through the compatibility header; reads headers since stage 1b,
+decodes from stage 1c), and `lib:<path>[=<name>]`, any library with OpenJPEG's ABI loaded at run time.
+Modes: `plain`, `strict`, `viewer` (the viewer's two-pass request, its reduce clamp, size guard, geometry
+checks and 8-bit copy).
 
 ```
 # the stage-0 gate: the oracle against the shipped DLL and the fix build on the bench corpus (local, private)
@@ -57,11 +61,31 @@ nj2k_diff compare --a oracle --b "lib:C:/Program Files/Vulkanstorm-Release/openj
 nj2k_diff compare --a oracle --b neoj2k --files corpus/generated/sl_32_rgb_97.j2k --kinds cuts
 # one request, described
 nj2k_diff decode --a oracle --files corpus/generated/packed_ppm_sop_eph_97.j2k --bytes 484 --reduce 0
+# header facts, two decoders: every file (JP2 and JPH too), reduce level and mode, and the prefixes
+nj2k_diff header --a oracle --b neoj2k --files <list or folder> --modes plain,viewer --reduce 0-5 --bytes 2048
 ```
 
 Kinds: `full`, `budget` (the viewer's byte budget at the reduce level, from the size the viewer stores:
 the tile grid's, tiles x tile size), `first` (600 bytes at reduce 5), `cuts` (every prefix of files up to
 `--cut-max`). `nj2k_diff resources` checks the known resource defects through a counting backend.
+`nj2k_diff header` prints each file whose reads differ, with the count and the first difference.
+
+## Stage 1b's local gates (private data, on the owner's machine)
+
+```
+# header facts on the private bench corpus (212 files)
+nj2k_diff header --a oracle --b neoj2k --files <bench list> --modes plain,viewer --reduce 0-5 --bytes 2048
+# every texture of the viewer's cache: header facts against the oracle, and the Second Life profile at
+# reduce 0-5 (prints aggregates only)
+nj2k_cache_check "%LOCALAPPDATA%\Vulkanstorm_x64\texturecache"
+```
+
+Results on 2026-11-19 (Windows, MSVC 14.51): the bench corpus, 69,478 reads, 0 different; the cache,
+60,045 textures, every header read as the oracle reads it, 360,270 profile checks at reduce 0-5 with none
+refused (the largest: 5 components, 8 layers, 1 tile, 2,048 px a side, 81.3 MiB of the 256 MiB working
+memory). OpenJPEG's non-regression data (`tools/fetch_testdata.py --all`, 149 codestreams and JP2 files,
+374,674 reads with prefixes): 4 files differ, every one refused by neo-j2k where OpenJPEG reads it, for
+DP-6 (3) and DP-7 (1); none reads in neo-j2k that OpenJPEG refuses.
 
 ## The corpora
 
@@ -75,7 +99,9 @@ the tile grid's, tiles x tile size), `first` (600 bytes at reduce 5), `cuts` (ev
   Psot = 0 ones without EOC only since the 1a pin: OpenJPEG 2.5.4 drops their last two data bytes, plan
   W5).
   `nj2k_corpus_gen --verify corpus/generated` encodes again and compares.
-- **ISO 15444-4 and OpenJPEG's data**: fetched at test time (`tools/fetch_testdata.py`, pinned commit).
+- **ISO 15444-4 and OpenJPEG's data**: fetched at test time (`tools/fetch_testdata.py`, pinned commit):
+  the class 1 streams with their references, and the other codestreams and JP2 files of
+  `input/conformance` for the header tests; `--all` adds the non-regression data.
 - **Second Life textures**: the owner's private corpus stays on the owner's PC; lists of local paths go to
   `--files`.
 
@@ -98,7 +124,13 @@ The tables were written on Windows with MSVC; CI checks every other compiler aga
 
 Targets (`fuzz/`):
 
-- `header`: the test scanner, and the oracle's header pass (`opj_read_header`, `opj_get_cstr_info`).
+- `header`: neo-j2k's header read through the API (J2K, or JP2 when the input starts with the JP2
+  signature), with no limits and with the Second Life profile, then the decoded dimensions, the
+  codestream information and a component selection; the library's tile-part header reader over every
+  tile-part; then the test scanner, and the oracle's header pass (`opj_read_header`,
+  `opj_get_cstr_info`). neo-j2k gets no filter: its allocations go through a counting hook, and the
+  target aborts when the header state outgrows the input (64 bytes for every input byte, plus 256 KiB) or
+  when the codec does not give back everything it took.
 - `decode`: options in four leading bytes (reduce level; plain, strict or viewer mode; layers; cut
   length). A stream starting with SOC takes the defaults, so corpus files are seeds as they are, and
   `fuzz/make_inputs.py --decode-seeds` puts option bytes in front of each (the viewer's request at reduce
@@ -108,7 +140,8 @@ Targets (`fuzz/`):
   must come back, unless the transform outgrows the two guard bits the oracle's encoder gives each
   band (OD-6): such an image is encoded and decoded without the comparison. Seeds: `fuzz/seeds/roundtrip`.
 
-Until neo-j2k decodes (stage 1c) they drive the oracle, behind filters (`fuzz/fuzz_common.h`) that keep
+Until neo-j2k decodes (stage 1c) the decode and round-trip targets drive the oracle, and the header target
+drives it too after neo-j2k, behind filters (`fuzz/fuzz_common.h`) that keep
 OpenJPEG's known bombs out of the way (fork audit S2, S3; OD-3, OD-5). The header filter bounds the tiles
 and components of SIZ, which must follow SOC. The decode filter fails closed: it refuses a stream whose
 main header it cannot parse, or that holds a marker OpenJPEG skips by scanning (its reading would then
