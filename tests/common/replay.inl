@@ -178,7 +178,7 @@ struct Session {
 
     bool open(const nj2k::test::Request& rq, opj_dparameters_t& params, bool count_messages)
     {
-        codec = A.opj_create_decompress(OPJ_CODEC_J2K);
+        codec = A.opj_create_decompress(rq.jp2 ? OPJ_CODEC_JP2 : OPJ_CODEC_J2K);
         if (!codec) {
             return false;
         }
@@ -292,7 +292,7 @@ inline nj2k::test::Outcome replay_plain(const Api& A, const nj2k::test::Request&
     nj2k::test::Outcome out;
     opj_dparameters_t params;
     A.opj_set_default_decoder_parameters(&params);
-    params.cp_reduce = static_cast<OPJ_UINT32>(rq.reduce);
+    params.cp_reduce = static_cast<OPJ_UINT32>(rq.reduce_after_header ? 0 : rq.reduce);
     params.cp_layer = static_cast<OPJ_UINT32>(rq.layers);
     Session s(A);
     if (!s.open(rq, params, rq.inspect)) {
@@ -301,6 +301,11 @@ inline nj2k::test::Outcome replay_plain(const Api& A, const nj2k::test::Request&
     }
     A.opj_decoder_set_strict_mode(s.codec, rq.mode == nj2k::test::Mode::Strict ? OPJ_TRUE : OPJ_FALSE);
     if (!A.opj_read_header(s.stream, s.codec, &s.image)) {
+        fail(out, "header", s.messages);
+        return out;
+    }
+    if (rq.reduce_after_header && rq.reduce > 0 &&
+        !A.opj_set_decoded_resolution_factor(s.codec, static_cast<OPJ_UINT32>(rq.reduce))) {
         fail(out, "header", s.messages);
         return out;
     }
@@ -434,6 +439,109 @@ inline nj2k::test::Outcome replay_viewer(const Api& A, const nj2k::test::Request
 inline nj2k::test::Outcome replay(const Api& A, const nj2k::test::Request& rq)
 {
     return rq.mode == nj2k::test::Mode::Viewer ? replay_viewer(A, rq) : replay_plain(A, rq);
+}
+
+// The header read alone: the image opj_read_header gives and opj_get_cstr_info's information.
+inline nj2k::test::HeaderFacts replay_header(const Api& A, const nj2k::test::Request& rq)
+{
+    nj2k::test::HeaderFacts f;
+    opj_dparameters_t params;
+    std::memset(&params, 0, sizeof(params));
+    A.opj_set_default_decoder_parameters(&params);
+    const bool viewer = rq.mode == nj2k::test::Mode::Viewer;
+    if (!viewer) {
+        params.cp_reduce = static_cast<OPJ_UINT32>(rq.reduce);
+        params.cp_layer = static_cast<OPJ_UINT32>(rq.layers);
+    }
+    Session s(A);
+    if (!s.open(rq, params, rq.inspect)) {
+        f.stage = "codec";
+        f.last_error = s.messages.last_error;
+        return f;
+    }
+    if (viewer) {
+        A.opj_set_decoded_resolution_factor(s.codec, static_cast<OPJ_UINT32>(rq.reduce));
+    }
+    A.opj_decoder_set_strict_mode(s.codec, rq.mode == nj2k::test::Mode::Strict ? OPJ_TRUE : OPJ_FALSE);
+    if (!A.opj_read_header(s.stream, s.codec, &s.image) || !s.image) {
+        f.stage = "header";
+        f.last_error = s.messages.last_error;
+        return f;
+    }
+    s.info = A.opj_get_cstr_info(s.codec);
+    if (!s.info) {
+        f.stage = "info";
+        f.last_error = s.messages.last_error;
+        return f;
+    }
+    const opj_image_t* im = s.image;
+    f.ok = true;
+    f.x0 = im->x0;
+    f.y0 = im->y0;
+    f.x1 = im->x1;
+    f.y1 = im->y1;
+    f.numcomps = im->numcomps;
+    f.color_space = static_cast<int>(im->color_space);
+    for (OPJ_UINT32 c = 0; c < im->numcomps; ++c) {
+        const opj_image_comp_t& ic = im->comps[c];
+        nj2k::test::HeaderFacts::Comp comp;
+        comp.dx = ic.dx;
+        comp.dy = ic.dy;
+        comp.w = ic.w;
+        comp.h = ic.h;
+        comp.x0 = ic.x0;
+        comp.y0 = ic.y0;
+        comp.prec = ic.prec;
+        comp.sgnd = ic.sgnd;
+        comp.factor = ic.factor;
+        comp.resno_decoded = ic.resno_decoded;
+        comp.alpha = ic.alpha;
+        f.comps.push_back(comp);
+    }
+    f.icc_buffer = im->icc_profile_buf != nullptr;
+    if (im->icc_profile_buf && im->icc_profile_len) {
+        f.icc.assign(im->icc_profile_buf, im->icc_profile_buf + im->icc_profile_len);
+    }
+    const opj_codestream_info_v2_t* info = s.info;
+    f.tx0 = info->tx0;
+    f.ty0 = info->ty0;
+    f.tdx = info->tdx;
+    f.tdy = info->tdy;
+    f.tw = info->tw;
+    f.th = info->th;
+    f.nbcomps = info->nbcomps;
+    f.csty = info->m_default_tile_info.csty;
+    f.prg = static_cast<int>(info->m_default_tile_info.prg);
+    f.numlayers = info->m_default_tile_info.numlayers;
+    f.mct = info->m_default_tile_info.mct;
+    for (OPJ_UINT32 c = 0; info->m_default_tile_info.tccp_info && c < info->nbcomps; ++c) {
+        const opj_tccp_info_t& t = info->m_default_tile_info.tccp_info[c];
+        nj2k::test::HeaderFacts::Tccp tc;
+        tc.csty = t.csty;
+        tc.numresolutions = t.numresolutions;
+        tc.cblkw = t.cblkw;
+        tc.cblkh = t.cblkh;
+        tc.cblksty = t.cblksty;
+        tc.qmfbid = t.qmfbid;
+        tc.qntsty = t.qntsty;
+        tc.numgbits = t.numgbits;
+        tc.roishift = t.roishift;
+        // what OpenJPEG reports: the step sizes of 1 or 3 x resolutions - 2 bands when that is below
+        // 97, and the first numresolutions bytes of the precinct arrays (it copies bytes, not elements)
+        const OPJ_UINT32 bands = t.qntsty == 1 ? 1 : 3 * t.numresolutions - 2;
+        if (bands < OPJ_J2K_MAXBANDS) {
+            tc.mant.assign(t.stepsizes_mant, t.stepsizes_mant + bands);
+            tc.expn.assign(t.stepsizes_expn, t.stepsizes_expn + bands);
+        }
+        if (t.numresolutions < OPJ_J2K_MAXRLVLS) {
+            const auto* w = reinterpret_cast<const std::uint8_t*>(t.prcw);
+            const auto* h = reinterpret_cast<const std::uint8_t*>(t.prch);
+            tc.prc.assign(w, w + t.numresolutions);
+            tc.prc.insert(tc.prc.end(), h, h + t.numresolutions);
+        }
+        f.tccp.push_back(tc);
+    }
+    return f;
 }
 
 // ---- the viewer's upload encode (JPEG2KEncode::encode, release line) --------------------------

@@ -4,8 +4,12 @@ nj2k_codec_set_threads
 nj2k_cpu_supported
 nj2k_create_compress
 nj2k_create_decompress
+nj2k_create_decompress_with_allocator
 nj2k_decode
 nj2k_decode_tile_data
+nj2k_decoder_limits_init
+nj2k_decoder_set_limits
+nj2k_decoder_set_reduce_policy
 nj2k_decoder_set_strict_mode
 nj2k_destroy_codec
 nj2k_destroy_cstr_index
@@ -18,10 +22,12 @@ nj2k_end_decompress
 nj2k_engine_string
 nj2k_get_cstr_index
 nj2k_get_cstr_info
+nj2k_get_decoded_dimensions
 nj2k_get_decoded_tile
 nj2k_get_jp2_index
 nj2k_get_jp2_metadata
 nj2k_get_num_cpus
+nj2k_get_status
 nj2k_has_thread_support
 nj2k_image_create
 nj2k_image_data_alloc
@@ -42,6 +48,7 @@ nj2k_set_warning_handler
 nj2k_setup_decoder
 nj2k_setup_encoder
 nj2k_start_compress
+nj2k_status_string
 nj2k_stream_create
 nj2k_stream_create_default_file_stream
 nj2k_stream_create_file_stream

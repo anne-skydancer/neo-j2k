@@ -2,7 +2,8 @@
 # SPDX-License-Identifier: BSD-2-Clause
 # Copyright (c) 2026, Anne Skydancer (neo-j2k)
 """Fetch OpenJPEG's test data (github.com/uclouvain/openjpeg-data) at a pinned commit, sparse: the
-ISO/IEC 15444-4 class 1 streams and their reference images (about 52 MB); with --all, the whole of
+ISO/IEC 15444-4 class 1 streams and their reference images, and the other codestreams and JP2 files
+of input/conformance, which the header tests read (about 65 MB); with --all, the whole of
 input/conformance, baseline/conformance and input/nonregression.
 
 The files' notice (input/conformance/COPYRIGHT) allows their use for testing conformance only, and
@@ -36,6 +37,7 @@ def main():
         paths = ["/input/conformance/", "/baseline/conformance/", "/input/nonregression/"]
     else:
         paths = ["/input/conformance/COPYRIGHT", "/input/conformance/p0_*.j2k", "/input/conformance/p1_*.j2k",
+                 "/input/conformance/*.j2c", "/input/conformance/*.jp2",
                  "/baseline/conformance/c1p0_*", "/baseline/conformance/c1p1_*"]
     dest = a.dest
     if not os.path.isdir(os.path.join(dest, ".git")):

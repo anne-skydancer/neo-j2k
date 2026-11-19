@@ -3,7 +3,8 @@
 //
 // neo-j2k as a backend, driven by the same request source as OpenJPEG through the compatibility
 // header: this file compiling is the check that OpenJPEG code builds against neo-j2k unchanged.
-// Until the decoder lands (stages 1b and 1c) every request fails at "codec".
+// Since stage 1b the header reads; until the decoder lands (stage 1c) every decode fails at
+// "decode".
 #include <neoj2k/neoj2k_openjpeg.h>
 
 #include "common.h"
@@ -21,6 +22,7 @@ public:
     NeoBackend() : api_(REPLAY_NS::linked_api()) {}
     const std::string& name() const noexcept override { return name_; }
     Outcome decode(const Request& rq) override { return REPLAY_NS::replay(api_, rq); }
+    HeaderFacts header(const Request& rq) override { return REPLAY_NS::replay_header(api_, rq); }
     bool encode_upload(const std::uint8_t* raw, int width, int height, int comps, bool reversible,
                        std::vector<std::uint8_t>& out) override
     {

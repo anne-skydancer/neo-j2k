@@ -98,28 +98,28 @@ std::vector<int> parse_int_list(std::string_view s)
     return out;
 }
 
-static bool is_codestream_name(const fs::path& p)
+static bool is_codestream_name(const fs::path& p, bool with_jp2)
 {
     std::string ext = p.extension().string();
     std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return char(std::tolower(c)); });
-    return ext == ".j2k" || ext == ".j2c" || ext == ".jpc";
+    return ext == ".j2k" || ext == ".j2c" || ext == ".jpc" || (with_jp2 && (ext == ".jp2" || ext == ".jph"));
 }
 
-std::vector<std::string> expand_inputs(const std::string& arg)
+std::vector<std::string> expand_inputs(const std::string& arg, bool with_jp2)
 {
     std::vector<std::string> out;
     const fs::path p = fs::path(arg);
     std::error_code ec;
     if (fs::is_directory(p, ec)) {
         for (const auto& e : fs::directory_iterator(p, ec)) {
-            if (e.is_regular_file() && is_codestream_name(e.path())) {
+            if (e.is_regular_file() && is_codestream_name(e.path(), with_jp2)) {
                 out.push_back(e.path().generic_string());
             }
         }
         std::sort(out.begin(), out.end());
         return out;
     }
-    if (is_codestream_name(p)) {
+    if (is_codestream_name(p, true)) {
         out.push_back(p.generic_string());
         return out;
     }

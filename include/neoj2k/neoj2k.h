@@ -11,9 +11,11 @@
  * (doc/api.md). The library exports nj2k_* only, so it never clashes with an OpenJPEG linked
  * into the same program (the test oracle, or the OpenJPEG encoder a host keeps meanwhile).
  *
- * Stage 0 (the skeleton) implements the version, CPU check, parameter defaults and image
- * functions; the decoder (stages 1b-1c) and the encoder (stage 6a) follow. Until then their
- * functions fail cleanly (NULL or NJ2K_FALSE).
+ * Stage 0 implements the version, CPU check, parameter defaults and image functions; stage 1b the
+ * streams, the decoder up to the decode (codec, handlers, settings, limits, the header read, the
+ * reduce factor, component selection, the decoded dimensions, the codestream information) and the
+ * statuses. Decoding follows in stage 1c, encoding in stage 6a; until then their functions fail
+ * cleanly (NULL or NJ2K_FALSE, and NJ2K_E_UNSUPPORTED from nj2k_get_status for a decoder).
  *
  * The declarations below are derived from OpenJPEG's openjpeg.h, whose notice follows.
  */
@@ -619,6 +621,47 @@ typedef struct nj2k_dparameters {
     unsigned int flags;
 
 } nj2k_dparameters_t;
+
+/**
+ * Defined by builds that have nj2k_decoder_limits_init() and nj2k_decoder_set_limits() (the
+ * decoder limits API that the OpenJPEG fork's stage 1a hotfix adds to OpenJPEG 2.5.4).
+ */
+#define NJ2K_HAVE_DECODER_LIMITS 1
+
+/**
+ * Resource limits of a decoder, set with nj2k_decoder_set_limits().
+ *
+ * The decoder checks each limit from the codestream's headers before it allocates what the
+ * limit bounds, and refuses a codestream that exceeds one: nj2k_read_header() or nj2k_decode()
+ * then fails with an error message, and nj2k_get_status() gives NJ2K_E_LIMIT. A limit of 0
+ * means no limit, and a decoder that is given no limits has none. Fill the structure with
+ * nj2k_decoder_limits_init() and change single fields afterwards if needed.
+ * */
+typedef struct nj2k_decoder_limits {
+    /** Tiles of the image (SIZ marker), checked when the main header is read. */
+    NJ2K_UINT32 max_tiles;
+    /** Components of the image (SIZ marker), checked when the main header is read. */
+    NJ2K_UINT32 max_components;
+    /** Quality layers (COD marker of the main header and of each tile), checked as each
+     * COD marker is read. */
+    NJ2K_UINT32 max_layers;
+    /** Width and height of every component at the decoded resolution, after the reduce
+     * factor, checked when decoding starts (and by nj2k_get_decoded_dimensions()). */
+    NJ2K_UINT32 max_decoded_side;
+    /** Bytes the decoder may allocate, checked against two needs computed from the headers,
+     * each on its own and before it is allocated: the header's own state, as it is read, and
+     * the working memory of a decode (the decoded samples and the structures of every
+     * resolution of the largest tile), when decoding starts. */
+    NJ2K_UINT64 max_memory;
+} nj2k_decoder_limits_t;
+
+/** No limits: the default of every decoder. */
+#define NJ2K_DECODER_LIMITS_NONE        0
+/**
+ * Second Life textures: 1,024 tiles, 8 components, 64 quality layers, 2,048 pixels per
+ * side at the decoded resolution and 256 MiB of working memory.
+ */
+#define NJ2K_DECODER_LIMITS_SL_TEXTURE  1
 
 
 /**
@@ -1375,6 +1418,31 @@ NJ2K_API NJ2K_BOOL NJ2K_CALLCONV nj2k_decoder_set_strict_mode(nj2k_codec_t *p_co
         NJ2K_BOOL strict);
 
 /**
+ * Fills decoder limits with a profile.
+ *
+ * @param p_limits      the limits to fill.
+ * @param profile       NJ2K_DECODER_LIMITS_NONE, NJ2K_DECODER_LIMITS_SL_TEXTURE or, in builds
+ *                      with the OpenSim profile module, NJ2K_DECODER_LIMITS_OPENSIM_TEXTURE.
+ *
+ * @return NJ2K_TRUE if the profile is known. With an unknown profile the limits are set to
+ *         NJ2K_DECODER_LIMITS_NONE and NJ2K_FALSE is returned.
+ */
+NJ2K_API NJ2K_BOOL NJ2K_CALLCONV nj2k_decoder_limits_init(
+    nj2k_decoder_limits_t *p_limits, NJ2K_UINT32 profile);
+
+/**
+ * Sets the resource limits of a decoder (see nj2k_decoder_limits_t).
+ * Call it after nj2k_setup_decoder() and before nj2k_read_header(). The limits are copied.
+ *
+ * @param p_codec       decompressor handler
+ * @param p_limits      the limits
+ *
+ * @return NJ2K_TRUE if the limits are set
+ */
+NJ2K_API NJ2K_BOOL NJ2K_CALLCONV nj2k_decoder_set_limits(nj2k_codec_t *p_codec,
+        const nj2k_decoder_limits_t *p_limits);
+
+/**
  * Allocates worker threads for the compressor/decompressor.
  *
  * By default, only the main thread is used. If this function is not used,
@@ -1403,6 +1471,10 @@ NJ2K_API NJ2K_BOOL NJ2K_CALLCONV nj2k_codec_set_threads(nj2k_codec_t *p_codec,
  * @param   p_image         the image structure initialized with the characteristics of encoded image.
  *
  * @return true             if the main header of the codestream and the JP2 header is correctly read.
+ *
+ * neo-j2k: on failure nj2k_get_status() says why. NJ2K_E_NEED_DATA means the bytes ended before
+ * the headers did, which is no damage: read the header again from a stream with more bytes, on a
+ * new codec. The decoder limits are checked here, before anything they bound is allocated.
  */
 NJ2K_API NJ2K_BOOL NJ2K_CALLCONV nj2k_read_header(nj2k_stream_t *p_stream,
         nj2k_codec_t *p_codec,
@@ -1501,6 +1573,13 @@ NJ2K_API NJ2K_BOOL NJ2K_CALLCONV nj2k_get_decoded_tile(nj2k_codec_t *p_codec,
  * @param   res_factor      resolution factor to set
  *
  * @return                  true if success, otherwise false
+ *
+ * neo-j2k, as OpenJPEG with the fork's stage 1a fix: before nj2k_read_header() the factor is kept
+ * and checked when the header is read, and the call returns NJ2K_FALSE (it could not be checked
+ * yet); after it the factor is checked against every component first, and a refused factor leaves
+ * the decoder as it was. A factor at or above a component's number of resolutions is refused
+ * (NJ2K_E_LIMIT) under the default reduce policy, NJ2K_REDUCE_EXACT, and lowered to the coarsest
+ * level the codestream has under NJ2K_REDUCE_CLAMP (nj2k_decoder_set_reduce_policy()).
  */
 NJ2K_API NJ2K_BOOL NJ2K_CALLCONV nj2k_set_decoded_resolution_factor(
     nj2k_codec_t *p_codec, NJ2K_UINT32 res_factor);
@@ -1813,6 +1892,114 @@ NJ2K_API const char * NJ2K_CALLCONV nj2k_engine_string(void);
  * baseline x86-64, so a host can call it before anything else in the library.
  */
 NJ2K_API int NJ2K_CALLCONV nj2k_cpu_supported(void);
+
+/**
+ * OpenSim textures, from neo-j2k's OpenSim profile module (built unless the build turns
+ * NJ2K_PROFILE_OPENSIM off): the Second Life profile (NJ2K_DECODER_LIMITS_SL_TEXTURE) with
+ * 16,384 pixels per side at the decoded resolution. In a build without the module,
+ * nj2k_decoder_limits_init() does not know it, sets no limits and returns NJ2K_FALSE.
+ */
+#define NJ2K_DECODER_LIMITS_OPENSIM_TEXTURE  2
+
+/**
+ * The outcome of a codec's last call, from nj2k_get_status(). Zero and above is success, below
+ * zero failure; callers treat an unknown negative value as failure and an unknown positive one as
+ * success, so later versions can add statuses.
+ */
+typedef NJ2K_INT32 nj2k_status_t;
+/** Done. */
+#define NJ2K_OK                   0
+/** Decoded from the bytes given, every one of them used, and the codestream goes on past them:
+ * the image holds the layers and code-block passes that arrived (decoding, stage 1c). */
+#define NJ2K_TRUNCATED            1
+/** The bytes end before what the call needs is complete: the main header, the first tile-part
+ * header, or the first packet of the requested resolutions. Nothing was found damaged; with more
+ * bytes the call can succeed. A host that already holds every byte of the file treats it as
+ * damage. */
+#define NJ2K_E_NEED_DATA        (-1)
+/** An argument is invalid (a null pointer, an unknown value), or the call does not apply to this
+ * codec. */
+#define NJ2K_E_ARGUMENT         (-2)
+/** The bytes are not a JPEG 2000 codestream (or JP2/JPH file, for a JP2 codec). */
+#define NJ2K_E_NOT_JPEG2000     (-3)
+/** A header is invalid. */
+#define NJ2K_E_HEADER           (-4)
+/** Valid, but not supported: JPEG 2000 Part 2 extensions; HT code-blocks until the HT module. */
+#define NJ2K_E_UNSUPPORTED      (-5)
+/** A decoder limit, or the reduce factor under NJ2K_REDUCE_EXACT, refuses the codestream. */
+#define NJ2K_E_LIMIT            (-6)
+/** An allocation failed; the codec can still be destroyed. */
+#define NJ2K_E_NO_MEMORY        (-7)
+/** The coded data is damaged where the requested resolutions needed it (decoding, stage 1c). */
+#define NJ2K_E_DATA             (-8)
+/** An output buffer or image does not fit the decode. */
+#define NJ2K_E_OUTPUT           (-9)
+/** The call came out of order: before nj2k_read_header(), after a failure, or twice. */
+#define NJ2K_E_STATE           (-10)
+
+/**
+ * The status of the codec's last call that reports one: nj2k_setup_decoder(),
+ * nj2k_decoder_set_strict_mode(), nj2k_decoder_set_limits(), nj2k_decoder_set_reduce_policy(),
+ * nj2k_read_header(), nj2k_set_decoded_resolution_factor(), nj2k_set_decoded_components(),
+ * nj2k_get_decoded_dimensions(), and the decoding functions. NJ2K_OK for a codec that has made
+ * none of these calls yet; NJ2K_E_ARGUMENT for a null codec.
+ */
+NJ2K_API nj2k_status_t NJ2K_CALLCONV nj2k_get_status(nj2k_codec_t *p_codec);
+
+/** A short English description of a status ("need more data"), a static string. */
+NJ2K_API const char * NJ2K_CALLCONV nj2k_status_string(nj2k_status_t status);
+
+/**
+ * A host's allocator for a codec's own memory, the codec object included. allocate returns a
+ * block of at least size bytes aligned to alignment (a power of two, at most 4,096), or NULL;
+ * release gets back a block with the size it was asked for. (The members are not called malloc
+ * and free, which debug and leak-checking headers define as macros.) The images, streams and
+ * codestream information that the API hands to the caller come from the C runtime's heap, as
+ * OpenJPEG's do, since the functions that destroy them take no codec. Every structure of
+ * neo-j2k's own that may grow in later versions starts with its size: set struct_size to
+ * sizeof(nj2k_allocator_t).
+ */
+typedef struct nj2k_allocator {
+    NJ2K_SIZE_T struct_size;
+    void * (*allocate)(void *user, NJ2K_SIZE_T size, NJ2K_SIZE_T alignment);
+    void (*release)(void *user, void *ptr, NJ2K_SIZE_T size);
+    void *user;
+} nj2k_allocator_t;
+
+/**
+ * nj2k_create_decompress() with the codec's memory from the host's allocator (copied; its user
+ * pointer must stay valid until the codec is destroyed). NULL when the allocator is incomplete
+ * or the codec cannot be allocated.
+ */
+NJ2K_API nj2k_codec_t* NJ2K_CALLCONV nj2k_create_decompress_with_allocator(
+    NJ2K_CODEC_FORMAT format, const nj2k_allocator_t *allocator);
+
+/** Reduce policies, for nj2k_decoder_set_reduce_policy(). */
+/** A reduce factor at or above a component's number of resolutions is refused (NJ2K_E_LIMIT),
+ * as OpenJPEG does; the default. */
+#define NJ2K_REDUCE_EXACT 0
+/** Such a factor is lowered to the coarsest level the main header gives every component; the
+ * factor used is the components' factor in the image (nj2k_get_decoded_dimensions()). */
+#define NJ2K_REDUCE_CLAMP 1
+
+/**
+ * Sets the reduce policy, before or after nj2k_read_header(); it applies to the reduce factor
+ * when it is next checked.
+ */
+NJ2K_API NJ2K_BOOL NJ2K_CALLCONV nj2k_decoder_set_reduce_policy(nj2k_codec_t *p_codec,
+        NJ2K_UINT32 policy);
+
+/**
+ * Sets factor, x0, y0, w and h of every component of p_image, the image nj2k_read_header() gave,
+ * to what nj2k_decode() delivers at the codec's reduce factor and policy, without decoding, so a
+ * host can size its buffers first. It checks what decoding checks before it allocates: the reduce
+ * factor, the decoded side and the working memory against the decoder limits. Call it after
+ * nj2k_read_header() and nj2k_set_decoded_resolution_factor().
+ *
+ * @return NJ2K_TRUE if p_image is set; on failure p_image is unchanged and nj2k_get_status() says why.
+ */
+NJ2K_API NJ2K_BOOL NJ2K_CALLCONV nj2k_get_decoded_dimensions(nj2k_codec_t *p_codec,
+        nj2k_image_t *p_image);
 
 
 #ifdef __cplusplus

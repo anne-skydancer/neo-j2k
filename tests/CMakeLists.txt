@@ -22,6 +22,14 @@ endfunction()
 nj2k_test_program(nj2k_diff tools/nj2k_diff.cpp)
 nj2k_test_program(nj2k_conformance tools/nj2k_conformance.cpp)
 nj2k_test_program(nj2k_api_unit unit/api_unit.cpp)
+# stage 1b: the header model and the limits, through the API and the library's internals (included
+# by their path: src/ is no include directory, its limits and memory headers would hide the C ones)
+nj2k_test_program(nj2k_header_unit unit/header_unit.cpp)
+# the local gate on a viewer's texture cache (private: run where it is, doc/testing.md)
+nj2k_test_program(nj2k_cache_check tools/nj2k_cache_check.cpp)
+if(NJ2K_PROFILE_OPENSIM)
+  target_compile_definitions(nj2k_header_unit PRIVATE NJ2K_TEST_OPENSIM=1)
+endif()
 
 # The public headers as strict C (C99; MSVC has no C99 mode, so C11) and strict C++20.
 add_library(nj2k_header_c OBJECT unit/header_c.c)
@@ -55,6 +63,19 @@ function(nj2k_add_test name)
 endfunction()
 
 nj2k_add_test(api_unit nj2k_api_unit)
+nj2k_add_test(header_unit nj2k_header_unit "${NJ2K_CORPUS}" "${PROJECT_SOURCE_DIR}/fuzz/bombs"
+              "${CMAKE_CURRENT_SOURCE_DIR}/known-defects")
+
+# Header facts (stage 1b gate): neo-j2k's header read gives the oracle's image and codestream
+# information for every generated file at every reduce level, the factor in the parameters and set
+# before the header, and every prefix through the main header refuses where the oracle refuses;
+# with the conformance data, its codestreams and JP2 files too.
+nj2k_add_test(header_facts nj2k_diff header --a oracle --b neoj2k --files "${NJ2K_CORPUS}" --root "${NJ2K_CORPUS}"
+              --modes plain,viewer --reduce 0-5 --bytes 4096)
+if(EXISTS "${NJ2K_TESTDATA}/input/conformance")
+  nj2k_add_test(header_facts_conformance nj2k_diff header --a oracle --b neoj2k
+                --files "${NJ2K_TESTDATA}/input/conformance" --modes plain,viewer --reduce 0-5 --bytes 1024)
+endif()
 
 # The oracle against its reference tables (corpus/generated/oracle-reference*.tsv, written on
 # Windows with MSVC): whole files in plain and viewer mode at reduce 0-5, and every cut point of the

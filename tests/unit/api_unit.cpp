@@ -60,9 +60,12 @@ SAME_SIZE(tile_index_t)
 SAME_SIZE(codestream_index_t)
 SAME_SIZE(jp2_metadata_t)
 SAME_SIZE(jp2_index_t)
+SAME_SIZE(decoder_limits_t)
 #undef SAME_SIZE
 
 #define SAME_AT(T, m) static_assert(offsetof(nj2k_##T, m) == offsetof(opj_##T, m), "offset of " #T "." #m);
+SAME_AT(decoder_limits_t, max_tiles) SAME_AT(decoder_limits_t, max_components) SAME_AT(decoder_limits_t, max_layers)
+SAME_AT(decoder_limits_t, max_decoded_side) SAME_AT(decoder_limits_t, max_memory)
 SAME_AT(image_comp_t, dx) SAME_AT(image_comp_t, w) SAME_AT(image_comp_t, prec) SAME_AT(image_comp_t, sgnd)
 SAME_AT(image_comp_t, resno_decoded) SAME_AT(image_comp_t, factor) SAME_AT(image_comp_t, data)
 SAME_AT(image_comp_t, alpha)
@@ -86,6 +89,9 @@ SAME_AT(tccp_info_t, roishift) SAME_AT(tccp_info_t, prch)
 static_assert(int(NJ2K_CODEC_J2K) == int(OPJ_CODEC_J2K) && int(NJ2K_CODEC_JP2) == int(OPJ_CODEC_JP2), "codec enum");
 static_assert(int(NJ2K_CPRL) == int(OPJ_CPRL) && int(NJ2K_CLRSPC_CMYK) == int(OPJ_CLRSPC_CMYK), "enums");
 static_assert(NJ2K_DPARAMETERS_DUMP_FLAG == OPJ_DPARAMETERS_DUMP_FLAG && NJ2K_J2K_MAXRLVLS == OPJ_J2K_MAXRLVLS, "macros");
+static_assert(NJ2K_HAVE_DECODER_LIMITS == OPJ_HAVE_DECODER_LIMITS && NJ2K_DECODER_LIMITS_NONE == OPJ_DECODER_LIMITS_NONE &&
+                  NJ2K_DECODER_LIMITS_SL_TEXTURE == OPJ_DECODER_LIMITS_SL_TEXTURE,
+              "decoder limits");
 
 void test_version()
 {
@@ -317,12 +323,18 @@ void test_scan_and_backends()
     cut.mode = Mode::Plain;
     CHECK(oracle->decode(cut).ok);
 
-    // neo-j2k through the compatibility header: until stage 1c it refuses at codec creation
+    // neo-j2k through the compatibility header: since stage 1b the header reads, with the oracle's
+    // facts; until stage 1c the decode refuses
     auto neo = make_neoj2k_backend();
     rq.mode = Mode::Plain;
     const Outcome n = neo->decode(rq);
-    CHECK(!n.ok && n.stage == "codec");
-    CHECK(!nj2k::make_decoder());
+    CHECK(!n.ok && n.stage == "decode");
+    CHECK(nj2k::make_decoder() != nullptr);
+    for (Mode m : {Mode::Plain, Mode::Viewer}) {
+        rq.mode = m;
+        const HeaderFacts a = oracle->header(rq), b = neo->header(rq);
+        CHECK(a.ok && b.ok && header_difference(a, b).empty() && a.hash() == b.hash());
+    }
 }
 
 void test_viewer_rules()

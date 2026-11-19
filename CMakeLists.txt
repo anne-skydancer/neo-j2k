@@ -21,6 +21,7 @@ option(NJ2K_BUILD_FUZZERS "Build libFuzzer targets (Clang, or MSVC with /fsaniti
 option(NJ2K_WERROR "Treat warnings in neo-j2k's own code as errors" OFF)
 option(NJ2K_MSVC_STATIC_RUNTIME "Link the static C runtime (/MT) instead of the DLL one (/MD)" OFF)
 option(NJ2K_INSTALL "Generate install rules" ${PROJECT_IS_TOP_LEVEL})
+option(NJ2K_PROFILE_OPENSIM "Build the OpenSim decoder limit profile (NJ2K_DECODER_LIMITS_OPENSIM_TEXTURE)" ON)
 set(NJ2K_SIMD "AVX2" CACHE STRING "Instruction-set floor of neo-j2k's own code: AVX2 (x86-64-v3) or SCALAR (x86-64)")
 set_property(CACHE NJ2K_SIMD PROPERTY STRINGS AVX2 SCALAR)
 set(NJ2K_SANITIZE "" CACHE STRING "Sanitizers for every target: address;undefined;memory;thread")
@@ -79,4 +80,5 @@ if(NJ2K_BUILD_TESTS OR NJ2K_BUILD_FUZZERS)
 endif()
 
 message(STATUS "neo-j2k ${PROJECT_VERSION}: SIMD ${NJ2K_SIMD}, static ${NJ2K_BUILD_STATIC}, shared ${NJ2K_BUILD_SHARED}, "
-               "tests ${NJ2K_BUILD_TESTS}, fuzzers ${NJ2K_BUILD_FUZZERS}, sanitizers '${NJ2K_SANITIZE}'")
+               "OpenSim profile ${NJ2K_PROFILE_OPENSIM}, tests ${NJ2K_BUILD_TESTS}, fuzzers ${NJ2K_BUILD_FUZZERS}, "
+               "sanitizers '${NJ2K_SANITIZE}'")

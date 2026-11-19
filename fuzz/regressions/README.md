@@ -16,3 +16,4 @@ it with the guard off.
 | Input | Finding |
 |---|---|
 | `roundtrip-guard-bit-overflow.bin` | ClusterFuzzLite on the stage-0 pull request: a lossless round trip of the oracle came back with other samples. The harness asked for losslessness where OpenJPEG's encoder writes a stream that cannot hold the image (OD-6, too few guard bits); the target now encodes and decodes such inputs without comparing them. `oracle_known_defect.od6` replays it with the guard off. |
+| `header-jp2-pclr-values-before-size.bin` | Stage 1b, the header target: a JP2 palette box declaring 400 entries of 255 columns in 774 bytes; the reader allocated the 408 KB of values before checking the box holds them. |

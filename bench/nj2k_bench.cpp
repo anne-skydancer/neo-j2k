@@ -4,7 +4,7 @@
 // nj2k_bench: the viewer's request, timed, with every decoder under test interleaved.
 //
 //   nj2k_bench --a SPEC [--a SPEC ...] --files LIST [--mode viewer|plain] [--reduce 0-5]
-//              [--kinds full,budget,first] [--encode lossy,lossless] [--budget-min 15]
+//              [--kinds full,budget,first,header] [--encode lossy,lossless] [--budget-min 15]
 //              [--target-ms 20] [--min-iters 5] [--max-iters 2000] [--pin CORE] [--csv FILE]
 //              [--json FILE]
 //
@@ -17,7 +17,10 @@
 //   other benches it saw) and says when the box cut it short.
 // - Clock: the TSC, calibrated against steady_clock at start (nominal cycles, not core cycles).
 // - Decoders: oracle (linked), lib:<path>[=<name>] (OpenJPEG ABI: the shipped DLL, the counting
-//   oracle module, which adds heap-call counts), neoj2k (from stage 1c). Each needs its own name.
+//   oracle module, which adds heap-call counts), neoj2k (decodes from stage 1c; its header pass from
+//   stage 1b, the kind header). Each needs its own name.
+// - The kind header times the header pass alone, once per file (at the first --reduce level): a
+//   codec, the header read and the codestream information, as the viewer's getMetadata does.
 // - Timed rounds do the viewer's work only: the request, its checks and its 8-bit copy. The
 //   identity checksums and the heap counts come from untimed rounds before them.
 // - OpenJPEG runs on the calling thread: OPJ_NUM_THREADS is cleared at start (and its old value
@@ -286,6 +289,11 @@ int main(int argc, char** argv)
                         continue;
                     }
                     n = viewer::kFirstRequestBytes;
+                } else if (kind == "header") {
+                    if (r != a.reduce.front()) {
+                        continue;  // once per file
+                    }
+                    n = in.data.size();
                 } else {
                     usage("unknown kind " + kind);
                 }
@@ -311,13 +319,24 @@ int main(int argc, char** argv)
         // then the heap calls of one request as the timed rounds make it
         Request timed = rq;
         timed.inspect = false;
+        const bool header = cfg.kind == "header";
         for (std::size_t k = 0; k < D; ++k) {
-            const Outcome o = decs[k]->decode(rq);
-            r[k].ok = o.ok;
-            r[k].checksum = o.ok ? (a.mode == Mode::Viewer ? o.u8_hash : o.hash) : 0;
+            if (header) {
+                const HeaderFacts f = decs[k]->header(rq);
+                r[k].ok = f.ok;
+                r[k].checksum = f.ok ? f.hash() : 0;
+            } else {
+                const Outcome o = decs[k]->decode(rq);
+                r[k].ok = o.ok;
+                r[k].checksum = o.ok ? (a.mode == Mode::Viewer ? o.u8_hash : o.hash) : 0;
+            }
             std::uint64_t counts[4];
             decs[k]->alloc_reset();
-            (void)decs[k]->decode(timed);
+            if (header) {
+                (void)decs[k]->header(timed);
+            } else {
+                (void)decs[k]->decode(timed);
+            }
             if (decs[k]->alloc_counts(counts)) {
                 r[k].allocs = double(counts[0]);
                 r[k].reallocs = double(counts[1]);
@@ -337,7 +356,11 @@ int main(int argc, char** argv)
             for (std::size_t j = 0; j < D; ++j) {
                 const std::size_t k = (j + std::size_t(it)) % D;  // rotate who goes first
                 const std::uint64_t t0 = tsc();
-                (void)decs[k]->decode(timed);
+                if (header) {
+                    (void)decs[k]->header(timed);
+                } else {
+                    (void)decs[k]->decode(timed);
+                }
                 const std::uint64_t t1 = tsc();
                 spent[k] += t1 - t0;
                 times[k].push_back(double(t1 - t0) / g_tsc_per_us);
