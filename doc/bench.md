@@ -363,40 +363,79 @@ to the work arena's), and the repeat of any request finds memory it fits in.
 `decode_unit` checks it per request, as the bench counts it: the viewer's request through the bench's own
 backend (one codec kept across every request, the Second Life limits), every file up to 512², at reduce 0-5,
 whole, cut to the bytes the viewer asks for at that level, and the first 600 bytes; each request once, then
-again: the repeat must make no allocator call and no `operator new`. On the generated corpus in CI (58
-files, 521 requests) and with `--heap-files <list>` on the bench corpus locally (172 files, 1,623 requests),
-both builds: no heap call. Without the fix it fails on both corpora (`packed_ppt_tiles.j2k`, and a 128²
-RGBA texture: which file shows it depends on what was decoded before).
+again: the repeat must make no allocator call and no `operator new`. Every file is gated, the DP-3 file
+`edge_ppt_empty_tiles_97.j2k` included (the reference tests leave it out because the oracle refuses it; this
+gate compares with no oracle), and the gate fails when a file's whole request is refused at any level, so it
+cannot pass on requests that never decoded; the one exception is `sub_420.j2k`, whose components differ in
+size and which the viewer refuses before the decode. On the generated corpus in CI (59 files, 527 requests,
+513 decoded: the 6 of `sub_420.j2k` and 8 cut requests refused) and with `--heap-files <list>` on the bench
+corpus locally (172 files, 1,623 requests, all decoded), both builds: no heap call. Without the fix it fails
+on both corpora (`edge_ppt_empty_tiles_97.j2k` first, then `packed_ppt_tiles.j2k`, and a 128² RGBA texture:
+which file shows it depends on what was decoded before).
 
 512² decodes make none already. 1024² whole decodes make one allocation and one free a request (the
 12-16 MiB of the tile's samples, above the 8 MiB a codec keeps by default). They can make none with
-`nj2k_decoder_set_retained_bytes` at 17 MiB or more: measured on 12 textures of 1024², that saves 1.3 ms
-of 30.8 (4 %, the page faults of fresh memory) and keeps 16.3 MiB per codec instead of the 8 MiB limit. Not
+`nj2k_decoder_set_retained_bytes` at 17 MiB or more: measured on 12 textures of 1024² in a probe of its own
+(two codecs, the default and 64 MiB retained, interleaved through the static library; 30.8 ms a decode in
+that run, not the bench's 26.1 ms of the table below), that saves 1.3 ms a decode (4 %, the page faults of
+fresh memory) and keeps 16.3 MiB per codec instead of the 8 MiB limit. Not
 without cost, so the default stays; the viewer may raise it for its decode threads.
 
 ### The kernel gates
 
-Run on the final head three times (101 rounds at 1024², quiet machine, 4-10 % load):
+`nj2k_kernels` (101 rounds at 1024², 11 at 4096², pinned to core 7). Until the review round it timed each
+kernel with a copy of its input and subtracted a copy timed apart (about 22 % of the 9/7's time and 62 % of
+the output tail's), so a 10 % error in the copy moved the 9/7 ratio by about 0.15. It now restores the input
+before every call untimed, at a 64-byte boundary as the decoder places each component's samples, and reports
+net and gross (the restore added to both) directly. Six runs each:
 
-| Kernel | Size | Stage 1c, net | Before these commits, net | Now, net | Gain net | Gain gross | Plan gate |
+| Kernel | Size | Stage 1c | Before the owner's items | Now | Net, median (range) | Gross | Plan gate |
 |---|---|---|---|---|---|---|---|
-| Output tail (RGB 9/7, 8-bit interleaved, bottom-up) | 1024² | 1,121-1,174 µs | 452 µs (2.5×) | 259-275 µs | **4.24-4.33×** | 2.28-2.31× | ≥ 5× |
-| | 4096² | 24.1 ms | | 5.0 ms | 4.8× | 2.61× | |
-| Inverse 9/7, 5 levels | 1024² | 2,393-2,515 µs | 583 µs (4.2×) | 477-484 µs | **5.02-5.19×** | 4.10-4.25× | ≥ 5× |
-| | 4096² | 43.2 ms | | 8.9 ms | 4.87× | 4.09× | |
-| Inverse 5/3, 5 levels | 1024² | 957-1,013 µs | | 408-421 µs | 2.3-2.4× | 2.00-2.06× | |
+| Output tail (RGB 9/7, 8-bit interleaved, bottom-up), quiet (load 1-9 %), unaligned planes | 1024² | 1,088-1,092 µs | 442-452 µs (2.5-2.6×, old method) | 215-224 µs | **4.98× (4.88-5.07×)** | 2.36-2.40× | ≥ 5× |
+| same, planes 64-byte aligned (the committed bench), three runs, quiet | 1024² | 1,108-1,109 µs | | 217-220 µs | **5.12× (5.05-5.12×)** | 2.41-2.42× | |
+| same, aligned, the owner's viewer running (load 9-27 %) | 1024² | 1,137-1,190 µs | | 232-267 µs | 4.70× (4.26-4.93×) | 2.27-2.40× | |
+| | 4096² | 23.1 ms | | 4.8 ms | 4.84× | 2.50× | |
+| Inverse 9/7, 5 levels, quiet, unaligned | 1024² | 2,413-2,536 µs | 583 µs (4.2×, old method) | 466-478 µs | **5.21× (5.18-5.35×)** | 4.21-4.33× | ≥ 5× |
+| same, aligned, three runs, quiet | 1024² | 2,458-2,517 µs | | 462-467 µs | **5.32× (5.28-5.43×)** | 4.25-4.40× | |
+| same, aligned, the owner's viewer running | 1024² | 2,390-2,522 µs | | 468-477 µs | **5.22× (5.07-5.34×)** | 4.14-4.34× | |
+| | 4096² | 43.1 ms | | 8.1 ms | 5.32× | 4.34× | |
+| Inverse 5/3, 5 levels, aligned, the owner's viewer running | 1024² | 811-828 µs | | 403-409 µs | 2.02× (1.98-2.05×) | 1.73-1.78× | |
+
+The output tail's floor at 1024² (`nj2k_kernels --only floor`, same runs): its three int32 planes read and
+nothing else, 203-206 µs quiet (220-225 under the viewer's load); read with the 3.1 MB of pixels' bytes
+written by plain stores and one xor a sample, 207-209 µs quiet. The 5× budget is 218-222 µs. The pass now
+runs 3-8 % above the floor of its own memory traffic, so 5× is met in quiet runs at the median and not in
+every run, and it drops when another process shares the L3 and the memory bus. With the old method, on the
+previous head, the 9/7 read 4.94-5.19× and the output tail 4.24-4.33×. A clang-cl build, one run: the output
+tail 4.92×, the 9/7 4.18× (clang compiles stage 1c's reference faster); the gates are taken on MSVC as all
+of this document's.
 
 **Output tail.** The fused pass of stage 2 still went through a stack buffer: the transform into it, each
 component's shift there, then the store of the low bytes, three trips through L1 a sample. For the viewer's
 image (1 to 4 components interleaved in 8-bit pixels, each finished into [0, 255]) a sample now goes from its
 source row to its byte in registers, sixteen pixels a step: the transform as before, the 9/7 rounding by
-cvtps after min(2^30, v) (2^31 and above to the top, NaN to the bottom, as before), the shift and clamp in
-16-bit lanes (for 0 <= lo <= hi <= 255 and a shift below 2^15 a saturating pack, a saturating add and a clamp
-equal the 64-bit add and clamp), and the pixels packed by shifts, unpacks and a byte shuffle. 1,131 µs net
-in stage 1c, 452 before, 263 now. The 5× gate (226 µs) is out of reach at this size: the input is 12.6 MB
-of int32 planes in the L3, and reading them alone, three streams and nothing else, takes 201-230 µs (55-63
-GB/s on one core) before the 3.1 MB of pixels are written; a kernel that only stores the low bytes cannot
-go below that floor, and this one runs at it. Measured and dropped: the same pass in 32-bit lanes (387 µs).
+cvtps after min(2^30, v) (2^31 and above to the top, NaN to the bottom, as before), the shift in 16-bit lanes
+(a saturating pack to int16 and a saturating add), then the bytes. 263 µs at the first review, then the
+review round's changes, each bit-exact and each measured faster (unaligned planes, quiet):
+- the samples stay in the pack's lane order, which the stores of three and four components take as they are
+  (the per-component lane permute is gone; 263 -> 253 µs);
+- the clamp to [0, 255] is the unsigned saturating pack to bytes (for 0 <= lo <= hi <= 255 and a shift below
+  2^15, a saturating pack, a saturating add and that pack equal the 64-bit add and clamp); a component whose
+  range is narrower (fewer than 8 bits) clamps the bytes after the pack, in instances of its own, so the
+  viewer's 8-bit images skip the 16-bit max and min (253 -> 230 µs);
+- one call per region, the rows looped inside, with the row pointers in locals (the byte stores could alias
+  the caller's pointer array, which made every step reload it; 230 -> 217 µs).
+
+Measured and dropped: the same pass in 32-bit lanes (387 µs); non-temporal stores of the pixels (the floor's
+read and write went from 222 to 249-250 µs with them); software prefetch of the planes 128, 256 or 512 samples
+ahead (233-237 µs, slower); joining each lane's 12 bytes with a cross-lane permute to store 24 at a time (no
+change). Not tried: fusing the output pass into the last wavelet level, finishing each row while it is in
+L1 or L2. The kernel gate is the isolated pass, which that cannot change; in a decode it could save at most
+the pass's own traffic from the L3, about 200 µs of a 1024² RGB decode's 25.4 ms (under 1 %), and it needs
+the three components' last levels run row by row together, which the decode does one component at a time
+(a change to `Tile::decode_samples` and the wavelet's interface, not a kernel's). In whole decodes the
+review round's output changes are inside the noise: 1024² at reduce 0, 25.37 ms against 25.45 for the
+previous round's final library (40 files, one interleaved run under the viewer's load).
 
 **9/7 wavelet.** Its parts at 1024², each alone after a copy: the horizontal pass 390 µs, the vertical
 lifting 260, the pass that puts the rows in order 156 (a full read and write of the level from the L3); 630
@@ -414,7 +453,8 @@ Measured and dropped (each bit-exact): the horizontal steps in registers with la
 loops unrolled by two (slower), software prefetch of the next rows (no change), row-wise thresholds from 32²
 to 256² (no change). What is left of the top level is two passes over 4 MB of L3 (the lifting in place and
 the row permutation, which a buffer the size of the level would avoid, and memory may not grow) and the
-horizontal steps' arithmetic. The gate is met, by less than the run-to-run spread (4.94-5.19× over six runs).
+horizontal steps' arithmetic. With the input restored untimed the gate is met in every one of fifteen runs
+(5.07-5.43×, median 5.2×, quiet and loaded); by the old subtracting method it was 4.94-5.19×.
 
 ### Few-pixel requests
 
@@ -441,28 +481,40 @@ repeats, which load does not move) showed where:
   calls for a 32² RGBA tile); the same double built from its exponent bits takes 300-500 cycles off every
   request.
 
-The shared libraries, interleaved, two runs in opposite load orders, two copies of each (load 24-27 %):
+The gate: no slower than `main` within the noise of two copies of one library (0.5 %), on a quiet machine.
+The shared libraries of `main` (218b0fa) and of the final head, two copies of each, interleaved request by
+request over the bench corpus (`--kinds full,first --reduce 3-5`, 801 configurations, about 56 s a run, pinned
+to core 7): run 1 under 4 % mean load (14 % p90), run 2 in the opposite load order under 5 % (14 % p90), run 3
+under 31 % (the owner's viewer running). Each ratio is the median over the class's files of the two copies'
+sum against `main`'s two copies' sum; the copy column is `main`'s second copy against its first.
 
-| Request | Files | main µs | final / main, run 1 | run 2 | main copy / main, run 1 | run 2 |
-|---|---|---|---|---|---|---|
-| 32² at reduce 3 | 28 | 3.93 | 0.976, 0.976 | 0.957, 0.955 | 1.005 | 0.994 |
-| 32² at reduce 4 | 28 | 3.45 | 0.979, 0.982 | 0.972, 0.965 | 1.004 | 0.996 |
-| 32² at reduce 5 (1x1 floor) | 28 | 3.09 | 0.973, 0.971 | 0.967, 0.962 | 1.003 | 0.994 |
-| 64² at reduce 5 | 32 | 5.44 | 0.963, 0.963 | 0.958, 0.952 | 1.009 | 0.996 |
-| 128² at reduce 4 | 32 | 9.27 | 0.998, 0.990 | 0.973, 0.979 | 0.999 | 0.993 |
-| 128² at reduce 5 | 32 | 6.41 | 1.003, 0.994 | 0.983, 0.980 | 1.005 | 0.991 |
-| 256² at reduce 5 | 40 | 12.35 | 1.007, 1.002 | 1.000, 1.001 | 0.999 | 1.004 |
-| 512² at reduce 5 | 40 | 62.55 | 0.985, 0.978 | 0.980, 0.979 | 1.000 | 1.001 |
-| 32², first 600 bytes | 2 | 4.25 | 0.991, 0.987 | 0.996, 0.990 | 1.004 | 1.003 |
-| 64², first 600 bytes | 29 | 4.55 | 0.955, 0.952 | 0.947, 0.942 | 1.005 | 0.994 |
-| 128², first 600 bytes | 24 | 4.69 | 0.994, 0.985 | 0.972, 0.966 | 1.004 | 0.985 |
-| 256², first 600 bytes | 38 | 6.51 | 0.999, 0.992 | 0.987, 0.984 | 0.997 | 0.995 |
-| 512², first 600 bytes | 38 | 13.02 | 0.985, 0.974 | 0.969, 0.977 | 0.994 | 1.012 |
-| 1024², first 600 bytes | 34 | 23.95 | 0.964, 0.965 | 0.964, 0.965 | 0.997 | 1.002 |
+| Request | Files | main µs | final / main, run 1 | run 2 | run 3 (loaded) | main copy / main, run 1 | run 2 | run 3 |
+|---|---|---|---|---|---|---|---|---|
+| 32² at reduce 3 | 28 | 3.90 | 0.977 | 0.968 | 0.974 | 1.002 | 1.003 | 1.003 |
+| 32² at reduce 4 | 28 | 3.45 | 0.983 | 0.982 | 0.983 | 1.003 | 1.000 | 1.006 |
+| 32² at reduce 5 (1x1 floor) | 28 | 3.08 | 0.978 | 0.979 | 0.979 | 1.000 | 0.999 | 1.003 |
+| 64² at reduce 5 | 32 | 5.55 | 0.972 | 0.965 | 0.974 | 0.992 | 0.999 | 0.996 |
+| 128² at reduce 4 | 32 | 9.37 | 0.975 | 0.991 | 0.974 | 0.999 | 1.000 | 1.006 |
+| 128² at reduce 5 | 32 | 6.48 | 0.991 | 0.991 | 0.993 | 0.997 | 1.002 | 1.004 |
+| 256² at reduce 5 | 40 | 12.43 | 0.993 | 1.011 | 0.998 | 1.001 | 1.004 | 1.006 |
+| 512² at reduce 5 | 40 | 63.06 | 0.968 | 0.978 | 0.970 | 0.997 | 0.996 | 0.996 |
+| 32², first 600 bytes | 2 | 4.27 | 0.979 | 0.988 | 0.981 | 1.001 | 0.998 | 1.000 |
+| 64², first 600 bytes | 29 | 4.55 | 0.966 | 0.955 | 0.970 | 0.995 | 1.002 | 0.996 |
+| 128², first 600 bytes | 24 | 4.71 | 0.985 | 0.983 | 0.988 | 1.000 | 1.005 | 1.000 |
+| 256², first 600 bytes | 38 | 6.51 | 0.991 | 0.999 | 0.994 | 1.005 | 1.006 | 1.006 |
+| 512², first 600 bytes | 38 | 12.95 | 0.957 | 0.987 | 0.948 | 1.006 | 0.999 | 1.008 |
+| 1024², first 600 bytes | 34 | 23.52 | 0.961 | 0.964 | 0.966 | 1.004 | 1.001 | 1.002 |
 
-Every few-pixel class is as fast as `main` or faster; the closest, 256² at reduce 5, is 0.0-0.7 % above it,
-inside the spread of the two copies of `main` (up to 1.5 % on these classes in these runs). Every decode is
-identical to the oracle's, and no request makes a heap call after warm-up but the 1024² whole ones (above).
+Twelve classes are 0.7-5.2 % faster than `main` in every run. 256², first 600 bytes, is 0.1-0.9 % faster
+(within the copies' spread in run 2). 256² at reduce 5 is the exception: 0.7 % faster in run 1, 1.1 % slower in run 2 (where the two
+copies of `main` differ by 0.4 %), 0.2 % faster under load in run 3. Four more runs of the 256² files alone, at
+reduce 5 in alternating orders (16-31 % load, the viewer running), gave 0.992-0.995 for whole requests and
+0.989-0.994 for the first 600 bytes, with `main`'s copies 0.2-1.1 % apart. Over the seven runs its median is
+0.995; one run of seven is outside the gate's 0.5 %, and the copies of `main` themselves differ by up to 1.1 %
+in this class, so the gate holds at the median and not in every run. What is known of the class's cost is
+above (Tier-1's renormalisation, about 600 cycles of code layout); no further change was found that removes
+it. Every decode is identical to `main`'s, and no request makes a heap call after warm-up but the 1024² whole
+ones (above).
 
 ### Whole decodes and large images
 
