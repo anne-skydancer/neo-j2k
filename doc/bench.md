@@ -148,19 +148,29 @@ stage 1c's follow-up (218b0fa), `stage 2` the fused output pass (a4a3d5c), `stag
 (c081da9), `stage 4` the MQ renormalisation with stage 2's follow-up (4cb2d40). MSVC 14.51 RelWithDebInfo,
 pinned to core 7 of the Ryzen 9 9950X3D, the private bench corpus (212 files), the viewer's request on
 neo-j2k's own path (one codec, the Second Life limits, the decode into the viewer's 8-bit bottom-up buffer).
+The review round ran every gate again on the pull request's head after its fixes (`final`: one copy of the
+colour transform kernels, comments, tests; no change to what the decoder computes), against `main` and the
+oracle, on a quiet machine; the first run's per-stage figures follow each table.
 
 ### The kernel gates (`nj2k_kernels`, one plane or image, median of interleaved rounds)
 
-The times leave out the plane copies the bench makes before each round (it prints them).
+Each round copies the input planes before it runs the kernel (the kernels work in place); the bench prints
+that copy's time, timed alone with warm caches. The net times below leave it out; the bench's own ratio (gross)
+includes it. The bench never fails on a time, so the gates are judged from these figures. The review round's
+run (101 rounds at 1024², 21 at 4096²; the first run's net gain in brackets):
 
-| Kernel | Size | Before (stage 1c) | After | Gain | Plan gate |
-|---|---|---|---|---|---|
-| Output tail: ICT, DC shift, 8-bit interleaved bottom-up copy (RGB 9/7) | 1024² | 1,177 µs | 401 µs | **2.9×** | ≥ 5× at 1024² |
-| | 4096² | 24.2 ms | 7.2 ms | 3.4× | |
-| Inverse 9/7, 5 levels | 1024² | 2,545 µs | 587 µs | **4.3×** | ≥ 5× at 1024² |
-| | 4096² | 44.0 ms | 10.6 ms | 4.2× | |
-| Inverse 5/3, 5 levels | 1024² | 950 µs | 405 µs | 2.3× | |
-| | 4096² | 18.0 ms | 6.8 ms | 2.6× | |
+| Kernel | Size | Before (stage 1c), net | After, net | Gain net (first run) | Gain gross | Plan gate |
+|---|---|---|---|---|---|---|
+| Output tail: ICT, DC shift, 8-bit interleaved bottom-up copy (RGB 9/7) | 1024² | 1,171 µs | 442 µs | **2.6×** (2.9×) | 1.85× | ≥ 5× at 1024² |
+| | 4096² | 24.2 ms | 7.9 ms | 3.1× (3.4×) | 2.12× | |
+| Inverse 9/7, 5 levels | 1024² | 2,454 µs | 583 µs | **4.2×** (4.3×) | 3.60× | ≥ 5× at 1024² |
+| | 4096² | 43.4 ms | 10.5 ms | 4.1× (4.2×) | 3.59× | |
+| Inverse 5/3, 5 levels | 1024² | 994 µs | 409 µs | 2.4× (2.3×) | 2.07× | |
+| | 4096² | 18.7 ms | 6.4 ms | 2.9× (2.6×) | 2.43× | |
+
+The output tail takes the same time with the review fixes as without them (848-856 µs gross for both builds,
+run in turn), so its lower net gain here comes from this run's copy time, not from the fixes. The gross ratio
+understates the kernels; the net one, whose copy is timed with warm caches, slightly favours them.
 
 Neither gate's factor is reached against stage 1c, which already had OpenJPEG's SIMD transforms and its own
 AVX2 DC shift (the plan's factors were measured against OpenJPEG's scalar tail, 4.2-4.4 ms at 1024², which the
@@ -168,72 +178,115 @@ fused pass beats by about 11×). The 9/7 vertical pass alone went from OpenJPEG'
 about 0.17 ns a sample against 1.2 (a profiled build's split); what is left of the transform is the horizontal pass, already on rows in the
 first caches. Small levels keep OpenJPEG's structure, which is faster there (9/7 up to 64², 5/3 up to 256²,
 measured with the same bench): the row-wise transform takes over from 128² (9/7) and 512² (5/3) samples a
-level.
+level. The thresholds are by a level's area and were measured on square levels only, under load; thin levels
+(a few rows of thousands of samples, or the reverse) were not measured on their own.
+
+What else the plan lists for stage 3, and why it was not done: **int16 lanes for the 5/3** (twice the samples
+an instruction "where the header's bounds allow") were not tried. The header bounds the image's precision, not
+the coefficients a damaged or crafted code-block decodes to (up to 31 bit-planes), and D2 requires OpenJPEG's
+int32 wrap-around on those too, so int16 lanes would need a range proof per tile-component from the decoded
+bit-planes and a second set of kernels, on a transform already 2.4-2.9× faster than stage 1c's. Left for a
+later stage, with that proof.
 
 ### Small images: the viewer's request
 
-1,437 configurations in 257 s (the 15-minute box not reached). Load: other processes 26 % mean, 53 % p90, 88 % max
-of 8 CPUs (other sessions' builds: GCC, MSBuild, link, cl, cmake, and a viewer). Every decode of every decoder is
-identical to the oracle's (`same` equals the files in every class). Medians per file, then over the class.
+The review round: 1,437 configurations in 166 s (the 14-minute box not reached), load from other processes 4 %
+mean, 7 % p90, 14 % max of 8 CPUs. Every decode of every decoder is identical to the oracle's in every class.
+Medians per file, then over the class; `final / main` is the ratio of the class medians.
 
-| Request | Files | Oracle µs | main µs | stage 2 µs | stage 3 µs | stage 4 µs | stage 4 / main | stage 4 / oracle |
-|---|---|---|---|---|---|---|---|---|
-| 32² whole | 28 | 34.9 | 9.9 | 8.2 | 8.2 | **8.2** | 0.83 | 0.24 |
-| 32² at reduce 3 | 28 | 24.9 | 4.0 | 4.0 | 4.0 | 4.0 | 1.02 | 0.16 |
-| 32² at reduce 5 (1x1 floor) | 28 | 22.5 | 3.1 | 3.2 | 3.1 | **3.1** | 1.01 | 0.14 |
-| 64² whole | 32 | 400 | 366 | 363 | 368 | **336** | 0.92 | 0.84 |
-| 64² at reduce 2 | 32 | 75.3 | 46.8 | 50.3 | 52.5 | 42.8 | 0.92 | 0.57 |
-| 128² whole | 32 | 633 | 573 | 567 | 547 | **507** | 0.89 | 0.80 |
-| 128² at reduce 3 | 32 | 56.5 | 28.1 | 33.9 | 36.1 | 27.1 | 0.97 | 0.48 |
-| 128² at reduce 5 | 32 | 26.6 | 6.5 | 6.9 | 6.7 | 6.8 | 1.04 | 0.26 |
-| 256² whole | 40 | 2,325 | 2,101 | 2,033 | 1,949 | **1,823** | 0.87 | 0.78 |
-| 256² at reduce 3 | 40 | 174 | 140 | 144 | 146 | 133 | 0.95 | 0.76 |
-| 256² at reduce 5 | 40 | 37.2 | 12.7 | 13.3 | 13.1 | 13.2 | 1.04 | 0.35 |
-| 512² whole | 40 | 11,538 | 10,588 | 10,722 | 9,653 | **9,017** | 0.85 | 0.78 |
-| 512² at reduce 2 | 40 | 1,669 | 1,557 | 1,574 | 1,554 | 1,450 | 0.93 | 0.87 |
-| 1024² whole | 40 | 37,507 | 34,550 | 34,407 | 27,447 | **25,921** | 0.75 | 0.69 |
-| 1024² at reduce 1 | 40 | 13,397 | 12,155 | 12,091 | 11,324 | 10,662 | 0.88 | 0.80 |
-| 1024² at reduce 3 | 40 | 1,577 | 1,443 | 1,464 | 1,438 | 1,354 | 0.94 | 0.86 |
-| 1024² at reduce 5 | 40 | 316 | 229 | 228 | 228 | 224 | 0.98 | 0.71 |
-| 1024², first 600 bytes | 34 | 71.7 | 25.2 | 26.1 | 26.1 | 25.1 | 1.00 | 0.35 |
-| 512², first 600 bytes | 38 | 42.3 | 14.7 | 16.5 | 16.6 | 14.9 | 1.02 | 0.35 |
-| 256², first 600 bytes | 38 | 26.7 | 6.6 | 7.3 | 7.0 | 6.9 | 1.04 | 0.26 |
+| Request | Files | Oracle µs | main µs | final µs | final / main | final / oracle |
+|---|---|---|---|---|---|---|
+| 32² whole | 28 | 34.1 | 9.8 | **8.1** | 0.83 | 0.24 |
+| 32² at reduce 3 | 28 | 26.3 | 3.9 | 4.0 | 1.02 | 0.15 |
+| 32² at reduce 5 (1x1 floor) | 28 | 22.9 | 3.05 | 3.10 | 1.02 | 0.14 |
+| 64² whole | 32 | 373 | 345 | **316** | 0.92 | 0.85 |
+| 64² at reduce 2 | 32 | 44.8 | 22.6 | 20.0 | 0.89 | 0.45 |
+| 128² whole | 32 | 614 | 556 | **491** | 0.88 | 0.80 |
+| 128² at reduce 3 | 32 | 39.5 | 16.7 | 16.4 | 0.98 | 0.41 |
+| 128² at reduce 5 | 32 | 27.2 | 6.43 | 6.54 | 1.02 | 0.24 |
+| 256² whole | 40 | 2,227 | 2,084 | **1,839** | 0.88 | 0.83 |
+| 256² at reduce 3 | 40 | 151 | 120 | 116 | 0.96 | 0.77 |
+| 256² at reduce 5 | 40 | 35.8 | 12.4 | 12.6 | 1.02 | 0.35 |
+| 512² whole | 40 | 11,376 | 10,352 | **8,966** | 0.87 | 0.79 |
+| 512² at reduce 2 | 40 | 1,626 | 1,528 | 1,438 | 0.94 | 0.88 |
+| 1024² whole | 40 | 37,176 | 34,500 | **26,158** | 0.76 | 0.70 |
+| 1024² at reduce 1 | 40 | 13,252 | 12,101 | 10,709 | 0.88 | 0.81 |
+| 1024² at reduce 3 | 40 | 1,552 | 1,426 | 1,360 | 0.95 | 0.88 |
+| 1024² at reduce 5 | 40 | 302 | 216 | 211 | 0.98 | 0.70 |
+| 1024², first 600 bytes | 34 | 68.3 | 23.9 | 24.4 | 1.02 | 0.36 |
+| 512², first 600 bytes | 38 | 38.9 | 12.8 | 12.9 | 1.00 | 0.33 |
+| 256², first 600 bytes | 38 | 26.7 | 6.51 | 6.68 | 1.03 | 0.25 |
+| 128², first 600 bytes | 24 | 25.0 | 4.70 | 4.83 | 1.03 | 0.19 |
+| 64², first 600 bytes | 29 | 24.2 | 4.55 | 4.41 | 0.97 | 0.18 |
 
-The whole decodes gain 8-25 % over stage 1c, most at 1024² (the wavelet: 20 % of the request there; Tier-1's
-renormalisation 5-7 % from 64² up). The requests whose output is a few pixels (the floor, reduce 4-5, the first
-600 bytes) have nothing these stages touch beyond a few hundred samples; they are within 1-6 % of stage 1c in
-this run, at 3-15 µs under this load. A rerun of the 128-512 px classes at reduce 3-5 and their first 600 bytes
-(three decoders, the same load) put them within 2 % of stage 1c either way (per-file ratios 0.985 to 1.019),
-which is the bench's noise there: two copies of the same build differ by up to 0.5 % in a quiet run. That rerun also found and removed a fixed cost stage 2 had added (2-4 %
-on those requests: the clip rectangles computed for the single tile, a 4 KiB stack buffer under the stack probe),
-the follow-up commit. Heap calls: none after warm-up up to 512², one allocation and one free at 1024² whole (the
-8 MiB the codec keeps), as in stage 1c.
+The whole decodes gain 8-24 % over stage 1c, most at 1024² (the wavelet: about 20 % of the request there;
+Tier-1's renormalisation 5-7 % from 64² up). **The requests whose output is a few pixels** (the floor, reduce
+4-5 of the small sizes, the first 600 bytes) **are 1-3 % slower than stage 1c**: 0.05-0.17 µs on requests of
+3-25 µs, with the same sign in nearly every such class (the 64² ones are 2-4 % faster). That is a fixed cost,
+not noise: in quiet interleaved runs two copies of one build agree within 0.4 % on these classes, and the sign
+holds from run to run (+0.9 to +1.2 % in one, +1 to +3 % here; the first run's +1 to +6 % was under load).
+Where it comes from was narrowed down but not found. With stage 1c's Tier-1 (the renormalisation taken out)
+these classes are as slow, so it is not stage 4. With every tile finished in place and then copied, as stage
+1c did (through the same write path), they are slower still (+1-4 %), so it is not the fused arithmetic. The
+stage 2 build alone already shows it, and stage 3 adds nothing. What is left is the write path's fixed work
+per tile (preparing up to four components, matching the planes, a row loop over a few short rows) or code
+layout: a few hundred cycles. It is accepted as measured, against the 8-24 % gained on every decode with more
+than a few pixels; a fast path to buy it back would need a profile first.
+
+Heap calls after warm-up, per request: none up to 512² but in one file, and one allocation and one free at
+1024² whole (the 8 MiB the codec keeps, as in stage 1c). The one file is a 32² RGBA texture whose whole decode
+makes one allocation and two frees (4,096 bytes) a request in `main` and in every stage build alike. It comes
+from stage 1c, not from these stages, and lies outside the zero-heap test, which runs on the generated corpus;
+it is reported for a fix of its own.
+
+The first run (under load: other processes 26 % mean, 53 % p90, 88 % max), each stage's build:
+
+| Request | main µs | stage 2 µs | stage 3 µs | stage 4 µs |
+|---|---|---|---|---|
+| 32² whole | 9.9 | 8.2 | 8.2 | 8.2 |
+| 64² whole | 366 | 363 | 368 | 336 |
+| 128² whole | 573 | 567 | 547 | 507 |
+| 256² whole | 2,101 | 2,033 | 1,949 | 1,823 |
+| 512² whole | 10,588 | 10,722 | 9,653 | 9,017 |
+| 1024² whole | 34,550 | 34,407 | 27,447 | 25,921 |
+| 1024² at reduce 1 | 12,155 | 12,091 | 11,324 | 10,662 |
+
+Only whole decodes are listed per stage. The stage 2 and stage 3 builds were made before stage 2's follow-up
+(4cb2d40, in the stage 4 build only), which took a fixed cost out of the single tile's write path (its clip
+rectangles, and a 4 KiB stack buffer under the stack probe). On the few-pixel requests those two columns carry
+that cost and are not comparable (128² at reduce 3, for example: 28.1, 33.9, 36.1 and 27.1 µs).
 
 ### Large images: time and peak memory against OpenJPEG, one thread
 
 The images and the method of stage 1c (a process a decode, the decoders in turn, three rounds, two for 16,384²;
-medians; peak commit). From memory (the viewer's way: OpenJPEG through a memory stream, neo-j2k through
-`nj2k_decode_memory` into int32 planes); load: total CPU 26 % mean, 96 % max (sampled every 5 s):
+the median time and the highest peak commit of the rounds). The review round, under a load of 15 % mean and 20 %
+max (total CPU, sampled every 5 s). From memory (the viewer's way: OpenJPEG through a memory stream, neo-j2k
+through `nj2k_decode_memory` into int32 planes):
 
-| Image | OpenJPEG ms / MB | main ms / MB | stage 2 | stage 3 | stage 4 ms / MB | stage 4 / OpenJPEG |
-|---|---|---|---|---|---|---|
-| 4,096², one tile, 9/7 | 382 / 205 | 345 / 200 | 341 / 200 | 250 / 200 | **240 / 200** | 0.63 |
-| 4,096², 16 tiles, 5/3 | 3,160 / 248 | 3,140 / 245 | 3,147 / 244 | 3,098 / 245 | **2,939 / 245** | 0.93 |
-| 8,192², one tile, 9/7 | 1,612 / 813 | 1,539 / 792 | 1,508 / 792 | 1,006 / 792 | **983 / 792** | 0.61 |
-| 16,384², 256 tiles, 9/7 | 5,578 / 3,134 | 5,149 / 3,130 | 5,144 / 3,130 | 4,457 / 3,130 | **3,525 / 3,130** | 0.63 |
+| Image | OpenJPEG ms / MB | main ms / MB | final ms / MB | final / OpenJPEG |
+|---|---|---|---|---|
+| 4,096², one tile, 9/7 | 390 / 205 | 348 / 200 | **242 / 200** | 0.62 |
+| 4,096², 16 tiles, 5/3 | 3,135 / 248 | 3,118 / 246 | **2,938 / 244** | 0.94 |
+| 8,192², one tile, 9/7 | 1,618 / 813 | 1,532 / 792 | **996 / 792** | 0.62 |
+| 16,384², 256 tiles, 9/7 | 5,700 / 3,134 | 5,107 / 3,131 | **3,496 / 3,130** | 0.61 |
 
-Through the stream API (two rounds; load 21 % mean, 35 % max):
+Through the stream API (two rounds):
 
-| Image | OpenJPEG ms / MB | main ms / MB | stage 4 ms / MB |
-|---|---|---|---|
-| 4,096², one tile, 9/7 | 570 / 202 | 414 / 200 | 314 / 200 |
-| 4,096², 16 tiles, 5/3 | 3,186 / 209 | 3,146 / 238 | 2,951 / 238 |
-| 8,192², one tile, 9/7 | 1,622 / 802 | 1,583 / 791 | 995 / 791 |
-| 16,384², 256 tiles, 9/7 | 5,531 / 3,096 | 5,017 / 3,131 | 3,417 / 3,131 |
+| Image | OpenJPEG ms / MB | main ms / MB | final ms / MB | final / OpenJPEG |
+|---|---|---|---|---|
+| 4,096², one tile, 9/7 | 389 / 202 | 343 / 200 | 238 / 200 | 0.61 |
+| 4,096², 16 tiles, 5/3 | 3,145 / 209 | 3,123 / 238 | 2,942 / **238** | 0.94 |
+| 8,192², one tile, 9/7 | 1,622 / 802 | 1,537 / 791 | 997 / 791 | 0.61 |
+| 16,384², 256 tiles, 9/7 | 5,678 / 3,096 | 5,022 / 3,131 | 3,399 / **3,131** | 0.60 |
 
-Every decode is identical to OpenJPEG's. The stages add no memory: the row-wise wavelet needs a row and a bit
-a row where OpenJPEG's structure needed eight floats a sample of the longest side, and the fused pass a 2 KiB
-stack buffer. The stream API's higher peak on multi-tile images is stage 1c's (it holds the codestream; the
+The first run, from memory, per stage (load 26 % mean, 96 % max), in ms for main, stage 2, stage 3 and stage
+4: 4,096² in one tile 345, 341, 250, 240; in 16 tiles of 5/3 3,140, 3,147, 3,098, 2,939; 8,192² 1,539, 1,508,
+1,006, 983; 16,384² 5,149, 5,144, 4,457, 3,525; the peaks as in the review round.
+
+Every decode is identical to OpenJPEG's. The stages leave the memory unchanged: the wavelet's scratch is
+stage 1c's (eight floats a sample of the longest side for the 9/7, sixteen columns for the 5/3), since the
+levels below the row-wise thresholds keep OpenJPEG's structure and need it; the row-wise path needs less (a row
+and one bit a row) and works inside it, and the fused pass needs a 2 KiB stack buffer. The stream API's higher peak on multi-tile images is stage 1c's (it holds the codestream; the
 low-memory stream belongs to the j2k-tile module, owner 2026-11-20); the memory API meets the gate.
 
 ### Tier-1 (stage 4): what was tried
@@ -246,9 +299,23 @@ Each candidate against the one before it, interleaved, the 212 files whole (the 
 | Eight empty columns skipped at once (significance and refinement passes, AVX2), against the above | 1.015 | 1.004 | 1.011 | 1.021 | 1.012 | no: the per-column test is one load and a branch already |
 | The LPS/MPS choice by selects instead of branches, against the renormalisation | 1.033 | 1.026 | 1.047 | 1.045 | 1.047 | no: the symbol is branched on right after, so the misprediction only moves |
 
-The renormalisation takes 5-7 % off the request where Tier-1 is 65-86 % of it, so about 7-10 % of Tier-1, at the
-plan's 10 % line. OpenJPEG's Tier-1 already has the state words and the MQ registers in locals that the
-literature lists (its PR #783 and #945), so those were not candidates.
+The renormalisation takes 5-7 % off the request where Tier-1 is 65-86 % of it, so about 6-8 % of Tier-1: below
+the plan's gate (kept only at 10 % or more of Tier-1, section 3.2), so by the plan it would be closed with these
+numbers. It is kept under the brief's rule instead (a change stays when its bench shows it faster and
+bit-exact), which this one is on every class from 64² up; the owner may close it by the plan's gate.
+
+What else stage 4 lists, and what became of it:
+- **State words with column skipping, the MQ decoder in locals**: already in OpenJPEG's Tier-1 (its PR #783
+  and #945), which neo-j2k ported, so they were not candidates. The AVX2 skip of eight empty columns at once
+  was tried on top (above) and dropped.
+- **SIMD context formation**: not tried beyond that skip. Within a code-block every decision changes the
+  flags the next sample's context is formed from (the stripe's neighbours), so the contexts of one block are
+  formed one after another; across code-blocks it is the lane prototype below, which also leaves context
+  modelling out and shows how little room there is for it.
+- **Branch layout**: the select-based LPS/MPS choice above is the branch-layout candidate (3-5 % slower).
+- **BMI2**: not tried; no hand-written BMI2 code. The AVX2 build's floor (x86-64-v3, checked by
+  `nj2k_cpu_supported`) includes BMI2 and LZCNT, so it would need no new check; the renormalisation's lzcnt is
+  the one such instruction used by hand.
 
 **The lane-per-code-block prototype** (`bench/nj2k_mq_lanes.cpp`): a copy of the library built with Tier-1's
 trace hook (`NJ2K_T1_TRACE`, compiled out of the library) decodes the 212 files and records every MQ segment
@@ -269,4 +336,6 @@ and the context tables, the neighbours' flag updates written back a lane at a ti
 lanes idling where their code-blocks' passes diverge (a sample that needs no decision in one block needs one in
 another). To win it would have to fit all that under about 3.4 ns, 1.7 times the scalar modelling it replaces;
 the literature reports no CPU coder that vectorises Part 1 context modelling, and GPU coders reach 23 %
-occupancy for the same divergence. Not adopted; the prototype and its numbers stay as the record.
+occupancy for the same divergence. Not adopted; the prototype and its numbers stay as the record. The
+1.41× is an upper bound for lanes: the prototype's scalar replay looks the MQ states up by index where the
+library follows pointers, and neither side forms contexts.
