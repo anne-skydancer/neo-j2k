@@ -325,14 +325,7 @@ FusedU8Fn fused_for(std::uint32_t k) noexcept
 // to hi, as dc_shift_97's blend does (2^30 is above every hi - shift), and keeps NaN, which cvtps
 // turns into INT_MIN, then lo. The bytes are the samples themselves, which is the low byte the
 // other stores keep. Every component 5/3 or every one 9/7, the colour transform the one that goes
-// with them (the RCT with the 5/3, the ICT with the 9/7); else nothing is written and 0 returned.
-std::size_t store_u8_fused_avx2(Mct mct, const std::int32_t* const* src, const Finish* f, std::uint32_t k, std::size_t n,
-                                std::uint8_t* dst) noexcept
-{
-    const FusedU8Fn fn = fused_u8_function(mct, f, k);
-    return fn ? fn(src, f, n, dst) : 0;
-}
-
+// with them (the RCT with the 5/3, the ICT with the 9/7); else there is no instance (nullptr).
 FusedU8Fn fused_u8_function(Mct mct, const Finish* f, std::uint32_t k) noexcept
 {
     if (k < 1 || k > 4 || (mct != Mct::kNone && k < 3)) {

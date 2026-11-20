@@ -36,3 +36,19 @@ owner's decisions D1-D15 and the fork audit's findings O1-O3.
 | DP-13 | `nj2k_end_decompress` on a JP2 file | reads the boxes after the codestream box, and can fail on them | reads nothing more: the decode is done, and the boxes after the codestream carry nothing the decoder uses; returns true | `decode_unit` (`test_dp13`: a box of length 4 after the codestream box, which the oracle's `opj_end_decompress` refuses) |
 | DP-14 | HT code-blocks (JPEG 2000 Part 15, HTJ2K: the code-block style's bit 6 in a COD or COC) | decoded (OpenJPEG 2.5 has an HT block decoder) | not decoded yet: the header reads as OpenJPEG reads it, the decode is refused (`NJ2K_E_UNSUPPORTED`) until the HTJ2K module (owner decision D7) | the decode fuzz target's departure check (the header target excuses no difference for it); `nj2k_fuzz_decode_replay` over OpenJPEG's non-regression data (`htj2k/`) |
 | DP-15 | A JP2 file whose codestream box gives its length, with more boxes after it | reads the codestream from the stream past the box's end: a last tile-part of `Psot = 0` takes the boxes after it as its data, and a codestream without EOC reads the next box as the marker after its last tile and fails | the codestream ends where its box ends (ISO 15444-1 I.5.4: the box's contents are the codestream): nothing after it is read or held, and a codestream without EOC decodes what it holds (`NJ2K_TRUNCATED`). A codestream box of length 0 runs to the end of the file, as before | `decode_unit` (`test_dp15`: `Psot = 0` with a box after the codestream box decodes as the oracle decodes it, `NJ2K_OK`; a codestream without EOC, which the oracle refuses there, decodes as the bare codestream does) |
+
+## Shared with OpenJPEG: a NaN's payload after the ICT
+
+Not a departure, but a limit of bit identity that both decoders share. The ICT is chosen by the first
+component's wavelet (`opj_tcd_mct_decode`; `Tile::decode_samples` here): when it is 9/7, the ICT runs on the
+first three components as floats, whatever their own wavelet. A 5/3 component among them holds integers,
+which the ICT takes as float bits; some are NaN (0x7F800001-0x7FFFFFFF, 0xFF800001-0xFFFFFFFF). When two
+operands of one ICT step are NaN, x86 keeps the payload of the first operand, and which operand comes
+first is the compiler's choice: IEEE 754 leaves a NaN's payload unspecified, and C++ compilers treat the
+float add and multiply as commutative. The 5/3 component's DC shift then reads the NaN's bits as an
+integer, so its sample can differ in the low bits between builds (compilers, sanitizers, the AVX2 and the
+scalar kernels). OpenJPEG has the same behaviour: `opj_mct_decode_real` runs SSE on groups of eight and
+plain C on the rest, and either may order its operands either way. Such a stream breaks the standard (the
+ICT goes with the 9/7 wavelet on all three components, ISO 15444-1 G.3), and no encoder writes it; the
+fused output test therefore keeps the ICT to components that are all 9/7 (`decode_unit`,
+`test_output_fused`'s 8-bit set).

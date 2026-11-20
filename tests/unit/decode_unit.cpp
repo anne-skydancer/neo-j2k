@@ -934,6 +934,11 @@ void test_output_fused()
         oc.src_stride = (g_rng() & 1) ? oc.w : oc.w + 1 + g_rng() % 4;
         // every component 5/3, every one 9/7 (each with its transform), or mixed now and then
         const int kind = static_cast<int>(g_rng() % 8);
+        // no ICT with mixed components: a 5/3 component's integers taken as floats by the ICT can
+        // be NaN, and a NaN's payload depends on the compiler's operand order (doc/departures.md)
+        if (kind == 0 && oc.mct == Mct::kIct) {
+            oc.mct = Mct::kNone;
+        }
         const bool all_rev = oc.mct == Mct::kRct || (oc.mct == Mct::kNone && (g_rng() & 1));
         for (std::uint32_t c = 0; c < oc.k; ++c) {
             const bool reversible = kind == 0 ? (g_rng() & 1) != 0 : all_rev;
@@ -2130,7 +2135,7 @@ void test_zero_heap()
     for (const auto& path : expand_inputs(g_corpus)) {
         auto data = read_file(path);
         const auto mh = data ? parse_main_header(*data) : std::nullopt;
-        if (mh && mh->width() <= 256 && mh->height() <= 256 && base_name(path) != "edge_ppt_empty_tiles_97.j2k") {
+        if (mh && mh->width() <= 256 && mh->height() <= 256) {
             files.emplace_back(base_name(path), std::move(*data));
         }
     }
@@ -2226,7 +2231,7 @@ void test_zero_heap_requests(const std::string& inputs, std::uint32_t max_side, 
     for (const auto& path : expand_inputs(inputs)) {
         const auto data = read_file(path);
         const auto mh = data ? parse_main_header(*data) : std::nullopt;
-        if (!mh || mh->width() > max_side || mh->height() > max_side || base_name(path) == "edge_ppt_empty_tiles_97.j2k") {
+        if (!mh || mh->width() > max_side || mh->height() > max_side) {
             continue;
         }
         ++files;
@@ -2250,7 +2255,14 @@ void test_zero_heap_requests(const std::string& inputs, std::uint32_t max_side, 
                 rq.reduce = r;
                 rq.mode = Mode::Viewer;
                 rq.inspect = false;
-                const bool first_ok = backend->decode(rq).ok;
+                const Outcome first = backend->decode(rq);
+                const bool first_ok = first.ok;
+                // the whole file decodes at every level (the viewer's codec clamps the reduce
+                // factor), so the gate cannot pass on requests that were all refused; the viewer
+                // takes no image whose components differ in size (sub_420.j2k), refused before the decode
+                CHECK_MSG(first_ok || size != data->size() || first.stage == "geometry",
+                          "%s %s reduce %d: the whole file was refused (%s)", what, base_name(path).c_str(), r,
+                          first.stage.c_str());
                 backend->alloc_reset();
                 g_news = 0;
                 g_count_new = true;
@@ -2274,6 +2286,7 @@ void test_zero_heap_requests(const std::string& inputs, std::uint32_t max_side, 
         }
     }
     CHECK_MSG(files > 0, "%s: no file up to %u x %u", what, max_side, max_side);
+    CHECK_MSG(decoded > 0, "%s: no request decoded", what);
     std::printf("zero heap per request, %s: %zu files up to %u x %u, %zu requests repeated (%zu decoded), %zu with heap "
                 "calls\n",
                 what, files, max_side, max_side, requests, decoded, failures);

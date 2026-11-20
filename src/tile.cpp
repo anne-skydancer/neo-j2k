@@ -51,8 +51,8 @@
  */
 #include "tile.h"
 
-#include <climits>
 #include <bit>
+#include <climits>
 #include <cmath>
 #include <cstring>
 
