@@ -926,6 +926,21 @@ struct Walk {
         return NJ2K_OK;
     }
 
+    // prepare_component for the single tile that is the image, sample for sample (whole_fits), its
+    // decoded region the whole buffer (hand_over_whole checks it): the component whole
+    nj2k_status_t prepare_whole(std::uint32_t compno, const Tile& t, std::uint32_t resno_decoded, Prepared& out) noexcept
+    {
+        const TileComp& tc = t.comps[compno];
+        OutComp& dst = comps[compno];
+        dst.resno_decoded = resno_decoded;
+        out.skip = (d.selected_mask && !d.selected_mask[compno]) || !tc.data;
+        out.clear = false;
+        if (!out.skip) {
+            out.cc = CopyComp{tc.data, tc.data_w, 0, 0, dst.w, dst.h, t.finish_of(compno), compno, true};
+        }
+        return NJ2K_OK;
+    }
+
     // the image plane of component c (nj2k_decode's output) as a plane of the caller's
     nj2k_plane_t image_plane(std::uint32_t c) const noexcept
     {
@@ -971,8 +986,12 @@ struct Walk {
     // the way (the colour transform, the DC shift) into the image or the caller's planes, up to
     // four components of the same region together. When the transform's three do not pair their
     // samples by place, the tile is finished in place first, as OpenJPEG does, and copied.
-    nj2k_status_t write_tile(Tile& t, const std::uint32_t* resno) noexcept
+    nj2k_status_t write_tile(Tile& t, const std::uint32_t* resno, bool whole = false) noexcept
     {
+        // the single tile whose buffer is the image (hand_over_whole): each component whole, no clipping
+        auto prepare = [&](std::uint32_t c, Prepared& out) {
+            return whole ? prepare_whole(c, t, resno[c], out) : prepare_component(c, t, resno[c], out);
+        };
         Prepared p[4];
         std::uint32_t n = 0;  // prepared, not written yet
         Mct mct = Mct::kNone;
@@ -980,7 +999,7 @@ struct Walk {
         if (t.mct != Mct::kNone) {
             nj2k_status_t st = NJ2K_OK;
             for (; c < 3; ++c) {
-                st = prepare_component(c, t, resno[c], p[c]);
+                st = prepare(c, p[c]);
                 if (st != NJ2K_OK || p[c].skip) {
                     break;
                 }
@@ -1006,7 +1025,7 @@ struct Walk {
         }
         for (; c < mh.numcomps; ++c) {
             Prepared q;
-            const nj2k_status_t st = prepare_component(c, t, resno[c], q);
+            const nj2k_status_t st = prepare(c, q);
             if (st != NJ2K_OK) {
                 if (n) {
                     write_prepared(p, n, mct);
@@ -1445,7 +1464,7 @@ struct Walk {
                 whole = !tc.data || (std::uint32_t(r.x1 - r.x0) == tc.data_w && std::uint32_t(r.y1 - r.y0) == tc.data_h);
             }
             if (whole) {
-                return write_tile(t, resno);
+                return write_tile(t, resno, true);
             }
             finish_tile_in_place(t, resno);
         }

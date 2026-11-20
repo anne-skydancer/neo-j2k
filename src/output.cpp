@@ -43,8 +43,8 @@ inline std::int32_t wrap_sub(std::int32_t a, std::int32_t b) noexcept
     return static_cast<std::int32_t>(static_cast<std::uint32_t>(a) - static_cast<std::uint32_t>(b));
 }
 
-// a row is finished and stored this many samples at a time (stack buffers of 4 x 1 KiB)
-constexpr std::size_t kChunk = 256;
+// a row is finished and stored this many samples at a time (stack buffers of 4 x 512 bytes)
+constexpr std::size_t kChunk = 128;
 
 }  // namespace
 
