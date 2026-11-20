@@ -677,7 +677,7 @@ block, the threaded wavelet's extra passes, jobs running on other cores' caches)
 
 **The owner's call (2026-11-20), first round: an image guard of 2^22 samples a component** (above
 2,048 x 2,048), so that the viewer's textures up to 2,048^2 stay one thread each on a saturated host. With
-that build the 1,024^2 and 2,048^2 rows never called the executor (the ratios below 1,024^2 and 2,048^2 are
+that build the 1,024^2 and 2,048^2 rows never called the executor (the first two rows' ratios are
 run-to-run spread; control: `nj2k_large sat <file> 8 100 1` twice, no executor, gave 259.6 against 252.1,
 236.2 against 230.3 and 247.0 against 198.5 decodes a second), and 4,096^2 gained 5-6 %:
 
@@ -705,8 +705,8 @@ eight host threads, five interleaved pairs, MSVC RelWithDebInfo, other jobs shar
 
 The throughput loss of the review round (7 %) did not reproduce in this run (median 261 against 266, inside
 the spread of the control above), but the CPU cost did: 7,500 / 7,610 / 7,656 / 7,313 / 7,828 ms of CPU for
-320 decodes without the executor against 7,953 / 7,828 / 8,125 / 7,688 / 7,656 ms with it, 23.4 against
-24.6 ms a decode on the medians (about 5 % more, the planning walk and the threaded wavelet's extra passes).
+320 decodes without the executor against 7,953 / 7,828 / 8,125 / 7,688 / 7,656 ms with it, 23.8 against
+24.5 ms a decode on the medians (about 3 % more, the planning walk and the threaded wavelet's extra passes).
 A saturated host has no idle core to spend it on, so the rule stands: do not lend the executor there.
 
 ### The idle host: one decode at a time
@@ -725,7 +725,7 @@ no executor on either side):
 
 (512² RGB has 2^18 samples a component, the floor, so it is threaded; the 1,024^2 row at 4 threads is the
 noisiest, 47.7 to 65.4 in its three runs.) An idle host decodes a 1,024^2 texture 1.7 times as fast with
-eight threads, and a 2,048^2 one twice as fast, against one thread each on a saturated host the same number of cores.
+eight threads, and a 2,048^2 one twice as fast.
 
 ### Identity (the gate)
 
