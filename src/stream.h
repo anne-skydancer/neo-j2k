@@ -2,9 +2,10 @@
 // Copyright (c) 2026, Anne Skydancer (neo-j2k)
 //
 // The stream behind nj2k_stream_t: OpenJPEG's user stream (a buffer refilled through the host's
-// read function, skip and seek functions, user data and its length), reading side. Writing comes
-// with the encoder (stage 6a). One difference from OpenJPEG: a read function that returns 0 ends
-// the stream, where OpenJPEG would call it again for ever.
+// read function, skip and seek functions, user data and its length), reading side, and the writing
+// side of the encoder (stage 6a). One difference from OpenJPEG: a read function that returns 0 ends
+// the stream, and a write function that returns 0 fails it, where OpenJPEG would call them again for
+// ever.
 #pragma once
 
 #include <cstddef>
@@ -43,6 +44,11 @@ struct Stream {
     std::size_t read(std::uint8_t* dst, std::size_t n) noexcept;
     // Skips n bytes; false when the stream ends first (the bytes up to its end are skipped).
     bool skip(std::uint64_t n) noexcept;
+    // The writing side (opj_stream_write_data, opj_stream_flush): bytes into the buffer, handed to the
+    // host's write function when it is full; offset counts the bytes accepted. False when the write
+    // function fails (returns -1 or 0).
+    bool write(const std::uint8_t* src, std::size_t n) noexcept;
+    bool flush() noexcept;
     // Bytes left before the length the host gave, or -1 when it gave none.
     std::int64_t bytes_left() const noexcept
     {

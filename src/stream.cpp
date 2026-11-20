@@ -99,6 +99,65 @@ std::size_t Stream::read(std::uint8_t* dst, std::size_t n) noexcept
     return done;
 }
 
+bool Stream::flush() noexcept
+{
+    if (input || !write_fn) {
+        return false;
+    }
+    std::size_t done = 0;
+    while (done < filled) {
+        const std::size_t got = write_fn(buffer + done, filled - done, user);
+        if (got == kEnd || got == 0) {
+            // keep what was not taken, so that a retry does not lose it
+            std::memmove(buffer, buffer + done, filled - done);
+            filled -= done;
+            return false;
+        }
+        done += got < filled - done ? got : filled - done;
+    }
+    filled = 0;
+    return true;
+}
+
+bool Stream::write(const std::uint8_t* src, std::size_t n) noexcept
+{
+    if (input || !write_fn) {
+        return false;
+    }
+    while (n > 0) {
+        if (buffer_size == 0) {
+            // no buffer: straight to the host
+            const std::size_t got = write_fn(const_cast<std::uint8_t*>(src), n, user);
+            if (got == kEnd || got == 0) {
+                return false;
+            }
+            const std::size_t took = got < n ? got : n;
+            src += took;
+            n -= took;
+            offset += took;
+            continue;
+        }
+        const std::size_t room = buffer_size - filled;
+        if (n <= room) {
+            std::memcpy(buffer + filled, src, n);
+            filled += n;
+            offset += n;
+            return true;
+        }
+        if (room) {
+            std::memcpy(buffer + filled, src, room);
+            filled += room;
+            src += room;
+            n -= room;
+            offset += room;
+        }
+        if (!flush()) {
+            return false;
+        }
+    }
+    return true;
+}
+
 bool Stream::skip(std::uint64_t n) noexcept
 {
     const std::size_t in_buffer = filled - pos;
