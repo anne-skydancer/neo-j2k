@@ -73,18 +73,27 @@ Stage 5 (2026-11-20), as the plan and its audit settled it (technical default T2
 6): the library starts no thread and keeps no pool; the host lends a codec its executor
 (`nj2k_decoder_set_executor`), whose waiting caller runs jobs itself, so every decoder shares the host's one
 scheduler and nothing oversubscribes; `nj2k_codec_set_threads` stays false. Tiles of 2^18 decoded samples
-and more run Tier-1 (code-block runs of equal estimated cost), the wavelet's large levels (row bands, column
-stripes of 16, the rows' cycles) and the output (row bands) through it; smaller tiles and a codec without an
-executor run on the calling thread with the operations of stages 1c-4. Gates (`doc/bench.md`): identical
-output for 1, 2, 4, 8 and 16 threads (CI, the private bench corpus, the large images, both builds); faster
-than OpenJPEG at 1, 4 and 8 threads on every large image with no higher peak (at 8 threads 0.34-0.88 of its
-time); ThreadSanitizer in CI; small images not met everywhere (whole decodes within 0.4-0.8 % of `main`,
-reduced decodes of 64 and 128 px textures 2-4 % slower: the shared library's link-time code generation).
-Not done, and why: tiles in parallel (a tile's walk over its
-tile-parts and packets is serial in OpenJPEG too, and two tiles at once would hold two tiles' samples, against
-the peak-memory gate), and the plan's 64-byte padding of subband rows (the wavelet's column stripes are cut
-on 64-byte multiples instead; row bands, and the code-blocks of neighbouring bands in Tier-1, can share a
-cache line only where they meet, a line per edge).
+and more run Tier-1 (contiguous code-block runs of equal estimated cost), the wavelet's large levels (row
+bands, column stripes of 16, the rows' cycles) and the output (row bands) through it, and so do the clears
+of image planes of 4 MiB or more; smaller tiles, a codec without an executor and caller's planes that share
+bytes run on the calling thread with the operations of stages 1c-4. Gates (`doc/bench.md`): identical
+output for 1, 2, 4, 8, 16 and 64 threads (CI, the private bench corpus, the large images, both builds, the
+memory and the stream API, under capped allocators); faster than OpenJPEG at 1, 4 and 8 threads on every
+large image with no higher peak from memory (the stream API's multi-tile peaks are stage 1c's, above
+OpenJPEG's: an exception for the owner); ThreadSanitizer in CI, and the decode fuzz target's executor
+under ClusterFuzzLite's sanitizers; small images within what moving `main`'s own code by a few bytes does
+(about 2 %) but for Tier-1's one-thread walker, about 2 % on reduced decodes of 64 and 128 px textures, and
+the saturated host loses 7 % of its 1,024² throughput to splitting (both the owner's call, `doc/bench.md`). Two departures from the plan's section 2.7, both measured: whole
+decodes split from 2^18 decoded samples over a tile's components rather than from 256^2 (at 256^2 RGB, 8
+threads used the cores at 43 % efficiency, `doc/bench.md`), and Tier-1 cut into contiguous runs of about
+equal estimated cost rather than handed out largest first (contiguous runs keep each part's walk to its
+first block in OpenJPEG's order; with twice as many runs as parts, a slow run is not the tail).
+Not done, and why: tiles in parallel (a tile's walk over its tile-parts and packets is serial in OpenJPEG
+too, and two tiles at once would hold two tiles' samples, against the peak-memory gate), and the plan's
+64-byte padding of subband rows (the wavelet's column stripes are cut on 64-byte multiples instead; row
+bands, the stripes of a tile whose width is not a multiple of 16, and the code-blocks of neighbouring bands
+in Tier-1 can share a cache line only where they meet, a line per edge: 4,095 x 4,097 and 8,191 x 8,193
+scaled as 4,096^2 and 8,192^2 did).
 
 Decided (2026-11-18/19):
 
