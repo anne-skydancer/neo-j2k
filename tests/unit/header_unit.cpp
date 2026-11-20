@@ -1175,10 +1175,10 @@ void test_tile_parts()
             sot = next;
         }
         CHECK_MSG(i + 1 == expected.size(), "%s: %zu tile-parts, the scanner %zu", name.c_str(), i + 1, expected.size());
-        // the packets a tile declares, for the work budgets of stage 1c
+        // a tile's working memory with its own parameters (the decode checks it per tile, stage 1c)
         std::vector<d::TileComponentParams> params(mh->numcomps);
         CHECK(d::resolve_tile(*mh, mh->overrides(0), msg, params.data()) == NJ2K_OK &&
-              d::tile_packets(*mh, 0, params.data()) > 0);
+              d::tile_working_memory(*mh, 0, params.data(), 0, nullptr) > 0);
     }
     CHECK(files > 50);
     std::printf("  tile-parts: %zu files, %zu tile-part headers\n", files, parts);

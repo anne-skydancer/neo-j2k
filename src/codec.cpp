@@ -142,6 +142,21 @@ nj2k_status_t choose_factor(Decoder& d, std::uint32_t reduce, bool at_header, st
     return NJ2K_E_LIMIT;
 }
 
+// The working memory of a decode at the factor in effect (decode_working_memory): kept with the
+// header for the next decode at the same factor when every component is decoded.
+std::uint64_t working_memory(Decoder& d) noexcept
+{
+    if (!d.selected_mask && d.estimate_factor == d.factor) {
+        return d.estimate;
+    }
+    const std::uint64_t need = nj2k::detail::decode_working_memory(*d.header, d.factor, d.selected_mask);
+    if (!d.selected_mask) {
+        d.estimate = need;
+        d.estimate_factor = d.factor;
+    }
+    return need;
+}
+
 // The image nj2k_read_header returns, as OpenJPEG's opj_read_header fills it.
 nj2k_image_t* header_image(const Decoder& d) noexcept
 {
@@ -204,6 +219,7 @@ nj2k_status_t read_header_from(Decoder& d, nj2k::detail::Source& src) noexcept
     nj2k_status_t st = NJ2K_OK;
     d.jp2 = nullptr;
     d.header = nullptr;
+    d.estimate_factor = UINT32_MAX;
     if (d.format == NJ2K_CODEC_JP2) {
         st = read_jp2_boxes(src, d.arena, d.messages, d.jp2);
         if (st == NJ2K_OK) {
@@ -243,18 +259,24 @@ void fill_image_comps(Decoder& d) noexcept
 
 // A header from memory: the one the codec holds when the bytes start with the same main header
 // (and the codec's limits are those it was read under), else a new one. The codec then starts a
-// new codestream: the reduce factor in effect from the one asked, no component selection.
-nj2k_status_t memory_header(Decoder& d, const std::uint8_t* data, std::size_t size) noexcept
+// new codestream: the reduce factor in effect from the one asked. A component selection
+// (nj2k_set_decoded_components() after the header read) holds for the decodes of the header held
+// (keep_selection: nj2k_decode_memory()); nj2k_read_header_memory() starts without one, and so does
+// a new header.
+nj2k_status_t memory_header(Decoder& d, const std::uint8_t* data, std::size_t size, bool keep_selection) noexcept
 {
     using namespace nj2k::detail;
     const bool held = d.header && d.header_from_memory && d.header_bytes &&
                       (d.state == Decoder::State::header || d.state == Decoder::State::decoded) &&
                       size >= d.header_bytes_size && std::memcmp(data, d.header_bytes, d.header_bytes_size) == 0 &&
                       std::memcmp(&d.header_limits, &d.limits, sizeof d.limits) == 0;
-    d.selected = nullptr;
-    d.selected_mask = nullptr;
-    d.nselected = 0;
     if (held) {
+        if (!keep_selection) {
+            // the selection's arrays stay, for the next selection of this header
+            d.selected = nullptr;
+            d.selected_mask = nullptr;
+            d.nselected = 0;
+        }
         if (const nj2k_status_t st = choose_factor(d, d.reduce, true, d.factor); st != NJ2K_OK) {
             d.state = Decoder::State::failed;
             return st;
@@ -266,6 +288,9 @@ nj2k_status_t memory_header(Decoder& d, const std::uint8_t* data, std::size_t si
     d.arena.reset(d.retain);
     d.header = nullptr;
     d.jp2 = nullptr;
+    d.selected = nullptr;
+    d.selected_mask = nullptr;
+    d.nselected = 0;
     d.selection_mask = nullptr;
     d.selection_order = nullptr;
     d.header_bytes = nullptr;
@@ -646,10 +671,13 @@ NJ2K_API NJ2K_BOOL NJ2K_CALLCONV nj2k_get_decoded_dimensions(nj2k_codec_t* p_cod
                         side);
         }
     }
-    const std::uint64_t need = decode_working_memory(mh, d->factor, d->selected_mask);
-    if (d->limits.max_memory != 0 && need > d->limits.max_memory) {
-        return fail(d, NJ2K_E_LIMIT, "The decode needs %llu bytes of working memory, above the decoder's limit of %llu\n",
-                    static_cast<unsigned long long>(need), static_cast<unsigned long long>(d->limits.max_memory));
+    if (d->limits.max_memory != 0) {
+        const std::uint64_t need = working_memory(*d);
+        if (need > d->limits.max_memory) {
+            return fail(d, NJ2K_E_LIMIT,
+                        "The decode needs %llu bytes of working memory, above the decoder's limit of %llu\n",
+                        static_cast<unsigned long long>(need), static_cast<unsigned long long>(d->limits.max_memory));
+        }
     }
     if (resize) {
         for (std::uint32_t c = 0; c < mh.numcomps; ++c) {
@@ -817,7 +845,7 @@ nj2k_status_t check_decode_limits(Decoder& d, const nj2k_image_comp_t* comps) no
         }
     }
     if (d.limits.max_memory) {
-        const std::uint64_t need = decode_working_memory(mh, d.factor, d.selected_mask);
+        const std::uint64_t need = working_memory(d);
         if (need > d.limits.max_memory) {
             d.messages.emit(Messages::Error,
                             "The decode needs %llu bytes of working memory, above the decoder's limit of %llu\n",
@@ -828,12 +856,36 @@ nj2k_status_t check_decode_limits(Decoder& d, const nj2k_image_comp_t* comps) no
     return NJ2K_OK;
 }
 
-// The rest of a stream, into the decoder's input buffer: up to the length the host gave, or to
-// the stream's end
-bool read_rest(Decoder& d, nj2k::detail::Stream& s, std::uint64_t& got) noexcept
+// Where a JP2 file's codestream ends, as an offset in its bytes, when the codestream box gives its
+// length (ISO 15444-1 I.5.4: the codestream is the box's contents, DP-15); 0 when that is not known
+// (a codestream, or a box that runs to the end of the file).
+std::uint64_t codestream_end(const Decoder& d) noexcept
+{
+    if (!d.jp2 || d.jp2->codestream_length == 0 || d.jp2->codestream_length > UINT64_MAX - d.jp2->codestream) {
+        return 0;
+    }
+    return d.jp2->codestream + d.jp2->codestream_length;
+}
+
+// The rest of a stream, into the decoder's input buffer: up to the codestream's end when it is
+// known (end, a stream offset; 0 when not), the length the host gave, or the stream's end, whichever
+// comes first. When the host gave the stream's length the buffer is taken once at the size to
+// read; otherwise it grows by doubling. These bytes are the decode's input, outside the decoder
+// limits' working memory (doc/api.md).
+bool read_rest(Decoder& d, nj2k::detail::Stream& s, std::uint64_t end, std::uint64_t& got) noexcept
 {
     got = 0;
-    const std::uint64_t cap = s.length ? (s.length > s.offset ? s.length - s.offset : 0) : UINT64_MAX;
+    std::uint64_t cap = s.length ? (s.length > s.offset ? s.length - s.offset : 0) : UINT64_MAX;
+    if (end) {
+        const std::uint64_t left = end > s.offset ? end - s.offset : 0;
+        cap = left < cap ? left : cap;
+    }
+    if (s.length && cap > d.input.size) {
+        // the size is the host's, not the codestream's: one buffer, no copies while it fills
+        if (cap > SIZE_MAX / 2 || !d.input.ensure(d.allocator, std::size_t(cap))) {
+            return false;
+        }
+    }
     for (;;) {
         if (got >= cap) {
             return true;
@@ -913,7 +965,8 @@ NJ2K_API NJ2K_BOOL NJ2K_CALLCONV nj2k_decode(nj2k_codec_t* p_codec, nj2k_stream_
     auto* comps = d->work.make_array<OutComp>(mh.numcomps);
     std::uint64_t got = 0;
     const std::uint64_t origin = s->offset;
-    if (!comps || !read_rest(*d, *s, got)) {
+    const std::uint64_t end = codestream_end(*d);
+    if (!comps || !read_rest(*d, *s, end, got)) {
         d->messages.emit(Messages::Error, "Not enough memory to decode\n");
         d->state = Decoder::State::failed;
         d->trim_after_decode();
@@ -924,12 +977,13 @@ NJ2K_API NJ2K_BOOL NJ2K_CALLCONV nj2k_decode(nj2k_codec_t* p_codec, nj2k_stream_
         comps[c] = OutComp{ic.dx, ic.dy, ic.w, ic.h, ic.x0, ic.y0, ic.prec, ic.sgnd, ic.factor, ic.resno_decoded, nullptr,
                            false};
     }
-    const CodestreamBytes bytes{static_cast<const std::uint8_t*>(d->input.p), origin, origin + got, s->length, origin,
+    // the length the host gave, or the codestream box's end when that comes first (DP-15)
+    const std::uint64_t claimed = end && s->length > end ? end : s->length;
+    const CodestreamBytes bytes{static_cast<const std::uint8_t*>(d->input.p), origin, origin + got, claimed, origin,
                                 s->seek_fn != nullptr};
     const OutSink sink{true, nullptr};
     bool truncated = false;
     nj2k_status_t st = decode_codestream(*d, bytes, comps, sink, truncated);
-    d->last_work_bytes = d->work.high_water();
     if (st == NJ2K_OK) {
         // opj_j2k_move_data_from_codec_to_output_image
         if (d->nselected) {
@@ -1006,7 +1060,7 @@ NJ2K_API NJ2K_BOOL NJ2K_CALLCONV nj2k_read_header_memory(nj2k_codec_t* p_codec, 
     if (!p_data && p_size) {
         return fail(d, NJ2K_E_ARGUMENT, "nj2k_read_header_memory: no bytes\n");
     }
-    if (const nj2k_status_t st = memory_header(*d, p_data, p_size); st != NJ2K_OK) {
+    if (const nj2k_status_t st = memory_header(*d, p_data, p_size, false); st != NJ2K_OK) {
         return finish(d, st);
     }
     if (p_image) {
@@ -1052,8 +1106,9 @@ NJ2K_API NJ2K_BOOL NJ2K_CALLCONV nj2k_decode_memory(nj2k_codec_t* p_codec, const
         (p_output->numplanes && !p_output->planes) || p_output->sample_type > NJ2K_SAMPLE_U16) {
         return fail(d, NJ2K_E_ARGUMENT, "nj2k_decode_memory: no bytes, or an invalid output\n");
     }
-    // the header: the one the codec holds when the bytes start with its main header
-    if (const nj2k_status_t st = memory_header(*d, p_data, p_size); st != NJ2K_OK) {
+    // the header: the one the codec holds when the bytes start with its main header (with the
+    // component selection made after the header read), else the bytes' own
+    if (const nj2k_status_t st = memory_header(*d, p_data, p_size, true); st != NJ2K_OK) {
         return finish(d, st);
     }
     const MainHeader& mh = *d->header;
@@ -1066,7 +1121,8 @@ NJ2K_API NJ2K_BOOL NJ2K_CALLCONV nj2k_decode_memory(nj2k_codec_t* p_codec, const
             return fail(d, NJ2K_E_OUTPUT, "nj2k_decode_memory: plane %u does not fit the image\n", k);
         }
     }
-    if (d->jp2 && !d->ignore_pclr && ((d->jp2->has_pclr && d->jp2->cmap) || d->jp2->cdef_count)) {
+    if (d->jp2 && !d->ignore_pclr && !d->nselected && ((d->jp2->has_pclr && d->jp2->cmap) || d->jp2->cdef_count)) {
+        // (a component selection decodes codestream components, which nj2k_decode() leaves as they are)
         return fail(d, NJ2K_E_UNSUPPORTED,
                     "nj2k_decode_memory: the JP2 file's palette or channel definitions change the components; "
                     "nj2k_decode() applies them\n");
@@ -1089,11 +1145,13 @@ NJ2K_API NJ2K_BOOL NJ2K_CALLCONV nj2k_decode_memory(nj2k_codec_t* p_codec, const
                            ic[c].x0,     ic[c].y0,     ic[c].prec,   ic[c].sgnd,
                            ic[c].factor, ic[c].resno_decoded, nullptr, false};
     }
-    const CodestreamBytes bytes{p_data, 0, p_size, p_size, mh.end + 2, true};
+    // a JP2 file's codestream ends with its box when the box gives its length (DP-15)
+    const std::uint64_t end = codestream_end(*d);
+    const std::uint64_t size = end && end < p_size ? end : p_size;
+    const CodestreamBytes bytes{p_data, 0, size, size, mh.end + 2, true};
     const OutSink sink{false, p_output};
     bool truncated = false;
     const nj2k_status_t st = decode_codestream(*d, bytes, comps, sink, truncated);
-    d->last_work_bytes = d->work.high_water();
     for (std::uint32_t c = 0; c < mh.numcomps; ++c) {
         ic[c].resno_decoded = comps[c].resno_decoded;
     }

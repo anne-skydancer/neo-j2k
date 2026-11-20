@@ -77,6 +77,30 @@ struct TileComp {
     std::uint32_t data_w, data_h;
 };
 
+// opj_tcd_is_subband_area_of_interest for a whole-tile decode: whether the band region [x0, x1) x
+// [y0, y1) of resolution resno (band 0 LL, 1 HL, 2 LH, 3 HH) meets the tile-component, widened by
+// the filter's margin, as OpenJPEG computes it. Tier-2 (which packets to read) and Tier-1 (which
+// code-blocks to decode) take the same answer.
+inline bool area_of_interest(const TileComp& tilec, std::uint32_t resno, std::uint32_t bandno, std::uint32_t x0,
+                             std::uint32_t y0, std::uint32_t x1, std::uint32_t y1) noexcept
+{
+    const std::uint32_t filter_margin = (tilec.params.style->qmfbid == 1) ? 2 : 3;
+    const std::uint32_t nb = (resno == 0) ? tilec.numresolutions - 1 : tilec.numresolutions - resno;
+    // a tile-component coordinate in the band's (ISO 15444-1 B-15)
+    auto band = [nb](std::int32_t coord, std::uint32_t b) {
+        const std::uint32_t t = static_cast<std::uint32_t>(coord);
+        return (nb == 0) ? t : (t <= (1U << (nb - 1)) * b) ? 0 : ceildivpow2(t - (1U << (nb - 1)) * b, nb);
+    };
+    const std::uint32_t xb = bandno & 1, yb = bandno >> 1;
+    std::uint32_t tbx0 = band(tilec.x0, xb), tby0 = band(tilec.y0, yb), tbx1 = band(tilec.x1, xb),
+                  tby1 = band(tilec.y1, yb);
+    tbx0 = tbx0 < filter_margin ? 0 : tbx0 - filter_margin;
+    tby0 = tby0 < filter_margin ? 0 : tby0 - filter_margin;
+    tbx1 = tbx1 > UINT32_MAX - filter_margin ? UINT32_MAX : tbx1 + filter_margin;  // opj_uint_adds
+    tby1 = tby1 > UINT32_MAX - filter_margin ? UINT32_MAX : tby1 + filter_margin;
+    return x0 < tbx1 && y0 < tby1 && x1 > tbx0 && y1 > tby0;
+}
+
 // Packed packet headers being consumed: PPM for the whole codestream, PPT for a tile.
 struct PackedCursor {
     const std::uint8_t* data;
@@ -94,6 +118,7 @@ struct TileInput {
     const bool* selected;               // the components decoded, null for all
     const std::uint8_t* data;           // the tile's bytes after SOD, every tile-part's in turn
     std::uint32_t size;
+    bool cut;                           // the bytes ended before the tile-parts' declared lengths
     PackedCursor* ppm;                  // null without PPM; consumed across the tiles
     bool has_ppt;                       // the tile's headers carry PPT markers
     PackedCursor ppt;                   // the tile's PPT data, merged in Zppt order
@@ -101,19 +126,21 @@ struct TileInput {
 
 class Tile {
 public:
-    // opj_tcd_init_tile for decoding: false (an error message given) when OpenJPEG refuses the
-    // tile's geometry, or E_NO_MEMORY / E_LIMIT through status.
+    // opj_tcd_init_tile for decoding: NJ2K_OK, or the status of what refuses the tile (an error
+    // message given): E_UNSUPPORTED or E_LIMIT for a geometry OpenJPEG refuses, E_LIMIT for a
+    // component with no more resolutions than the reduce factor, E_NO_MEMORY or E_LIMIT when the
+    // work arena refuses.
     nj2k_status_t init(const TileInput& in, WorkArena& arena, const Messages& msg) noexcept;
 
     // Tier-2: every packet in OpenJPEG's order, with the stage 1a cut semantics and the exhaustion
     // exit. resno_decoded receives each component's decoded resolution (opj_image_comp_t).
     nj2k_status_t read_packets(WorkArena& arena, const Messages& msg, std::uint32_t* resno_decoded) noexcept;
 
-    // Tier-1 into each component's buffer (planes: the decoded resolution's samples, allocated by
-    // the caller from samples_needed()), the inverse wavelet up to resno_decoded, the colour
-    // transform and the DC shift (opj_tcd_decode_tile after Tier-2).
-    nj2k_status_t decode_samples(T1& t1, const Allocator& alloc, void* dwt_scratch,
-                                 const std::uint32_t* resno_decoded, const Messages& msg) noexcept;
+    // Tier-1 into each component's buffer (TileComp::data: the decoded resolution's samples, which
+    // the caller attaches, samples_bytes() each), the inverse wavelet up to resno_decoded, the
+    // colour transform and the DC shift (opj_tcd_decode_tile after Tier-2).
+    nj2k_status_t decode_samples(T1& t1, void* dwt_scratch, const std::uint32_t* resno_decoded,
+                                 const Messages& msg) noexcept;
 
     // Bytes of the decoded resolution's samples of component c (0 when not decoded), and the
     // scratch the wavelet needs for any component.

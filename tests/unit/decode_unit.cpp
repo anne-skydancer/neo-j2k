@@ -12,12 +12,14 @@
 #include <neoj2k/neoj2k.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <limits>
+#include <map>
 #include <new>
 #include <random>
 #include <string>
@@ -237,10 +239,14 @@ nj2k_codec_t* memory_codec(int reduce, const nj2k_allocator_t* hook = nullptr)
     return codec;
 }
 
-enum class Layout { Planar, BottomUpInterleaved, PaddedRows };
+// Guarded: planar, with guard bytes before, between and after the planes, checked after the decode
+enum class Layout { Planar, BottomUpInterleaved, PaddedRows, Guarded };
+constexpr std::size_t kGuard = 256;
+constexpr std::uint8_t kGuardByte = 0xA5;
 
 struct MemoryImage {
     bool ok = false;
+    bool guards_ok = true;  // Layout::Guarded: no byte outside the planes was written
     nj2k_status_t status = NJ2K_OK;
     std::uint32_t numcomps = 0;
     std::vector<std::uint32_t> w, h;
@@ -299,15 +305,17 @@ MemoryImage memory_decode(nj2k_codec_t* codec, const Bytes& data, std::size_t si
             std::uint8_t* last_row = m.buffer.data() + (h ? (h - 1) * w * nc * ss : 0) + c * ss;
             m.planes[c] = nj2k_plane_t{last_row, -row, static_cast<NJ2K_UINT32>(nc * ss), c};
         }
-    } else {
-        std::vector<std::size_t> offset(image.numcomps);
-        std::size_t total = 0;
+    }
+    std::vector<std::size_t> offset(image.numcomps);
+    const std::size_t guard = layout == Layout::Guarded ? kGuard : 0;
+    if (layout != Layout::BottomUpInterleaved) {
+        std::size_t total = guard;
         const std::size_t pad = layout == Layout::PaddedRows ? 3 : 0;
         for (std::uint32_t c = 0; c < image.numcomps; ++c) {
             offset[c] = total;
-            total += (std::size_t(m.w[c]) + pad) * m.h[c] * ss;
+            total += (std::size_t(m.w[c]) + pad) * m.h[c] * ss + guard;
         }
-        m.buffer.assign(total + 1, 0xA5);
+        m.buffer.assign(total + 1, kGuardByte);
         for (std::uint32_t c = 0; c < image.numcomps; ++c) {
             m.planes[c] = nj2k_plane_t{m.buffer.data() + offset[c], std::int64_t((m.w[c] + pad) * ss),
                                        static_cast<NJ2K_UINT32>(ss), c};
@@ -316,6 +324,20 @@ MemoryImage memory_decode(nj2k_codec_t* codec, const Bytes& data, std::size_t si
     nj2k_output_t out{sizeof(nj2k_output_t), sample_type, image.numcomps, m.planes.data()};
     m.ok = nj2k_decode_memory(codec, data.data(), size, &out) != NJ2K_FALSE;
     m.status = nj2k_get_status(codec);
+    if (guard) {
+        auto intact = [&](std::size_t from, std::size_t n) {
+            for (std::size_t i = from; i < from + n; ++i) {
+                if (m.buffer[i] != kGuardByte) {
+                    return false;
+                }
+            }
+            return true;
+        };
+        m.guards_ok = intact(0, guard);
+        for (std::uint32_t c = 0; c < image.numcomps; ++c) {
+            m.guards_ok = intact(offset[c] + std::size_t(m.w[c]) * m.h[c] * ss, guard) && m.guards_ok;
+        }
+    }
     return m;
 }
 
@@ -350,6 +372,83 @@ bool equal_to_oracle(const MemoryImage& m, const Outcome& o, std::uint32_t sampl
         }
     }
     return true;
+}
+
+// ---- codestreams made from corpus files ---------------------------------------------------------------
+
+// The offset of a file's first SOT marker (the end of its main header); 0 (a failure counted) when it
+// has no main header.
+std::size_t first_sot(const Bytes& in)
+{
+    const auto mh = parse_main_header(in);
+    if (!mh) {
+        std::printf("FAIL: no main header\n");
+        ++g_failures;
+        return 0;
+    }
+    return mh->end;
+}
+
+// The main header of in, then one tile-part of tile 0 (TPsot 0, TNsot 1) holding the marker segments
+// markers and, after SOD, the bytes data; then EOC.
+Bytes one_tile_part(const Bytes& in, const Bytes& markers, const Bytes& data)
+{
+    const std::size_t sot = first_sot(in);
+    if (!sot) {
+        return {};
+    }
+    Bytes out(in.begin(), in.begin() + std::ptrdiff_t(sot));
+    const std::uint8_t segment[12] = {0xFF, 0x90, 0x00, 0x0A, 0x00, 0x00, 0, 0, 0, 0, 0x00, 0x01};
+    out.insert(out.end(), segment, segment + 12);
+    put_be32(out.data() + sot + 6, std::uint32_t(12 + markers.size() + 2 + data.size()));
+    out.insert(out.end(), markers.begin(), markers.end());
+    out.push_back(0xFF);
+    out.push_back(0x93);
+    out.insert(out.end(), data.begin(), data.end());
+    out.push_back(0xFF);
+    out.push_back(0xD9);
+    return out;
+}
+
+// in with bytes inserted after its first SOT marker segment (at the start of the first tile-part's
+// header), that tile-part's Psot grown by as many.
+Bytes into_first_tile_part(const Bytes& in, const Bytes& bytes)
+{
+    const std::size_t sot = first_sot(in);
+    if (!sot) {
+        return {};
+    }
+    Bytes out(in);
+    const std::uint32_t psot = std::uint32_t(in[sot + 6]) << 24 | std::uint32_t(in[sot + 7]) << 16 |
+                               std::uint32_t(in[sot + 8]) << 8 | in[sot + 9];
+    if (psot) {
+        put_be32(out.data() + sot + 6, psot + std::uint32_t(bytes.size()));
+    }
+    out.insert(out.begin() + std::ptrdiff_t(sot + 12), bytes.begin(), bytes.end());
+    return out;
+}
+
+// A JP2 file around a codestream of w x h with three 8-bit components (sRGB), then the bytes after
+// (boxes after the codestream box).
+Bytes jp2_file(const Bytes& cs, std::uint64_t w, std::uint64_t h, const Bytes& after)
+{
+    Bytes jp2;
+    auto u32 = [&](std::uint32_t v) {
+        for (int k = 3; k >= 0; --k) {
+            jp2.push_back(std::uint8_t(v >> (8 * k)));
+        }
+    };
+    auto bytes = [&](std::initializer_list<std::uint8_t> b) { jp2.insert(jp2.end(), b); };
+    u32(12), u32(0x6A502020), u32(0x0D0A870A);                           // signature
+    u32(20), u32(0x66747970), u32(0x6A703220), u32(0), u32(0x6A703220);  // ftyp: jp2
+    u32(8 + 22 + 15), u32(0x6A703268);                                   // jp2h
+    u32(22), u32(0x69686472), u32(std::uint32_t(h)), u32(std::uint32_t(w));
+    bytes({0, 3, 7, 7, 0, 0});                                           // ihdr: 3 components, 8 bits
+    u32(15), u32(0x636F6C72), bytes({1, 0, 0}), u32(16);                 // colr: sRGB
+    u32(std::uint32_t(8 + cs.size())), u32(0x6A703263);                  // jp2c
+    jp2.insert(jp2.end(), cs.begin(), cs.end());
+    jp2.insert(jp2.end(), after.begin(), after.end());
+    return jp2;
 }
 
 // ---- DP-3 ------------------------------------------------------------------------------------------
@@ -483,6 +582,24 @@ void test_dp3()
     CHECK_MSG(differences == 0, "%zu of %zu decodes differ", differences, decodes);
     std::printf("DP-3: %zu empty tiles, %zu tile-parts padded; %zu decodes equal to the oracle's on the padded file\n",
                 empty_tiles.size(), inserted.size(), decodes - differences);
+
+    // DP-3 needs packed packet headers: a tile-part with no data bytes and no PPM or PPT has lost its
+    // packets, and both refuse it, in strict mode and not
+    const Bytes no_packets = one_tile_part(corpus_file("sl_64_rgb_97.j2k"), {}, {});
+    if (!no_packets.empty()) {
+        for (Mode mode : {Mode::Plain, Mode::Strict}) {
+            Request r;
+            r.data = no_packets.data();
+            r.size = no_packets.size();
+            r.mode = mode;
+            CHECK_MSG(!oracle->decode(r).ok && !neo->decode(r).ok, "a tile-part without data or packed headers (%s)",
+                      mode_name(mode));
+        }
+        nj2k_codec_t* codec = memory_codec(0);
+        const MemoryImage m = memory_decode(codec, no_packets, no_packets.size(), NJ2K_SAMPLE_U8, Layout::Guarded);
+        CHECK_MSG(!m.ok && m.status == NJ2K_E_DATA && m.guards_ok, "memory decode: %s", nj2k_status_string(m.status));
+        nj2k_destroy_codec(codec);
+    }
 }
 
 // ---- BUG_WEIRD_TWO_INVK ---------------------------------------------------------------------------
@@ -888,14 +1005,84 @@ void test_memory_decode()
                 std::string why;
                 CHECK_MSG(equal_to_oracle(m, o, NJ2K_SAMPLE_I32, why), "%s cut at %zu: %s", name.c_str(), n,
                           why.c_str());
-                CHECK_MSG(!m.ok || m.status == NJ2K_TRUNCATED, "%s cut at %zu: status %s", name.c_str(), n,
-                          nj2k_status_string(m.status));
+                // a prefix of a valid file is never damaged: it decodes what arrived, or needs more
+                CHECK_MSG(m.ok ? m.status == NJ2K_TRUNCATED : m.status == NJ2K_E_NEED_DATA, "%s cut at %zu: status %s",
+                          name.c_str(), n, nj2k_status_string(m.status));
                 ++cut_decodes;
             }
             nj2k_destroy_codec(codec);
         }
     }
     std::printf("memory decode: %zu whole-file and %zu prefix decodes equal to the oracle's\n", decodes, cut_decodes);
+}
+
+// ---- DP-12 ------------------------------------------------------------------------------------------
+
+// poc_lrcp_rlcp.j2k with the POC of its first tile-part header moved into the main header: right
+// after SIZ, before the COD (before_cod), or at the main header's end, after it. Empty (a failure
+// counted) when the file is not as expected.
+Bytes poc_into_main_header(const Bytes& in, bool before_cod)
+{
+    const auto mh = in.size() > 6 ? parse_main_header(in) : std::nullopt;
+    const auto tps = mh ? scan_tile_parts(in, *mh) : std::vector<TilePart>{};
+    std::size_t poc = 0, poc_len = 0;
+    if (!tps.empty()) {
+        for (std::size_t pos = tps[0].sot + 12; pos + 4 <= tps[0].data - 2;) {
+            const std::uint32_t m = std::uint32_t(in[pos]) << 8 | in[pos + 1];
+            const std::size_t length = std::size_t(in[pos + 2]) << 8 | in[pos + 3];
+            if (m == 0xFF5F) {
+                poc = pos;
+                poc_len = 2 + length;
+                break;
+            }
+            pos += 2 + length;
+        }
+    }
+    if (!poc || tps[0].psot <= poc_len) {
+        std::printf("FAIL: no POC in the first tile-part header\n");
+        ++g_failures;
+        return {};
+    }
+    const Bytes segment(in.begin() + std::ptrdiff_t(poc), in.begin() + std::ptrdiff_t(poc + poc_len));
+    Bytes out(in);
+    out.erase(out.begin() + std::ptrdiff_t(poc), out.begin() + std::ptrdiff_t(poc + poc_len));
+    put_be32(out.data() + tps[0].sot + 6, tps[0].psot - std::uint32_t(poc_len));
+    const std::size_t at = before_cod ? 4 + (std::size_t(in[4]) << 8 | in[5]) : mh->end;  // after SIZ, or the end
+    out.insert(out.begin() + std::ptrdiff_t(at), segment.begin(), segment.end());
+    return out;
+}
+
+// DP-12: OpenJPEG bounds a POC's layer end by the layers known when it reads the POC, so a main
+// header POC read before the COD gives no packet (every sample the mid-value); neo-j2k bounds it by
+// the tile's layers when it decodes, as the standard has it, whatever the marker order. After the
+// COD the two decode alike, and as the file with the POC in its tile-part header.
+void test_dp12()
+{
+    const Bytes in = corpus_file("poc_lrcp_rlcp.j2k");
+    if (in.empty()) {
+        return;
+    }
+    const Bytes before = poc_into_main_header(in, true), after = poc_into_main_header(in, false);
+    if (before.empty() || after.empty()) {
+        return;
+    }
+    auto oracle = make_oracle_backend();
+    auto neo = make_neoj2k_backend();
+    for (Mode mode : {Mode::Plain, Mode::Strict}) {
+        auto decode = [mode](Backend& b, const Bytes& data) {
+            Request rq;
+            rq.data = data.data();
+            rq.size = data.size();
+            rq.mode = mode;
+            return b.decode(rq);
+        };
+        const Outcome file = decode(*neo, in), na = decode(*neo, after), oa = decode(*oracle, after);
+        const Outcome nb = decode(*neo, before), ob = decode(*oracle, before);
+        CHECK_MSG(file.ok && na.ok && oa.ok && oa.hash == na.hash && na.hash == file.hash,
+                  "%s: the POC after the COD", mode_name(mode));
+        CHECK_MSG(nb.ok && nb.hash == file.hash, "%s: neo-j2k, the POC before the COD", mode_name(mode));
+        CHECK_MSG(ob.ok && ob.hash != nb.hash, "%s: the oracle's layer end before the COD", mode_name(mode));
+    }
 }
 
 // ---- DP-13 ------------------------------------------------------------------------------------------
@@ -910,22 +1097,8 @@ void test_dp13()
     if (!mh) {
         return;
     }
-    Bytes jp2;
-    auto u32 = [&](std::uint32_t v) {
-        for (int k = 3; k >= 0; --k) {
-            jp2.push_back(std::uint8_t(v >> (8 * k)));
-        }
-    };
-    auto bytes = [&](std::initializer_list<std::uint8_t> b) { jp2.insert(jp2.end(), b); };
-    u32(12), u32(0x6A502020), u32(0x0D0A870A);                       // signature
-    u32(20), u32(0x66747970), u32(0x6A703220), u32(0), u32(0x6A703220);  // ftyp: jp2
-    u32(8 + 22 + 15), u32(0x6A703268);                               // jp2h
-    u32(22), u32(0x69686472), u32(std::uint32_t(mh->height())), u32(std::uint32_t(mh->width()));
-    bytes({0, 3, 7, 7, 0, 0});                                       // ihdr: 3 components, 8 bits
-    u32(15), u32(0x636F6C72), bytes({1, 0, 0}), u32(16);             // colr: sRGB
-    u32(std::uint32_t(8 + cs.size())), u32(0x6A703263);              // jp2c
-    jp2.insert(jp2.end(), cs.begin(), cs.end());
-    u32(4), u32(0x78787878);                                         // a box of length 4: broken
+    // a box of length 4 after the codestream box: broken
+    const Bytes jp2 = jp2_file(cs, mh->width(), mh->height(), {0, 0, 0, 4, 0x78, 0x78, 0x78, 0x78});
     auto oracle = make_oracle_backend();
     auto neo = make_neoj2k_backend();
     Request rq;
@@ -994,6 +1167,7 @@ void test_memory_bound()
     std::size_t checked = 0;
     double worst = 0;
     std::string worst_name;
+    std::map<std::string, std::array<std::size_t, 6>> per_request;  // bytes beyond the header, by reduce level
     for (const auto& path : expand_inputs(g_corpus)) {
         const auto data = read_file(path);
         if (!data) {
@@ -1040,12 +1214,339 @@ void test_memory_bound()
                 worst = double(used) / double(need);
                 worst_name = name + " r" + std::to_string(r);
             }
+            if (m.ok) {
+                per_request[name][std::size_t(r)] = used;
+            }
             checked += m.ok;
             nj2k_destroy_codec(codec);
         }
     }
     std::printf("working memory: %zu decodes within the estimate; the closest %.0f %% of it (%s)\n", checked,
                 worst * 100, worst_name.c_str());
+    // the record per request: what the decode takes at each reduce level of the file that takes most at
+    // reduce 0 (the dropped resolutions keep only their packet headers' state)
+    const auto largest = std::max_element(per_request.begin(), per_request.end(),
+                                          [](const auto& x, const auto& y) { return x.second[0] < y.second[0]; });
+    if (largest != per_request.end()) {
+        std::printf("working memory by reduce level, %s:", largest->first.c_str());
+        for (std::size_t r = 0; r < 6; ++r) {
+            std::printf(" r%zu %.1f KiB", r, double(largest->second[r]) / 1024.0);
+        }
+        std::printf("\n");
+    }
+}
+
+// ---- the review round's cases (stage 1c) ------------------------------------------------------------
+
+// A memory codec as the viewer will set one up: non-strict, the Second Life limits, the reduce policy.
+nj2k_codec_t* viewer_codec(int reduce, std::uint32_t policy)
+{
+    nj2k_codec_t* codec = memory_codec(reduce);
+    nj2k_decoder_limits_t limits;
+    if (!codec || !nj2k_decoder_limits_init(&limits, NJ2K_DECODER_LIMITS_SL_TEXTURE) ||
+        !nj2k_decoder_set_limits(codec, &limits) || !nj2k_decoder_set_reduce_policy(codec, policy)) {
+        std::printf("FAIL: no viewer codec\n");
+        ++g_failures;
+    }
+    return codec;
+}
+
+// A tile-part COD whose component has fewer resolutions than the reduce factor in effect: the tile
+// has no level of the image's size, so it is refused under NJ2K_REDUCE_EXACT and NJ2K_REDUCE_CLAMP
+// alike, before anything is written (it overran the caller's planes under CLAMP); at reduce 0 it
+// decodes as the oracle decodes it.
+void test_clamp_tile_styles()
+{
+    const Bytes in = corpus_file("sl_64_rgb_97.j2k");
+    const auto mh = in.empty() ? std::nullopt : parse_main_header(in);
+    if (!mh) {
+        return;
+    }
+    // COD: one layer, the main header's transform and colour transform, no decomposition level
+    const Bytes cod = {0xFF, 0x52, 0x00, 0x0C, 0x00, 0x00, 0x00, 0x01, mh->mct, 0x00, 0x04, 0x04, 0x00, mh->transform};
+    const Bytes cs = one_tile_part(in, cod, {0x00, 0x00, 0x00, 0x00});
+    for (std::uint32_t policy : {NJ2K_REDUCE_EXACT, NJ2K_REDUCE_CLAMP}) {
+        for (int r = 1; r <= 5; ++r) {
+            nj2k_codec_t* codec = viewer_codec(r, policy);
+            const MemoryImage m = memory_decode(codec, cs, cs.size(), NJ2K_SAMPLE_U8, Layout::Guarded);
+            CHECK_MSG(!m.ok && m.status == NJ2K_E_LIMIT && m.guards_ok, "policy %u reduce %d: %s, guards %s", policy, r,
+                      nj2k_status_string(m.status), m.guards_ok ? "intact" : "WRITTEN");
+            nj2k_destroy_codec(codec);
+        }
+    }
+    auto oracle = make_oracle_backend();
+    Request rq;
+    rq.data = cs.data();
+    rq.size = cs.size();
+    rq.capture = true;
+    const Outcome o = oracle->decode(rq);
+    nj2k_codec_t* codec = viewer_codec(0, NJ2K_REDUCE_CLAMP);
+    const MemoryImage m = memory_decode(codec, cs, cs.size(), NJ2K_SAMPLE_U8, Layout::Guarded);
+    std::string why;
+    CHECK_MSG(o.ok && equal_to_oracle(m, o, NJ2K_SAMPLE_U8, why) && m.guards_ok, "reduce 0: %s", why.c_str());
+    nj2k_destroy_codec(codec);
+}
+
+// Markers in and between tile-part headers. SOC, EOC and EPH have no place in a tile-part header and
+// a marker without a segment none where a SOT is expected: both decoders refuse them. A marker
+// without a segment inside a tile-part header is skipped (DP-7), where OpenJPEG fails.
+void test_tile_part_markers()
+{
+    const Bytes in = corpus_file("sl_128_rgba_97.j2k");
+    const std::size_t sot = in.empty() ? 0 : first_sot(in);
+    if (!sot) {
+        return;
+    }
+    auto oracle = make_oracle_backend();
+    auto neo = make_neoj2k_backend();
+    auto decode = [&](Backend& b, const Bytes& cs) {
+        Request rq;
+        rq.data = cs.data();
+        rq.size = cs.size();
+        return b.decode(rq);
+    };
+    const Outcome original = decode(*neo, in);
+    CHECK(original.ok);
+    for (std::uint8_t m : {std::uint8_t(0xD9), std::uint8_t(0x92), std::uint8_t(0x4F)}) {
+        const Bytes cs = into_first_tile_part(in, {0xFF, m, 0x00, 0x04, 0x00, 0x00});
+        CHECK_MSG(!decode(*oracle, cs).ok && !decode(*neo, cs).ok, "0xFF%02X in a tile-part header", m);
+        nj2k_codec_t* codec = memory_codec(0);
+        const MemoryImage mi = memory_decode(codec, cs, cs.size(), NJ2K_SAMPLE_U8, Layout::Guarded);
+        CHECK_MSG(!mi.ok && mi.status == NJ2K_E_HEADER, "0xFF%02X in a tile-part header: %s", m,
+                  nj2k_status_string(mi.status));
+        nj2k_destroy_codec(codec);
+    }
+    // DP-7: inside the header, skipped
+    const Bytes skipped = into_first_tile_part(in, {0xFF, 0x30});
+    const Outcome s = decode(*neo, skipped);
+    CHECK_MSG(!decode(*oracle, skipped).ok && s.ok && s.hash == original.hash, "0xFF30 in a tile-part header");
+    // where a SOT is expected: the tile-part declares no count of tile-parts (TNsot 0), so the walk
+    // reads the next marker before it decodes the tile
+    const bool one_part = in.size() >= 2 && in[in.size() - 2] == 0xFF && in[in.size() - 1] == 0xD9 && in[sot + 10] == 0 &&
+                          in[sot + 11] == 1;
+    CHECK(one_part);
+    if (one_part) {
+        Bytes open = in;
+        open[sot + 11] = 0;
+        const Outcome a = decode(*oracle, open), b = decode(*neo, open);
+        CHECK_MSG(a.ok && b.ok && a.hash == b.hash && b.hash == original.hash, "TNsot 0");
+        Bytes between = open;
+        between.insert(between.end() - 2, {0xFF, 0x30});
+        CHECK_MSG(!decode(*oracle, between).ok && !decode(*neo, between).ok, "0xFF30 where a SOT is expected");
+    }
+}
+
+// A multi-tile codestream whose bytes end before its first tile's data: NJ2K_E_NEED_DATA, as for a
+// single tile (nothing was found damaged).
+void test_need_data()
+{
+    for (const char* name : {"tile_64_of_16.j2k", "sl_128_rgba_97.j2k"}) {
+        const Bytes in = corpus_file(name);
+        const std::size_t sot = in.empty() ? 0 : first_sot(in);
+        if (!sot) {
+            continue;
+        }
+        nj2k_codec_t* codec = memory_codec(0);
+        for (std::size_t n : {sot + 2, sot + 6, sot + 12}) {
+            const MemoryImage m = memory_decode(codec, in, n, NJ2K_SAMPLE_I32, Layout::Planar);
+            CHECK_MSG(!m.ok && m.status == NJ2K_E_NEED_DATA, "%s cut at %zu: %s", name, n, nj2k_status_string(m.status));
+        }
+        nj2k_destroy_codec(codec);
+    }
+}
+
+// A component selection made after nj2k_read_header_memory() holds for the decodes of that header:
+// a plane for a component not selected is refused, the selected one is decoded (the alpha of an
+// RGBA texture: as in the whole decode, which no colour transform touches). The next header read
+// starts without one, of the same bytes (the header model held) or of others.
+void test_memory_selection()
+{
+    const Bytes a = corpus_file("sl_128_rgba_97.j2k"), b = corpus_file("sl_64_rgb_97.j2k");
+    if (a.empty() || b.empty()) {
+        return;
+    }
+    auto oracle = make_oracle_backend();
+    Request rq;
+    rq.data = a.data();
+    rq.size = a.size();
+    rq.capture = true;
+    const Outcome o = oracle->decode(rq);
+    CHECK(o.ok && o.numcomps == 4);
+    nj2k_codec_t* codec = memory_codec(0);
+    nj2k_image_t image;
+    CHECK(nj2k_read_header_memory(codec, a.data(), a.size(), &image) && image.numcomps == 4);
+    const NJ2K_UINT32 alpha = 3;
+    CHECK(nj2k_set_decoded_components(codec, 1, &alpha, NJ2K_FALSE));
+    const std::uint32_t w = image.comps[3].w, h = image.comps[3].h;
+    std::vector<std::int32_t> planes(std::size_t(w) * h * 2, -7);
+    const nj2k_plane_t both[2] = {{planes.data(), std::int64_t(w) * 4, 4, 0},
+                                  {planes.data() + std::size_t(w) * h, std::int64_t(w) * 4, 4, 3}};
+    for (int round = 0; round < 2; ++round) {  // the second from the header the codec holds
+        const nj2k_output_t refused{sizeof(nj2k_output_t), NJ2K_SAMPLE_I32, 2, both};
+        CHECK_MSG(!nj2k_decode_memory(codec, a.data(), a.size(), &refused) && nj2k_get_status(codec) == NJ2K_E_OUTPUT,
+                  "round %d: a plane of a component not selected", round);
+        const nj2k_output_t out{sizeof(nj2k_output_t), NJ2K_SAMPLE_I32, 1, both + 1};
+        CHECK_MSG(nj2k_decode_memory(codec, a.data(), a.size(), &out), "round %d: %s", round,
+                  nj2k_status_string(nj2k_get_status(codec)));
+        CHECK(o.ok && o.planes.size() == 4 &&
+              std::equal(o.planes[3].begin(), o.planes[3].end(), planes.begin() + std::ptrdiff_t(w) * h));
+        CHECK(std::all_of(planes.begin(), planes.begin() + std::ptrdiff_t(w) * h, [](std::int32_t v) { return v == -7; }));
+    }
+    // the same bytes read again: a new codestream, every component decoded
+    CHECK(nj2k_read_header_memory(codec, a.data(), a.size(), &image) && image.numcomps == 4);
+    {
+        const nj2k_output_t out{sizeof(nj2k_output_t), NJ2K_SAMPLE_I32, 2, both};
+        CHECK_MSG(nj2k_decode_memory(codec, a.data(), a.size(), &out), "the header read again: %s",
+                  nj2k_status_string(nj2k_get_status(codec)));
+        CHECK(o.ok && o.planes.size() == 4 && std::equal(o.planes[0].begin(), o.planes[0].end(), planes.begin()) &&
+              std::equal(o.planes[3].begin(), o.planes[3].end(), planes.begin() + std::ptrdiff_t(w) * h));
+    }
+    // another header: every component again
+    CHECK(nj2k_read_header_memory(codec, b.data(), b.size(), &image) && image.numcomps == 3);
+    std::vector<std::int32_t> rgb(std::size_t(image.comps[0].w) * image.comps[0].h);
+    const nj2k_plane_t first{rgb.data(), std::int64_t(image.comps[0].w) * 4, 4, 0};
+    const nj2k_output_t out{sizeof(nj2k_output_t), NJ2K_SAMPLE_I32, 1, &first};
+    CHECK(nj2k_decode_memory(codec, b.data(), b.size(), &out));
+    nj2k_destroy_codec(codec);
+}
+
+// The working memory of a tile whose own COD changes it (tiny precincts here) is checked with the
+// tile's parameters before the tile is allocated: with the limit at what the main header needs, the
+// file decodes, and the same tile with its own coding is refused.
+void test_tile_memory_limit()
+{
+    const Bytes in = corpus_file("sl_64_rgb_97.j2k");
+    const auto mh = in.empty() ? std::nullopt : parse_main_header(in);
+    if (!mh) {
+        return;
+    }
+    std::uint64_t need = 0;
+    {
+        nj2k::detail::Allocator sys = nj2k::detail::Allocator::system();
+        nj2k::detail::Arena arena;
+        arena.init(&sys);
+        nj2k::detail::Messages msg;
+        nj2k::detail::HeaderSettings hs{};
+        nj2k::detail::Source src(in.data(), in.size());
+        nj2k::detail::MainHeader* model = nullptr;
+        if (nj2k::detail::read_main_header(src, arena, msg, hs, model) == NJ2K_OK) {
+            need = nj2k::detail::decode_working_memory(*model, 0, nullptr);
+        }
+        arena.release_all();
+    }
+    CHECK(need > 0);
+    // COD with precincts of 2 x 2 at every resolution, the main header's coding otherwise
+    Bytes cod = {0xFF, 0x52, 0x00, std::uint8_t(12 + mh->levels + 1), 0x01, 0x00, 0x00, 0x01, mh->mct, mh->levels,
+                 mh->cblk_w_exp, mh->cblk_h_exp, 0x00, mh->transform};
+    cod.insert(cod.end(), std::size_t(mh->levels) + 1, std::uint8_t(0x11));
+    const Bytes cs = one_tile_part(in, cod, {0x00, 0x00, 0x00, 0x00});
+    nj2k_decoder_limits_t limits{};
+    limits.max_memory = need;
+    for (int own = 0; own < 2; ++own) {
+        const Bytes& file = own ? cs : in;
+        nj2k_codec_t* codec = memory_codec(0);
+        CHECK(nj2k_decoder_set_limits(codec, &limits));
+        const MemoryImage m = memory_decode(codec, file, file.size(), NJ2K_SAMPLE_U8, Layout::Guarded);
+        if (own) {
+            CHECK_MSG(!m.ok && m.status == NJ2K_E_LIMIT && m.guards_ok, "the tile's own coding: %s",
+                      nj2k_status_string(m.status));
+        } else {
+            CHECK_MSG(m.ok && m.guards_ok, "the main header's coding: %s", nj2k_status_string(m.status));
+        }
+        nj2k_destroy_codec(codec);
+    }
+}
+
+// DP-15: a JP2 file's codestream ends where its box ends. A last tile-part of Psot = 0 followed by
+// another box decodes whole (NJ2K_OK, OpenJPEG's image); a codestream without EOC followed by a box
+// decodes as that codestream alone (OpenJPEG reads the box as the marker after the tile and fails).
+void test_dp15()
+{
+    auto oracle = make_oracle_backend();
+    auto neo = make_neoj2k_backend();
+    const Bytes trailing = {0, 0, 0, 16, 0x66, 0x72, 0x65, 0x65, 1, 2, 3, 4, 5, 6, 7, 8};  // 'free'
+    auto decode = [](Backend& b, const Bytes& data, bool jp2) {
+        Request rq;
+        rq.data = data.data();
+        rq.size = data.size();
+        rq.jp2 = jp2;
+        return b.decode(rq);
+    };
+    auto memory = [](const Bytes& data, bool jp2) {
+        nj2k_codec_t* codec = nj2k_create_decompress(jp2 ? NJ2K_CODEC_JP2 : NJ2K_CODEC_J2K);
+        nj2k_decoder_set_strict_mode(codec, NJ2K_FALSE);
+        const MemoryImage m = memory_decode(codec, data, data.size(), NJ2K_SAMPLE_I32, Layout::Guarded);
+        nj2k_destroy_codec(codec);
+        return m;
+    };
+    {
+        const Bytes cs = corpus_file("psot0_sop_97.j2k");
+        const auto mh = cs.empty() ? std::nullopt : parse_main_header(cs);
+        if (mh) {
+            const Bytes jp2 = jp2_file(cs, mh->width(), mh->height(), trailing);
+            const Outcome bare = decode(*neo, cs, false), a = decode(*oracle, jp2, true), b = decode(*neo, jp2, true);
+            CHECK_MSG(bare.ok && a.ok && b.ok && a.hash == b.hash, "Psot = 0 in a JP2 file with a box after it");
+            const MemoryImage m = memory(jp2, true);
+            CHECK_MSG(m.ok && m.status == NJ2K_OK, "Psot = 0 in a JP2 file: %s", nj2k_status_string(m.status));
+        }
+    }
+    {
+        Bytes cs = corpus_file("size_16x16_rgb_r5.j2k");
+        const auto mh = cs.size() > 2 ? parse_main_header(cs) : std::nullopt;
+        if (mh) {
+            cs.resize(cs.size() - 2);  // no EOC
+            const Bytes jp2 = jp2_file(cs, mh->width(), mh->height(), trailing);
+            const Outcome bare = decode(*neo, cs, false), a = decode(*oracle, jp2, true), b = decode(*neo, jp2, true);
+            CHECK_MSG(!a.ok, "the oracle read the box after a codestream without EOC");
+            CHECK_MSG(bare.ok && b.ok && b.hash != 0, "no EOC in a JP2 file with a box after it");
+            const MemoryImage m = memory(jp2, true), n = memory(cs, false);
+            CHECK_MSG(m.ok && m.status == NJ2K_TRUNCATED && n.ok && m.buffer == n.buffer, "no EOC: %s",
+                      nj2k_status_string(m.status));
+        }
+    }
+}
+
+// The viewer's path in CI: one codec for every file and reduce level (its header held while the main
+// header is the same), the Second Life limits, NJ2K_REDUCE_CLAMP, non-strict, 8-bit planes with guard
+// bytes, sized once nj2k_get_decoded_dimensions() accepts the header: every decode equals the
+// oracle's at the reduce factor in effect, and nothing outside the planes is written.
+void test_viewer_path()
+{
+    auto oracle = make_oracle_backend();
+    nj2k_codec_t* codec = viewer_codec(0, NJ2K_REDUCE_CLAMP);
+    std::size_t decodes = 0, refused = 0;
+    for (const auto& path : expand_inputs(g_corpus)) {
+        const std::string name = base_name(path);
+        const auto data = read_file(path);
+        if (!data || name == "edge_ppt_empty_tiles_97.j2k") {
+            continue;  // DP-3 above
+        }
+        for (int r = 0; r <= 5; ++r) {
+            nj2k_set_decoded_resolution_factor(codec, static_cast<NJ2K_UINT32>(r));  // false before a header
+            nj2k_image_t image;
+            if (!nj2k_read_header_memory(codec, data->data(), data->size(), &image) ||
+                !nj2k_get_decoded_dimensions(codec, &image)) {
+                CHECK_MSG(nj2k_get_status(codec) == NJ2K_E_LIMIT, "%s reduce %d: %s", name.c_str(), r,
+                          nj2k_status_string(nj2k_get_status(codec)));
+                ++refused;
+                continue;
+            }
+            Request rq;
+            rq.data = data->data();
+            rq.size = data->size();
+            rq.reduce = static_cast<int>(image.comps[0].factor);
+            rq.capture = true;
+            const Outcome o = oracle->decode(rq);
+            const MemoryImage m = memory_decode(codec, *data, data->size(), NJ2K_SAMPLE_U8, Layout::Guarded);
+            std::string why;
+            CHECK_MSG(equal_to_oracle(m, o, NJ2K_SAMPLE_U8, why) && m.guards_ok, "%s reduce %d (factor %d): %s%s",
+                      name.c_str(), r, rq.reduce, why.c_str(), m.guards_ok ? "" : ", guards written");
+            ++decodes;
+        }
+    }
+    nj2k_destroy_codec(codec);
+    std::printf("viewer path: %zu decodes on one codec equal to the oracle's, %zu refused by the limits\n", decodes,
+                refused);
 }
 
 // ---- the zero-heap gate ------------------------------------------------------------------------------
@@ -1068,7 +1569,8 @@ nj2k_output_t u8_planes(const nj2k_image_t& image, std::vector<std::uint8_t>& ra
 }
 
 // After a warm-up, decoding an image up to 256 x 256 again (the same one, or another of the set)
-// asks the codec's allocator for nothing, and nothing calls operator new.
+// asks the codec's allocator for nothing, and nothing calls operator new. The codec clamps the reduce
+// factor as the viewer's does, so every file decodes at every level: each decode must succeed.
 void test_zero_heap()
 {
     std::vector<std::pair<std::string, Bytes>> files;
@@ -1084,7 +1586,7 @@ void test_zero_heap()
         Counting counting;
         const nj2k_allocator_t hook = counting.hook();
         nj2k_codec_t* codec = memory_codec(r, &hook);
-        CHECK(codec != nullptr);
+        CHECK(codec != nullptr && nj2k_decoder_set_reduce_policy(codec, NJ2K_REDUCE_CLAMP));
         if (!codec) {
             return;
         }
@@ -1099,6 +1601,8 @@ void test_zero_heap()
         for (const auto& [name, data] : files) {
             nj2k_image_t image;
             if (!nj2k_read_header_memory(codec, data.data(), data.size(), &image)) {
+                CHECK_MSG(false, "%s reduce %d: header refused (%s)", name.c_str(), r,
+                          nj2k_status_string(nj2k_get_status(codec)));
                 continue;
             }
             std::vector<std::uint8_t> raw;
@@ -1114,6 +1618,8 @@ void test_zero_heap()
             g_count_new = false;
             news += g_news;
             const std::size_t calls = counting.allocs + counting.frees - before;
+            CHECK_MSG(ok, "%s reduce %d: a repeat decode failed (%s)", name.c_str(), r,
+                      nj2k_status_string(nj2k_get_status(codec)));
             CHECK_MSG(calls == 0, "%s reduce %d: %zu allocator calls on a repeat decode", name.c_str(), r, calls);
             same_calls += calls;
             decoded += ok;
@@ -1125,6 +1631,7 @@ void test_zero_heap()
             const bool header = nj2k_read_header_memory(codec, data.data(), data.size(), &image) != NJ2K_FALSE;
             g_count_new = false;
             if (!header) {
+                CHECK_MSG(false, "%s reduce %d: header refused in turn", name.c_str(), r);
                 continue;
             }
             std::vector<std::uint8_t> raw;
@@ -1132,9 +1639,11 @@ void test_zero_heap()
             const nj2k_output_t out = u8_planes(image, raw, planes);
             g_news = 0;
             g_count_new = true;
-            (void)nj2k_decode_memory(codec, data.data(), data.size(), &out);
+            const bool ok = nj2k_decode_memory(codec, data.data(), data.size(), &out) != NJ2K_FALSE;
             g_count_new = false;
             news += g_news;
+            CHECK_MSG(ok, "%s reduce %d: the decode in turn failed (%s)", name.c_str(), r,
+                      nj2k_status_string(nj2k_get_status(codec)));
         }
         set_calls = counting.allocs + counting.frees - before;
         CHECK_MSG(set_calls == 0, "reduce %d: %zu allocator calls over the set after the warm-up", r, set_calls);
@@ -1170,10 +1679,18 @@ int main(int argc, char** argv)
 #else
     std::printf("kernels: scalar build, no AVX2 versions to compare\n");
 #endif
+    test_dp12();
     test_dp13();
+    test_dp15();
     test_memory_decode();
     test_memory_states();
     test_memory_bound();
+    test_clamp_tile_styles();
+    test_tile_part_markers();
+    test_need_data();
+    test_memory_selection();
+    test_tile_memory_limit();
+    test_viewer_path();
     test_zero_heap();
     std::printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures ? 1 : 0;

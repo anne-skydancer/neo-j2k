@@ -9,8 +9,9 @@
 // are read into memory first, and the stream's offsets, length and seek function are kept, so that
 // every cut and every short stream ends as in OpenJPEG). The tile-part markers are read by the
 // header model (header.h), with its departures (doc/departures.md). Departure DP-3: a tile whose
-// tile-parts arrived without data bytes decodes as the standard says (OpenJPEG refuses it); a
-// tile that never arrived is still not decoded. OpenJPEG's notice:
+// tile-parts arrived without data bytes, its packet headers in PPM or PPT, decodes as the standard
+// says (OpenJPEG refuses it); a tile that never arrived, or one with neither data nor packed packet
+// headers, is still not decoded. OpenJPEG's notice:
 //
 /*
  * The copyright in this software is being made available under the 2-clauses
@@ -90,6 +91,7 @@ struct TileWalk {
     std::uint32_t nb_tile_parts;
     bool seen;      // a tile-part reached its SOD since the tile was last decoded (DP-3)
     bool has_data;  // OpenJPEG's m_data != NULL: a tile-part gave it bytes
+    bool cut;       // the bytes ended before a tile-part's declared length
     bool ppt_merged;
     Range* ranges;
     std::uint32_t nranges, ranges_cap;
@@ -112,9 +114,11 @@ struct Walk {
     std::uint32_t sot_length = 0;
     std::uint32_t current_tile = 0;
     bool truncated = false;
-    TileWalk** pages = nullptr;  // pages of 128 tiles, made as tiles appear
+    static constexpr std::uint32_t kPage = 128;
+    TileWalk** pages = nullptr;  // pages of kPage tiles, made as tiles appear
     std::uint32_t page_count = 0;
     PackedCursor ppm{nullptr, 0};
+    std::uint64_t image_need = UINT64_MAX;  // image_working_memory, once a tile needs it
 
     Walk(Decoder& dec, const CodestreamBytes& bytes, OutComp* c, const OutSink& s) noexcept
         : d(dec), mh(*dec.header), b(bytes), comps(c), sink(s), msg(dec.messages)
@@ -164,9 +168,16 @@ struct Walk {
         return avail ? static_cast<std::int64_t>(avail) : -1;
     }
 
+    // The tiles of page p: 128, fewer in the last page (a single tile's page holds one, so a small
+    // image's decode clears no more than it uses).
+    std::uint32_t page_tiles(std::uint32_t p) const noexcept
+    {
+        const std::uint32_t left = mh.tile_count() - p * kPage;
+        return left < kPage ? left : kPage;
+    }
+    // the walk state of a tile (tile < mh.tile_count()), made when it first appears
     TileWalk* tile_walk(std::uint32_t tile) noexcept
     {
-        constexpr std::uint32_t kPage = 128;
         if (!pages) {
             page_count = (mh.tile_count() + kPage - 1) / kPage;
             pages = d.work.make_array<TileWalk*>(page_count);
@@ -176,11 +187,12 @@ struct Walk {
         }
         TileWalk*& page = pages[tile / kPage];
         if (!page) {
-            page = d.work.make_array<TileWalk>(kPage);
+            const std::uint32_t n = page_tiles(tile / kPage);
+            page = d.work.make_array<TileWalk>(n);
             if (!page) {
                 return nullptr;
             }
-            for (std::uint32_t i = 0; i < kPage; ++i) {
+            for (std::uint32_t i = 0; i < n; ++i) {
                 page[i].current_tile_part_number = -1;
             }
         }
@@ -192,8 +204,24 @@ struct Walk {
         if (!pages) {
             return nullptr;
         }
-        TileWalk* page = pages[tile / 128];
-        return page ? &page[tile % 128] : nullptr;
+        TileWalk* page = pages[tile / kPage];
+        return page ? &page[tile % kPage] : nullptr;
+    }
+
+    // Whether a tile is decoded: OpenJPEG decodes a tile whose tile-parts gave it data bytes. DP-3: a
+    // tile whose tile-parts arrived whole without data bytes, its packet headers packed in PPM or PPT,
+    // decodes too, as the standard has it; without packed headers its packets are missing, and it is
+    // refused as in OpenJPEG.
+    bool decodable(std::uint32_t tile, const TileWalk* tw) const noexcept
+    {
+        if (!tw || !tw->seen) {
+            return false;
+        }
+        if (tw->has_data || mh.has_ppm) {
+            return true;
+        }
+        const TileOverrides* ov = mh.overrides(tile);
+        return ov && ov->ppt.size != 0;
     }
 
     nj2k_status_t nomem() noexcept
@@ -206,6 +234,7 @@ struct Walk {
     nj2k_status_t read_sot(const std::uint8_t* p, std::uint32_t n) noexcept
     {
         if (n != 8) {
+            // twice, as OpenJPEG gives it: opj_j2k_get_sot_values, then opj_j2k_read_sot
             msg.emit(Messages::Error, "Error reading SOT marker\n");
             msg.emit(Messages::Error, "Error reading SOT marker\n");
             return NJ2K_E_HEADER;
@@ -304,10 +333,12 @@ struct Walk {
     // OpenJPEG refuses a reduce factor at or above the resolutions of a COD or COC it reads, tile-part
     // headers included (opj_j2k_read_SPCod_SPCoc); neo-j2k checks each tile-component after marker
     // precedence (DP-5), when a tile-part header that changes the coding style is complete. Under
-    // NJ2K_REDUCE_CLAMP such a tile-component decodes at its coarsest level instead.
+    // either policy: NJ2K_REDUCE_CLAMP lowers the factor to the main header's coarsest level, and a
+    // tile whose own coding gives a component fewer resolutions than that has no level of the
+    // image's size.
     nj2k_status_t check_tile_reduce() noexcept
     {
-        if (d.reduce_policy != NJ2K_REDUCE_EXACT || d.factor == 0) {
+        if (d.factor == 0) {
             return NJ2K_OK;
         }
         const TileOverrides* ov = mh.overrides(current_tile);
@@ -330,7 +361,7 @@ struct Walk {
         return NJ2K_OK;
     }
 
-    // ---- opj_j2k_read_sod (the tile-part's data: where it is, never copied) ------------------
+    // ---- opj_j2k_read_sod (the tile-part's data: where it lies; tile_bytes() reads it there) ----
     nj2k_status_t read_sod() noexcept
     {
         TileWalk* tw = find_walk(current_tile);
@@ -379,8 +410,8 @@ struct Walk {
             read_size = read(nullptr, sot_length);
         }
         if (!pb_detected || !length_from_cut) {
-            // DP-3: a tile whose tile-parts declare no data bytes still decodes (OpenJPEG needs
-            // bytes); one whose bytes ended at its SOD does not, as in OpenJPEG
+            // the tile-part arrived (DP-3: one that declares no data bytes counts, one whose bytes
+            // ended at its SOD does not; decodable() decides)
             tw->seen = true;
         }
         if (read_size != sot_length) {
@@ -390,8 +421,12 @@ struct Walk {
             }
             state = kNeoc;
             truncated = true;
+            tw->cut = true;
         } else {
             state = kTphsot;
+        }
+        if (length_from_cut) {
+            tw->cut = true;
         }
         if (!pb_detected) {
             tw->has_data = true;
@@ -487,9 +522,17 @@ struct Walk {
                     state = kNeoc;
                     break;
                 }
-                if (current_marker >= 0xFF30 && current_marker <= 0xFF3F) {
-                    // a marker without a segment: skipped (DP-7), the length it leaves counted
-                    if ((state & kTph) && sot_length != 0) {
+                if ((state & kTph) && segmentless(current_marker)) {
+                    if (current_marker < 0xFF30 || current_marker > 0xFF3F) {
+                        // SOC, EOC or EPH in a tile-part header (SOD ends it): not a marker of a
+                        // tile-part header, and no segment to read (OpenJPEG fails on it too)
+                        msg.emit(Messages::Error, "Marker is not compliant with its position\n");
+                        return NJ2K_E_HEADER;
+                    }
+                    // a marker without a segment: skipped (DP-7), the length it leaves counted. Where
+                    // a SOT is expected (between tile-parts) it is read as OpenJPEG reads it, below,
+                    // and refused for its position
+                    if (sot_length != 0) {
                         if (sot_length < 2) {
                             msg.emit(Messages::Error, "Sot length is less than marker size + marker ID\n");
                             return NJ2K_E_HEADER;
@@ -624,7 +667,7 @@ struct Walk {
                         if (!pages[p]) {
                             continue;
                         }
-                        for (std::uint32_t i = 0; i < 128; ++i) {
+                        for (std::uint32_t i = 0, n = page_tiles(p); i < n; ++i) {
                             if (pages[p][i].nb_tile_parts != 0U) {
                                 pages[p][i].nb_tile_parts += 1;
                             }
@@ -678,8 +721,7 @@ struct Walk {
         // tiles with a single tile-part of TPsot == 0 and TNsot == 0
         if (!can_decode) {
             while (current_tile < mh.tile_count()) {
-                const TileWalk* tw = find_walk(current_tile);
-                if (tw && tw->seen) {
+                if (decodable(current_tile, find_walk(current_tile))) {
                     break;
                 }
                 ++current_tile;
@@ -949,6 +991,29 @@ struct Walk {
         }
     }
 
+    // The decoder limits' working memory for a tile whose own coding (a tile-part COD or COC)
+    // changes it: the decode's check when it started took the main header's coding, so this tile's
+    // need is checked with its own parameters before anything of it is allocated.
+    nj2k_status_t check_tile_memory(std::uint32_t tile, const TileOverrides* ov, const TileComponentParams* params) noexcept
+    {
+        if (!d.limits.max_memory || !ov || (!ov->has_cod && ov->coc.size == 0)) {
+            return NJ2K_OK;
+        }
+        if (image_need == UINT64_MAX) {
+            image_need = image_working_memory(mh, d.factor, d.selected_mask);
+        }
+        const std::uint64_t part = tile_working_memory(mh, tile, params, d.factor, d.selected_mask);
+        const std::uint64_t need = part > UINT64_MAX - image_need ? UINT64_MAX : image_need + part;
+        if (need > d.limits.max_memory) {
+            msg.emit(Messages::Error,
+                     "Tile %u needs %llu bytes of working memory with its own coding, above the decoder's limit of "
+                     "%llu\n",
+                     tile, static_cast<unsigned long long>(need), static_cast<unsigned long long>(d.limits.max_memory));
+            return NJ2K_E_LIMIT;
+        }
+        return NJ2K_OK;
+    }
+
     // opj_j2k_read_tile_header's tile set-up and opj_j2k_decode_tile, then the image update.
     // whole_image: the single-tile path of opj_j2k_decode_tiles (the tile is the image).
     nj2k_status_t decode_tile(bool whole_image) noexcept
@@ -963,6 +1028,9 @@ struct Walk {
             return nomem();
         }
         if (const nj2k_status_t st = resolve_tile(mh, ov, msg, params); st != NJ2K_OK) {
+            return st;
+        }
+        if (const nj2k_status_t st = check_tile_memory(tile, ov, params); st != NJ2K_OK) {
             return st;
         }
         TileInput in{};
@@ -980,13 +1048,14 @@ struct Walk {
         if (!tile_bytes(*tw, in.data, in.size)) {
             return nomem();
         }
+        in.cut = tw->cut;
         Tile t;
         if (const nj2k_status_t st = t.init(in, d.work, msg); st != NJ2K_OK) {
             msg.emit(Messages::Error, "Cannot decode tile, memory error\n");
             return st;
         }
-        // opj_j2k_decode_tile: the tile needs data (DP-3: or tile-parts that arrived without)
-        if (!tw->seen) {
+        // opj_j2k_decode_tile: the tile needs data (DP-3: or packed packet headers)
+        if (!decodable(tile, tw)) {
             return NJ2K_E_DATA;
         }
         auto* resno = d.work.raw_array<std::uint32_t>(mh.numcomps);
@@ -1008,7 +1077,7 @@ struct Walk {
             }
         }
         if (st == NJ2K_OK) {
-            st = t.decode_samples(d.t1, d.allocator, d.dwt.p, resno, msg);
+            st = t.decode_samples(d.t1, d.dwt.p, resno, msg);
         }
         if (st != NJ2K_OK) {
             state |= kErr;
@@ -1059,6 +1128,7 @@ struct Walk {
         // opj_j2k_tcp_data_destroy (a 1 x 1 grid keeps it, but is not decoded again)
         tw->seen = false;
         tw->has_data = false;
+        tw->cut = false;
         tw->nranges = 0;
         d.work.rewind(mark);
         return NJ2K_OK;
@@ -1079,15 +1149,15 @@ struct Walk {
         return true;
     }
 
-    // The memory decode of a single-tile image into int32 planes laid out as the tile's own buffer
-    // (4-byte samples, aligned, rows of exactly the component's width, top-down): the tile decodes
-    // straight into the caller's planes, with no buffer of its own and no copy. Every component
-    // decoded needs such a plane (the first one of the component; any other plane of it is then
-    // written from it), or none is used.
+    // The memory decode of a single-tile image (whole_fits) into int32 planes laid out as the tile's
+    // own buffer (4-byte samples, aligned, rows of exactly the component's width, top-down): the tile
+    // decodes straight into the caller's planes, with no buffer of its own and no copy. Every
+    // component decoded needs such a plane (the first one of the component; any other plane of it
+    // is then written from it), or none is used.
     bool direct_output(Tile& t) noexcept
     {
         const nj2k_output_t& o = *sink.output;
-        if (o.sample_type != NJ2K_SAMPLE_I32 || !whole_fits(t)) {
+        if (o.sample_type != NJ2K_SAMPLE_I32) {
             return false;
         }
         for (int assign = 0; assign < 2; ++assign) {
@@ -1117,8 +1187,11 @@ struct Walk {
 
     nj2k_status_t attach_samples(Tile& t, bool& whole_image) noexcept
     {
-        if (whole_image && sink.image_planes && !whole_fits(t)) {
-            whole_image = false;  // OpenJPEG would hand over a buffer of another size: copy instead
+        if (whole_image && !whole_fits(t)) {
+            // the tile's decoded level is not the image's components, sample for sample (OpenJPEG
+            // would hand over a buffer of another size): it is copied as any tile is, clipped to
+            // the image, into the image planes or the caller's
+            whole_image = false;
         }
         if (whole_image && !sink.image_planes && direct_output(t)) {
             return NJ2K_OK;
@@ -1151,8 +1224,13 @@ struct Walk {
             }
             total += n;
         }
-        if (d.limits.max_memory && total > d.limits.max_memory) {
-            msg.emit(Messages::Error, "The tile's samples need %zu bytes, above the decoder's memory limit\n", total);
+        // the samples and the structures this decode holds in its working arena share the limit
+        if (d.limits.max_memory &&
+            (total > d.limits.max_memory || d.work.high_water() > d.limits.max_memory - total)) {
+            msg.emit(Messages::Error,
+                     "The tile's samples need %zu bytes, above what the decoder's memory limit leaves (%llu bytes "
+                     "held for the tile's structures)\n",
+                     total, static_cast<unsigned long long>(d.work.high_water()));
             return NJ2K_E_LIMIT;
         }
         if (!d.planes.ensure(d.allocator, total ? total : 64)) {
@@ -1198,12 +1276,10 @@ struct Walk {
                 dst.data = t.comps[c].data;
                 t.comps[c].data = nullptr;
                 dst.written = dst.data != nullptr;
-            } else {
-                if (t.comps[c].data) {
-                    write_planes(c, dst, t.comps[c].data, t.comps[c].data_w, 0, 0, t.comps[c].data_w, t.comps[c].data_h,
-                                 t.comps[c].data_w != dst.w || t.comps[c].data_h != dst.h);
-                    dst.written = true;
-                }
+            } else if (t.comps[c].data) {
+                // the tile's buffer is the component, sample for sample (attach_samples: whole_fits)
+                write_planes(c, dst, t.comps[c].data, t.comps[c].data_w, 0, 0, dst.w, dst.h, false);
+                dst.written = true;
             }
         }
     }
@@ -1262,7 +1338,9 @@ struct Walk {
         }
         if (!all) {
             msg.emit(Messages::Error, "Failed to decode all used components\n");
-            return NJ2K_E_DATA;
+            // when the bytes ran out first, nothing was found damaged: more bytes bring the tiles (as
+            // the single-tile path reports)
+            return truncated || (state & kNeoc) ? NJ2K_E_NEED_DATA : NJ2K_E_DATA;
         }
         return NJ2K_OK;
     }

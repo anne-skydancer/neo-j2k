@@ -94,10 +94,6 @@ inline std::uint32_t uint_adds(std::uint32_t a, std::uint32_t b) noexcept
     const std::uint64_t sum = std::uint64_t(a) + b;
     return static_cast<std::uint32_t>(-static_cast<std::int32_t>(sum >> 32)) | static_cast<std::uint32_t>(sum);
 }
-inline std::uint32_t uint_ceildivpow2(std::uint32_t a, std::uint32_t b) noexcept
-{
-    return static_cast<std::uint32_t>((a + (std::uint64_t(1) << b) - 1U) >> b);
-}
 
 nj2k_status_t arena_status(const WorkArena& arena) noexcept
 {
@@ -125,27 +121,6 @@ bool make_tree(WorkArena& arena, TagTree& t, std::uint32_t w, std::uint32_t h) n
     }
     t.nodes = arena.raw_array<TagNode>(std::size_t(total));
     return t.nodes != nullptr;
-}
-
-// opj_tcd_is_subband_area_of_interest for a whole-tile decode (see t2.cpp)
-bool area_of_interest(const TileComp& tilec, std::uint32_t resno, std::uint32_t bandno, std::uint32_t band_x0,
-                      std::uint32_t band_y0, std::uint32_t band_x1, std::uint32_t band_y1) noexcept
-{
-    const std::uint32_t filter_margin = (tilec.params.style->qmfbid == 1) ? 2 : 3;
-    const std::uint32_t tcx0 = static_cast<std::uint32_t>(tilec.x0), tcy0 = static_cast<std::uint32_t>(tilec.y0);
-    const std::uint32_t tcx1 = static_cast<std::uint32_t>(tilec.x1), tcy1 = static_cast<std::uint32_t>(tilec.y1);
-    const std::uint32_t nb = (resno == 0) ? tilec.numresolutions - 1 : tilec.numresolutions - resno;
-    const std::uint32_t x0b = bandno & 1;
-    const std::uint32_t y0b = bandno >> 1;
-    auto map = [nb](std::uint32_t t, std::uint32_t b) {
-        return (nb == 0) ? t : (t <= (1U << (nb - 1)) * b) ? 0 : uint_ceildivpow2(t - (1U << (nb - 1)) * b, nb);
-    };
-    std::uint32_t tbx0 = map(tcx0, x0b), tby0 = map(tcy0, y0b), tbx1 = map(tcx1, x0b), tby1 = map(tcy1, y0b);
-    tbx0 = tbx0 < filter_margin ? 0 : tbx0 - filter_margin;
-    tby0 = tby0 < filter_margin ? 0 : tby0 - filter_margin;
-    tbx1 = uint_adds(tbx1, filter_margin);
-    tby1 = uint_adds(tby1, filter_margin);
-    return band_x0 < tbx1 && band_y0 < tby1 && band_x1 > tbx0 && band_y1 > tby0;
 }
 
 }  // namespace
@@ -201,8 +176,16 @@ nj2k_status_t Tile::init(const TileInput& input, WorkArena& arena, const Message
         tc.x1 = int_ceildiv(x1, sc.dx);
         tc.y1 = int_ceildiv(y1, sc.dy);
         tc.numresolutions = style.numresolutions;
-        tc.minimum_num_resolutions =
-            style.numresolutions <= input.reduce ? 1 : style.numresolutions - input.reduce;
+        if (style.numresolutions <= input.reduce) {
+            // the walk refuses such a tile before it gets here (check_tile_reduce); its decoded level
+            // would not be the image's
+            msg.emit(Messages::Error,
+                     "Error decoding component %u.\nThe number of resolutions to remove (%u) is greater or equal "
+                     "than the number of resolutions of this component (%u)\nModify the cp_reduce parameter.\n\n",
+                     compno, input.reduce, unsigned(style.numresolutions));
+            return NJ2K_E_LIMIT;
+        }
+        tc.minimum_num_resolutions = style.numresolutions - input.reduce;
         tc.dc_shift = sc.sgnd ? 0 : static_cast<std::int32_t>(1u << (sc.prec - 1));
         tc.res = arena.make_array<Resolution>(tc.numresolutions);
         if (!tc.res) {
@@ -414,10 +397,9 @@ std::size_t Tile::largest_cblk_bytes() const noexcept
     return most;
 }
 
-nj2k_status_t Tile::decode_samples(T1& t1, const Allocator& alloc, void* dwt_scratch, const std::uint32_t* resno_decoded,
+nj2k_status_t Tile::decode_samples(T1& t1, void* dwt_scratch, const std::uint32_t* resno_decoded,
                                    const Messages& msg) noexcept
 {
-    (void)alloc;
     // Tier-1 (opj_t1_decode_cblks, whole tile), component by component
     for (std::uint32_t compno = 0; compno < numcomps; ++compno) {
         if (in->selected && !in->selected[compno]) {

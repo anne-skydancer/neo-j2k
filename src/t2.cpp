@@ -654,6 +654,9 @@ struct T2 {
     bool cut_warned = false;
     PackedCursor* ppt = nullptr;  // the tile's packed packet headers, when it has PPT markers
     bool nomem = false;
+    // the tile's bytes were cut inside a packet's SOP marker: OpenJPEG then reads the packet header
+    // from the marker's first bytes and fails, and so does neo-j2k; the failure is the cut's
+    bool cut_sop = false;
 };
 
 // opj_t2_init_seg
@@ -776,11 +779,18 @@ bool read_packet_header(T2& t2, const PacketPos& pi, bool& is_data_present, cons
     }
 
     // SOP markers are optional: a warning, once per tile (CVE-2023-39327)
+    t2.cut_sop = false;
     if (t2.csty & kCstySop) {
         if (p_max_length < 6) {
             if (!t2.sop_warned) {
                 t2.sop_warned = true;
                 t2.msg->emit(Messages::Warning, "Not enough space for expected SOP marker\n");
+            }
+            if (t2.in->cut && p_max_length > 0) {
+                // what is left starts a SOP marker (FF 91 00 04 Nsop): the bytes ended inside it
+                static constexpr std::uint8_t kSop[4] = {0xFF, 0x91, 0x00, 0x04};
+                const std::uint32_t n = p_max_length < 4 ? p_max_length : 4;
+                t2.cut_sop = std::memcmp(l_current_data, kSop, n) == 0;
             }
         } else if ((*l_current_data) != 0xff || (*(l_current_data + 1) != 0x91)) {
             if (!t2.sop_warned) {
@@ -976,6 +986,9 @@ bool read_packet_data(T2& t2, const PacketPos& pi, const std::uint8_t* p_src_dat
     const TileComp& tilec = t2.tile->comps[pi.compno];
     const Resolution* l_res = &tilec.res[pi.resno];
     const std::uint8_t* l_current_data = p_src_data;
+    // the bytes left after l_current_data: segments are checked against it as lengths, so no
+    // pointer is formed past the data (or from a tile without data bytes, DP-3)
+    std::uint32_t l_left = p_max_length;
     bool partial_buffer = false;
     for (std::uint32_t bandno = 0; bandno < l_res->numbands; ++bandno) {
         const Band* band = &l_res->bands[bandno];
@@ -999,8 +1012,7 @@ bool read_packet_data(T2& t2, const PacketPos& pi, const std::uint8_t* p_src_dat
                 continue;
             }
             do {
-                if ((std::uintptr_t(l_current_data) + l_seg->newlen < std::uintptr_t(l_current_data)) ||
-                    (l_current_data + l_seg->newlen > p_src_data + p_max_length) || partial_buffer) {
+                if (l_seg->newlen > l_left || partial_buffer) {
                     if (t2.strict) {
                         t2.msg->emit(Messages::Error,
                                      "read: segment too long (%u) with max (%u) for codeblock %u (p=%u, b=%u, r=%u, "
@@ -1032,7 +1044,10 @@ bool read_packet_data(T2& t2, const PacketPos& pi, const std::uint8_t* p_src_dat
                 l_cblk->chunks[l_cblk->nchunks].data = l_current_data;
                 l_cblk->chunks[l_cblk->nchunks].len = l_seg->newlen;
                 l_cblk->nchunks++;
-                l_current_data += l_seg->newlen;
+                if (l_seg->newlen) {
+                    l_current_data += l_seg->newlen;
+                    l_left -= l_seg->newlen;
+                }
                 l_seg->len += l_seg->newlen;
                 l_seg->numpasses += l_seg->numnewpasses;
                 l_cblk->numnewpasses -= l_seg->numnewpasses;
@@ -1047,7 +1062,7 @@ bool read_packet_data(T2& t2, const PacketPos& pi, const std::uint8_t* p_src_dat
             }
         }
     }
-    data_read = partial_buffer ? p_max_length : static_cast<std::uint32_t>(l_current_data - p_src_data);
+    data_read = partial_buffer ? p_max_length : p_max_length - l_left;
     return true;
 }
 
@@ -1138,36 +1153,6 @@ bool visit_packet(T2& t2, const PacketPos& pi, const std::uint8_t* p_src, std::u
     }
     p_data_read = l_nb_total_bytes_read;
     return true;
-}
-
-// opj_tcd_is_subband_area_of_interest for a whole-tile decode: the area of interest is the whole
-// tile-component, widened by the filter's margin
-bool area_of_interest(const TileComp& tilec, std::uint32_t resno, std::uint32_t bandno, std::uint32_t band_x0,
-                      std::uint32_t band_y0, std::uint32_t band_x1, std::uint32_t band_y1) noexcept
-{
-    const std::uint32_t filter_margin = (tilec.params.style->qmfbid == 1) ? 2 : 3;
-    const std::uint32_t tcx0 = static_cast<std::uint32_t>(tilec.x0), tcy0 = static_cast<std::uint32_t>(tilec.y0);
-    const std::uint32_t tcx1 = static_cast<std::uint32_t>(tilec.x1), tcy1 = static_cast<std::uint32_t>(tilec.y1);
-    const std::uint32_t nb = (resno == 0) ? tilec.numresolutions - 1 : tilec.numresolutions - resno;
-    const std::uint32_t x0b = bandno & 1;
-    const std::uint32_t y0b = bandno >> 1;
-    std::uint32_t tbx0 = (nb == 0) ? tcx0
-                         : (tcx0 <= (1U << (nb - 1)) * x0b) ? 0
-                                                             : uint_ceildivpow2(tcx0 - (1U << (nb - 1)) * x0b, nb);
-    std::uint32_t tby0 = (nb == 0) ? tcy0
-                         : (tcy0 <= (1U << (nb - 1)) * y0b) ? 0
-                                                             : uint_ceildivpow2(tcy0 - (1U << (nb - 1)) * y0b, nb);
-    std::uint32_t tbx1 = (nb == 0) ? tcx1
-                         : (tcx1 <= (1U << (nb - 1)) * x0b) ? 0
-                                                             : uint_ceildivpow2(tcx1 - (1U << (nb - 1)) * x0b, nb);
-    std::uint32_t tby1 = (nb == 0) ? tcy1
-                         : (tcy1 <= (1U << (nb - 1)) * y0b) ? 0
-                                                             : uint_ceildivpow2(tcy1 - (1U << (nb - 1)) * y0b, nb);
-    tbx0 = tbx0 < filter_margin ? 0 : tbx0 - filter_margin;
-    tby0 = tby0 < filter_margin ? 0 : tby0 - filter_margin;
-    tbx1 = uint_adds(tbx1, filter_margin);
-    tby1 = uint_adds(tby1, filter_margin);
-    return band_x0 < tbx1 && band_y0 < tby1 && band_x1 > tbx0 && band_y1 > tby0;
 }
 
 }  // namespace
@@ -1360,12 +1345,12 @@ nj2k_status_t Tile::read_packets(WorkArena& arena, const Messages& msg, std::uin
             if (!skip_packet) {
                 first_pass_failed[pi.compno] = false;
                 if (!visit_packet(t2, pos, l_current_data, l_nb_bytes_read, p_max_len, false)) {
-                    return t2.nomem ? NJ2K_E_NO_MEMORY : NJ2K_E_DATA;
+                    return t2.nomem ? NJ2K_E_NO_MEMORY : t2.cut_sop ? NJ2K_E_NEED_DATA : NJ2K_E_DATA;
                 }
                 resno_decoded[pi.compno] = pi.resno > resno_decoded[pi.compno] ? pi.resno : resno_decoded[pi.compno];
             } else {
                 if (!visit_packet(t2, pos, l_current_data, l_nb_bytes_read, p_max_len, true)) {
-                    return t2.nomem ? NJ2K_E_NO_MEMORY : NJ2K_E_DATA;
+                    return t2.nomem ? NJ2K_E_NO_MEMORY : t2.cut_sop ? NJ2K_E_NEED_DATA : NJ2K_E_DATA;
                 }
             }
             if (first_pass_failed[pi.compno]) {

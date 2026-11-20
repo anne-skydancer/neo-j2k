@@ -11,6 +11,7 @@
 #include <neoj2k/neoj2k.hpp>
 
 #include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -85,6 +86,29 @@ SAME_AT(codestream_info_v2_t, m_default_tile_info) SAME_AT(codestream_info_v2_t,
 SAME_AT(tccp_info_t, numresolutions) SAME_AT(tccp_info_t, qmfbid) SAME_AT(tccp_info_t, stepsizes_mant)
 SAME_AT(tccp_info_t, roishift) SAME_AT(tccp_info_t, prch)
 #undef SAME_AT
+
+// neo-j2k's own structures (no OpenJPEG counterpart): their 64-bit layout frozen (plan 2.5), so a
+// change that would break a host built against an earlier release fails here. Those that may grow
+// start with struct_size; nj2k_plane_t, an array element, stays as it is (a later nj2k_output_t,
+// which starts with its size, would name a larger plane).
+#if SIZE_MAX == UINT64_MAX
+#define FROZEN_AT(T, m, at) static_assert(offsetof(nj2k_##T, m) == (at), "offset of " #T "." #m);
+static_assert(sizeof(nj2k_allocator_t) == 32, "size of allocator_t");
+FROZEN_AT(allocator_t, struct_size, 0) FROZEN_AT(allocator_t, allocate, 8) FROZEN_AT(allocator_t, release, 16)
+FROZEN_AT(allocator_t, user, 24)
+static_assert(sizeof(nj2k_plane_t) == 24, "size of plane_t");
+FROZEN_AT(plane_t, data, 0) FROZEN_AT(plane_t, row_stride, 8) FROZEN_AT(plane_t, sample_stride, 16)
+FROZEN_AT(plane_t, component, 20)
+static_assert(sizeof(nj2k_output_t) == 24, "size of output_t");
+FROZEN_AT(output_t, struct_size, 0) FROZEN_AT(output_t, sample_type, 8) FROZEN_AT(output_t, numplanes, 12)
+FROZEN_AT(output_t, planes, 16)
+static_assert(sizeof(nj2k_codestream_layout_t) == 40, "size of codestream_layout_t");
+FROZEN_AT(codestream_layout_t, struct_size, 0) FROZEN_AT(codestream_layout_t, tx0, 8)
+FROZEN_AT(codestream_layout_t, ty0, 12) FROZEN_AT(codestream_layout_t, tdx, 16) FROZEN_AT(codestream_layout_t, tdy, 20)
+FROZEN_AT(codestream_layout_t, tw, 24) FROZEN_AT(codestream_layout_t, th, 28)
+FROZEN_AT(codestream_layout_t, numlayers, 32) FROZEN_AT(codestream_layout_t, min_resolutions, 36)
+#undef FROZEN_AT
+#endif
 
 static_assert(int(NJ2K_CODEC_J2K) == int(OPJ_CODEC_J2K) && int(NJ2K_CODEC_JP2) == int(OPJ_CODEC_JP2), "codec enum");
 static_assert(int(NJ2K_CPRL) == int(OPJ_CPRL) && int(NJ2K_CLRSPC_CMYK) == int(OPJ_CLRSPC_CMYK), "enums");

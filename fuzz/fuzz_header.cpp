@@ -202,7 +202,7 @@ void neo_tile_parts(const std::uint8_t* data, std::size_t size)
                 const TileOverrides* t = mh->overrides(tp.tile);
                 const bool whole = !params.empty() && resolve_tile(*mh, t, msg, params.data()) == NJ2K_OK;
                 if (whole) {
-                    (void)tile_packets(*mh, tp.tile, params.data());
+                    (void)tile_working_memory(*mh, tp.tile, params.data(), mh->min_resolutions - 1, nullptr);
                 }
                 for (std::uint32_t c = 0; c < mh->numcomps && c < 16; ++c) {
                     TileComponentParams p{};

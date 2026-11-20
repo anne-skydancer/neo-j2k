@@ -98,12 +98,13 @@ struct Decoder {
     // gives, in the arena
     std::uint8_t* header_bytes = nullptr;
     std::size_t header_bytes_size = 0;
-    std::uint64_t header_offset = 0;  // the codestream's offset in the bytes (a JP2 file's boxes before it)
     nj2k_image_comp_t* image_comps = nullptr;
     bool header_from_memory = false;   // nj2k_read_header_memory() read the header
     nj2k_decoder_limits_t header_limits = {0, 0, 0, 0, 0};  // the limits the kept header was read under
-    // the last decode
-    std::uint64_t last_work_bytes = 0;
+    // the working memory of a decode of the header held, every component decoded, at
+    // estimate_factor (decode_working_memory, computed once per header and factor; UINT32_MAX: none)
+    std::uint64_t estimate = 0;
+    std::uint32_t estimate_factor = UINT32_MAX;
 
     static Decoder* from(nj2k_codec_t* codec) noexcept
     {

@@ -41,11 +41,11 @@ private:
 };
 
 // neo-j2k's own path, as the viewer will call it (stage 8): one codec for every request, kept
-// between them, its memory from a counting allocator hook; the header read from memory (parsed
-// again only when the main header changes) and the image decoded into the viewer's 8-bit,
-// bottom-up, interleaved buffer. The viewer's request otherwise as replay_viewer has it: the
-// header pass at reduce 0, its reduce factor, size guard and geometry checks. Viewer mode only;
-// other modes, and header reads, go through the compatibility API.
+// between them, under the Second Life limits, its memory from a counting allocator hook; the header
+// read from memory (parsed again only when the main header changes) and the image decoded into the
+// viewer's 8-bit, bottom-up, interleaved buffer. The viewer's request otherwise as replay_viewer has
+// it: the header pass at reduce 0, its reduce factor, size guard and geometry checks. Viewer mode
+// only; other modes, and header reads, go through the compatibility API.
 class NeoMemoryBackend final : public Backend {
 public:
     NeoMemoryBackend() : api_(REPLAY_NS::linked_api())
@@ -57,6 +57,9 @@ public:
             nj2k_set_default_decoder_parameters(&p);
             nj2k_setup_decoder(codec_, &p);
             nj2k_decoder_set_strict_mode(codec_, NJ2K_FALSE);
+            nj2k_decoder_limits_t limits;
+            nj2k_decoder_limits_init(&limits, NJ2K_DECODER_LIMITS_SL_TEXTURE);
+            nj2k_decoder_set_limits(codec_, &limits);
         }
     }
     ~NeoMemoryBackend() override
