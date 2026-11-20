@@ -52,6 +52,7 @@
 #include "tile.h"
 
 #include <climits>
+#include <bit>
 #include <cmath>
 #include <cstring>
 
@@ -119,6 +120,14 @@ bool make_tree(WorkArena& arena, TagTree& t, std::uint32_t w, std::uint32_t h) n
     }
     t.nodes = arena.raw_array<TagNode>(std::size_t(total));
     return t.nodes != nullptr;
+}
+
+// 2^n as a double, exactly what std::ldexp(1.0, n) gives, for n in the normal range (-1022 to
+// 1023); Rb - expn lies in -30 to 40 here (a precision of 1 to 38 bits plus a gain of up to 2, a
+// step exponent of 0 to 31)
+inline double pow2(std::int32_t n) noexcept
+{
+    return std::bit_cast<double>(static_cast<std::uint64_t>(n + 1023) << 52);
 }
 
 }  // namespace
@@ -280,9 +289,9 @@ nj2k_status_t Tile::init(const TileInput& input, WorkArena& arena, const Message
                     const std::uint32_t step_index = resno == 0 ? 0 : 3 * resno - 2 + bandno;
                     std::uint32_t expn = 0, mant = 0;
                     params.quant->step(step_index, expn, mant);
-                    // Delta_b of equation E-3: pow(2.0, n) is exact, as ldexp is
-                    band.stepsize = static_cast<float>((1.0 + mant / 2048.0) *
-                                                       std::ldexp(1.0, Rb - static_cast<std::int32_t>(expn)));
+                    // Delta_b of equation E-3: pow(2.0, n) is exact, as ldexp is; pow2 builds the same
+                    // double from its exponent bits, without the C runtime's ldexp (a call per band)
+                    band.stepsize = static_cast<float>((1.0 + mant / 2048.0) * pow2(Rb - static_cast<std::int32_t>(expn)));
                     // Mb of equation E-2
                     band.numbps = static_cast<std::int32_t>(expn) + static_cast<std::int32_t>(params.quant->numgbits) - 1;
                 }
