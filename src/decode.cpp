@@ -199,26 +199,17 @@ struct Walk {
         have_jobs = d.jobs(jobs) && (sink.image_planes || planes_apart(*sink.output, comps));
     }
 
-    // The current tile through the executor (stage 5), when there is one, the image's largest
-    // decoded component has more than parallel_tile samples and the tile's largest at least
-    // parallel_tile_floor: the code-blocks' costs and Tier-1's runs
-    // (plan_t1), a Tier-1 scratch a run, and the wavelet's larger scratch. When any of that cannot be had, what
-    // was had for it is given back and the tile runs on this thread, which decodes it the same.
+    // The current tile through the executor (stage 5), when the host lent one (it does that only when
+    // it has idle cores) and the tile's largest component has parallel_tile samples or more: the
+    // code-blocks' costs and Tier-1's runs (plan_t1), a Tier-1 scratch a run, and the wavelet's larger
+    // scratch. When any of that cannot be had, what was had for it is given back and the tile runs on this thread, which decodes it the same.
     // Its working memory is outside the decoder limits' estimate (so that the limits refuse the same
     // images with or without an executor): per run a Tier-1 scratch (28 KiB) with room for the
     // largest code-block of its run (over all runs at most the tile's coded bytes, which the decoder
     // holds already), per part a wavelet line, and 8 bytes per code-block (its estimated cost).
     bool threaded_tile(Tile& t, TileJobs& tj) noexcept
     {
-        if (!have_jobs || t.largest_component_samples() < d.parallel_tile_floor) {
-            return false;
-        }
-        std::uint64_t image = 0;  // the image's largest decoded component
-        for (std::uint32_t c = 0; c < mh.numcomps; ++c) {
-            const std::uint64_t n = std::uint64_t(comps[c].w) * comps[c].h;
-            image = n > image ? n : image;
-        }
-        if (image <= d.parallel_tile) {
+        if (!have_jobs || t.largest_component_samples() < d.parallel_tile) {
             return false;
         }
         bool ok = d.blocks.grow(d.allocator, t.cblk_costs_bytes());

@@ -2598,7 +2598,7 @@ std::size_t threads_capped(nj2k::test::ThreadPool& pool, const std::string& name
 }
 
 // A grey image of side x side in tiles of tile x tile (the oracle's encoder). With side up to 2,048 the
-// image is below the tile threshold, so only a plane clear of kParallelClearBytes or more may call the
+// image is below the tile floor, so only a plane clear of kParallelClearBytes or more may call the
 // executor; a larger side with tiles of kParallelTileFloor samples or more is threaded tile by tile.
 Bytes small_tiles_image(std::uint32_t side, std::uint32_t tile)
 {
@@ -2622,9 +2622,8 @@ Bytes small_tiles_image(std::uint32_t side, std::uint32_t tile)
     return data;
 }
 
-// The images of test_large_generated, made by the oracle's encoder: five above the library's own tile
-// threshold (a component of more than 2^22 samples, so no forcing), and a 1,024 x 1,024 RGB one below it
-// (the last, which the executor must never see)
+// The images of test_large_generated, made by the oracle's encoder: five of more than 2^22 samples a
+// component, and a 1,024 x 1,024 RGB one (the last), all above the tile floor, so no forcing
 std::vector<std::pair<std::string, Bytes>> large_threaded_images()
 {
     auto oracle = make_oracle_backend();
@@ -2701,14 +2700,15 @@ void test_threads(const std::string& files)
         CHECK(codec != nullptr);
         const std::uint64_t before = pool.batches();
         std::size_t below = 0;
-        auto small = [&](const Bytes& data) {
+        auto small = [&](const Bytes& data, std::uint64_t tile_side = 0) {
             const auto mh = parse_main_header(data);
             if (!codec || !mh) {
                 return;
             }
-            const std::uint64_t tile = std::uint64_t(mh->width()) * mh->height();  // the image's component
+            // a tile's largest component (a single-tile image's own)
+            const std::uint64_t tile = tile_side ? tile_side * tile_side : std::uint64_t(mh->width()) * mh->height();
             const std::uint64_t plane = mh->width() * mh->height() * sizeof(std::int32_t);
-            if (tile > nj2k::detail::kParallelTileSamples || plane >= nj2k::detail::kParallelClearBytes) {
+            if (tile >= nj2k::detail::kParallelTileFloor || plane >= nj2k::detail::kParallelClearBytes) {
                 return;
             }
             (void)threaded_decode(codec, data, data.size(), NJ2K_SAMPLE_U8, Layout::BottomUpInterleaved, m, false);
@@ -2720,9 +2720,8 @@ void test_threads(const std::string& files)
                 small(*data);
             }
         }
-        small(tiles512_4);
-        small(tiles512_16);
-        small(large.back().second);  // 1,024 x 1,024 RGB, one tile
+        small(tiles512_4, 256);
+        small(tiles512_16, 128);
         CHECK_MSG(pool.batches() == before, "the executor ran %llu batches for %zu images below the thresholds",
                   static_cast<unsigned long long>(pool.batches() - before), below);
         (void)threaded_decode(codec, tiles1024, tiles1024.size(), NJ2K_SAMPLE_I32, Layout::Guarded, m, false);
@@ -2735,8 +2734,31 @@ void test_threads(const std::string& files)
         (void)threaded_decode(codec, large[0].second, large[0].second.size(), NJ2K_SAMPLE_U8,
                               Layout::BottomUpInterleaved, m, false);
         CHECK_MSG(pool.batches() > before + clear, "the executor was not used for a 2051 x 2051 RGB image");
+        // a 1,024 x 1,024 RGB image in one tile (2^20 samples a component, above the 2^18 floor) is
+        // threaded when an executor is lent, whatever the image's size
+        const std::uint64_t rgb = pool.batches();
+        (void)threaded_decode(codec, large.back().second, large.back().second.size(), NJ2K_SAMPLE_U8,
+                              Layout::BottomUpInterleaved, m, false);
+        CHECK_MSG(pool.batches() > rgb, "the executor was not used for a 1024 x 1024 RGB image");
         if (codec) {
             nj2k_destroy_codec(codec);
+        }
+        // and with no executor lent, nothing is threaded at any size: no batch, and the pool is never
+        // called (the counter is the pool's, so this checks that a codec without it stays off it)
+        {
+            std::string m0;
+            nj2k_codec_t* none = threaded_codec(0, nullptr, 1, false, m0);
+            const std::uint64_t idle = pool.batches();
+            if (none) {
+                (void)threaded_decode(none, large[0].second, large[0].second.size(), NJ2K_SAMPLE_U8,
+                                      Layout::BottomUpInterleaved, m0, false);
+                (void)threaded_decode(none, large.back().second, large.back().second.size(), NJ2K_SAMPLE_U8,
+                                      Layout::BottomUpInterleaved, m0, false);
+                (void)threaded_decode(none, tiles2112, tiles2112.size(), NJ2K_SAMPLE_U8,
+                                      Layout::BottomUpInterleaved, m0, false);
+                nj2k_destroy_codec(none);
+            }
+            CHECK_MSG(pool.batches() == idle, "the pool ran a batch for a codec with no executor");
         }
         std::printf("threads: %zu images below the thresholds, no batch; a 4 MiB plane clear, %llu batches\n", below,
                     static_cast<unsigned long long>(clear));
