@@ -131,6 +131,8 @@ std::unique_ptr<Backend> make_backend(const std::string& spec, std::string* erro
 std::unique_ptr<Backend> make_oracle_backend();
 std::unique_ptr<Backend> make_neoj2k_backend();
 std::unique_ptr<Backend> make_neoj2k_memory_backend();
+std::unique_ptr<Backend> make_neoj2k_library_backend(const std::string& path, const std::string& name,
+                                                     std::string* error);
 std::unique_ptr<Backend> make_library_backend(const std::string& path, const std::string& name, std::string* error);
 
 // Viewer behaviour shared by every backend (indra/llimage, llimagej2coj, release line).

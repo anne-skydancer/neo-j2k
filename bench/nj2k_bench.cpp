@@ -20,7 +20,9 @@
 //   oracle module, which adds heap-call counts), neoj2k (through the compatibility API, the viewer's
 //   two codecs a request), neoj2k-memory (neo-j2k's own path as the viewer will call it: one codec
 //   kept across requests, the header read from memory and parsed once, the decode into the viewer's
-//   8-bit buffer; its heap calls counted through the allocator hook). Each needs its own name.
+//   8-bit buffer; its heap calls counted through the allocator hook), neolib:<path>[=<name>] (the same
+//   path in another build of neo-j2k's shared library, loaded at run time: two builds compared request
+//   by request). Each needs its own name.
 // - The kind header times the header pass alone, once per file (at the first --reduce level): a
 //   codec, the header read and the codestream information, as the viewer's getMetadata does.
 // - Timed rounds do the viewer's work only: the request, its checks and its 8-bit copy. The
