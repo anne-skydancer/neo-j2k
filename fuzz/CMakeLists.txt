@@ -89,7 +89,6 @@ if(NJ2K_BUILD_TESTS)
   if(_nj2k_decode_seeds)
     set_tests_properties(fuzz_replay.decode_threads PROPERTIES FIXTURES_REQUIRED nj2k_decode_seeds)
   endif()
-  # the round-trip target reads coding parameters, not codestreams: its own seeds
   # the round-trip and encode targets read coding parameters, not codestreams: their own seeds
   add_test(NAME fuzz_replay.roundtrip
            COMMAND nj2k_fuzz_roundtrip_replay "${CMAKE_CURRENT_SOURCE_DIR}/seeds/roundtrip" "${_nj2k_regressions}")

@@ -266,7 +266,9 @@ image whose codestream outgrows it fails there as there (`NJ2K_E_LIMIT`, "Cannot
 code-blocks do not fit the two guard bits of their band is refused (OD-6) as the pin refuses it.
 
 The wavelet (one job a component) and Tier-1 (one job a code-block) are written as jobs run in order on the
-calling thread (`run_jobs()`), the shape stage 6b gives to the host's executor (stage 5's `parallel_for`); they are
+calling thread (`run_jobs()`), the shape stage 6b gives to a host's executor: the `nj2k_executor_t` of "Threads in one image" below, whose
+`parallel_for(user, count, job, job_ctx)` is what `run_jobs()` stands in for (6b adds the encoder's own
+`nj2k_encoder_set_executor`); they are
 **not thread-safe yet**. Stage 6b's to-dos for it: a Tier-1 scratch for each worker (`EncT1` is shared), an arena (or a
 lock) for what Tier-1 commits (`enc_t1_encode` allocates from the encoder's), a status for each job (the jobs' status is
 shared), and the floating-point environment of a pool thread: `lrintf` rounds as the thread's MXCSR says, so a worker
