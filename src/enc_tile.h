@@ -115,7 +115,7 @@ struct EncParams {
 void enc_resolution_rects(std::uint32_t w, std::uint32_t h, std::uint32_t numres, ResRect* out) noexcept;
 
 // Forward wavelet in place (the quadrant layout of OpenJPEG), resolutions from the highest down.
-// scratch needs enc_dwt_scratch_bytes(). False when the allocator ran out (never: scratch is given).
+// scratch holds enc_dwt_scratch_bytes() (64-byte aligned; none is needed for one resolution).
 std::size_t enc_dwt_scratch_bytes(const ResRect* res, std::uint32_t numres) noexcept;
 void enc_dwt_53(std::int32_t* data, std::uint32_t w, const ResRect* res, std::uint32_t numres, void* scratch) noexcept;
 void enc_dwt_97(float* data, std::uint32_t w, const ResRect* res, std::uint32_t numres, void* scratch) noexcept;

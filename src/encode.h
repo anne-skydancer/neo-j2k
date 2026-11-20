@@ -43,8 +43,6 @@ struct Encoder {
     std::uint32_t width = 0, height = 0;
     char* comment = nullptr;  // the COM marker's text (the allocator's), without its terminator
     std::size_t comment_len = 0;
-    bool default_comment = false;
-    float requested_rates[100] = {};  // the layers' targets as asked, after the lossless rule
     // after nj2k_start_compress
     std::uint8_t* tile_buf = nullptr;     // SOT, SOD and the packets: OpenJPEG's m_encoded_tile_data
     std::uint32_t tile_size = 0;
