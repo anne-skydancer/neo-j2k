@@ -828,8 +828,8 @@ codestream is identical to the oracle's (the checksum of the bytes is compared i
 | 512² x 1 | lossy | 32,769 | 21.6 | 24.7 | 1.14 | 4.4 | 4.2 |
 | 1,024² x 1 | lossless | 731,742 | 83.0 | 95.5 | 1.15 | 17.0 | 16.5 |
 
-What the numbers say: neo-j2k is 11 to 17 % **slower** than OpenJPEG on one thread (the 2,048² lossless 0.97 is
-a noisy median: its best times are 1,098 and 1,192 ms, 1.09), as expected of the same algorithm written
+What the numbers say: neo-j2k takes 0.97 to 1.17 of OpenJPEG's time on one thread (most rows 1.11 to 1.17; 64² lossy 0.97, 64² lossless
+1.08, and 2,048² lossless 0.97, a noisy median whose best times, 1,098 and 1,192 ms, give 1.09), as expected of the same algorithm written
 straight, without 6b's work. Peak memory is the viewer's own buffers (for 2,048² x 3: the raw image 12.6 MB, the image of int32 planes
 50 MB and the output's size guess 12.6 MB, 75 MB, which both encoders share) plus the encoder's: OpenJPEG's
 is about 80 MB there (each code-block's output buffer of four bytes a sample, 50 MB, and the 100 passes and

@@ -774,12 +774,33 @@ void test_limits_and_states()
         CHECK(!j.run() && j.status() == NJ2K_E_ARGUMENT && j.sink.bytes.empty());
     }
     {
-        // more resolutions than the image holds: OpenJPEG's start_compress refuses
+        // more resolutions than the image holds (OpenJPEG refuses at its start): refused at setup, nothing written;
+        // the caller lowers numresolution and the codestream is the oracle's
         Job j(20, 20, 3);
         j.p.numresolution = 6;
-        CHECK(j.setup());
-        CHECK(!nj2k_start_compress(j.codec, j.image, j.stream));
+        CHECK(!j.setup());
         CHECK(j.status() == NJ2K_E_ARGUMENT);
+        CHECK(j.sink.bytes.empty());
+        j.p.numresolution = 3;
+        CHECK(j.run());
+        Raw raw(20 * 20 * 3);
+        for (int y = 0; y < 20; ++y) {
+            for (int x = 0; x < 20; ++x) {
+                for (int c = 0; c < 3; ++c) {
+                    raw[(std::size_t(19 - y) * 20 + x) * 3 + c] = static_cast<std::uint8_t>(j.image->comps[c].data[y * 20 + x]);
+                }
+            }
+        }
+        UploadSpec us;
+        us.raw = raw.data();
+        us.width = us.height = 20;
+        us.comps = 3;
+        us.reversible = true;
+        us.numres = 3;
+        us.comment = "test";
+        Bytes theirs;
+        CHECK(oracle_upload(us, theirs));
+        CHECK(theirs == j.sink.bytes);
     }
     {
         Job j;

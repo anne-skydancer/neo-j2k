@@ -207,11 +207,11 @@ header maps the `opj_*` names. The statuses of `nj2k_get_status` apply (`NJ2K_E_
 | | The core encoder |
 |---|---|
 | Output | a J2K codestream (`NJ2K_CODEC_J2K`), one tile (no tile size) at the origin, one tile-part, SOC, SIZ, COD, QCD, COM, SOT, SOD, the packets, EOC |
-| Image | 1 to 8 components, 8 bits unsigned, no subsampling, no offset, every component the image's size (`x1`, `y1`); 1 to 4,096 samples a side, at most 2^26 samples in all |
+| Image | 1 to 8 components, 8 bits unsigned, no subsampling, no offset, every component the image's size (`x1`, `y1`); 1 to 4,096 samples a side, at most 2^26 samples in all; an image of 1 to 3 samples a side encodes with a stream of any non-zero buffer, while the viewer-style zero-size stream guess for it is refused at `nj2k_stream_create(0)`, as in OpenJPEG |
 | Wavelet | `irreversible` 0 (5/3, lossless: the samples come back exactly when the last layer's rate is 0 or at most 1) or any other value (9/7 with the standard's explicit step sizes) |
 | Colour | `tcp_mct` 0 or 1; 1 needs three components or more and transforms the first three (RCT for 5/3, ICT for 9/7) |
 | Layers | `tcp_numlayers` 0 to 100, rate allocation by distortion (`cp_disto_alloc` is not read): `tcp_rates[i]` is the compression ratio of layer i (a rate of 1 or less, or 0, is lossless; NaN, infinite and negative rates are taken as OpenJPEG takes them); 0 layers is one lossless layer, written back into the parameters. OpenJPEG's "rates should be strictly decreasing" warnings are not reproduced |
-| Resolutions | `numresolution` 1 to 33 as OpenJPEG; the image must be at least 2^(n-1) samples a side (OpenJPEG's check, at `nj2k_start_compress`), so at most 13 under the 4,096 limit |
+| Resolutions | `numresolution` 1 to 33 as OpenJPEG; the image must be at least 2^(n-1) samples a side (OpenJPEG's check, which neo-j2k makes at `nj2k_setup_encoder`, where the caller can lower `numresolution` and set up again), so at most 13 under the 4,096 limit |
 | Size cap | `max_cs_size` as OpenJPEG: written back (the codestream size the last rate implies, saturating at `INT_MAX` where OpenJPEG's cast overflows at exactly 2^31), and, when it is above 0 (a cap, or the value an earlier setup wrote into the same parameters), the layers' rates lifted to the ratio it implies |
 | Coding | RLCP (`prog_order` must be set to `NJ2K_RLCP`: the defaults are LRCP, which is refused), code-blocks 64 x 64, no precinct sizes (`csty` 0: one precinct a resolution), no mode switch (`mode` 0), no SOP, EPH, PLT or TLM, no ROI, no POC, no profile |
 | Comment | `cp_comment`, up to 65,531 bytes (Lcom is 16 bits); none gives OpenJPEG's own (`Created by OpenJPEG version 2.5.4`, so that the bytes are the same) |

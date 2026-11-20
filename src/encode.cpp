@@ -851,6 +851,12 @@ NJ2K_API NJ2K_BOOL NJ2K_CALLCONV nj2k_setup_encoder(nj2k_codec_t* p_codec, nj2k_
     if (st != NJ2K_OK) {
         return NJ2K_FALSE;
     }
+    // opj_j2k_encoding_validation (OpenJPEG checks it at the start): the resolutions must fit the tile; the
+    // caller lowers numresolution and sets up again
+    if (s.numres > 32 || image->x1 < (std::uint64_t(1) << (s.numres - 1)) ||
+        image->y1 < (std::uint64_t(1) << (s.numres - 1))) {
+        return refuse(e, NJ2K_E_ARGUMENT, "Number of resolutions is too high in comparison to the size of tiles\n");
+    }
 
     // opj_j2k_setup_encoder: no explicit layers means one lossless layer, written back into the caller's
     // parameters, as is the codestream size the last rate gives (which no marker or rate reads)
@@ -981,12 +987,6 @@ NJ2K_API NJ2K_BOOL NJ2K_CALLCONV nj2k_start_compress(nj2k_codec_t* p_codec, nj2k
     const EncParams& p = e->params;
     if (image->numcomps != p.numcomps || image->x1 != e->width || image->y1 != e->height) {
         return refuse(e, NJ2K_E_ARGUMENT, "nj2k_start_compress: the image is not the one nj2k_setup_encoder took\n");
-    }
-
-    // opj_j2k_encoding_validation: the resolutions must fit the tile
-    if (p.numres > 32 || e->width < (std::uint64_t(1) << (p.numres - 1)) ||
-        e->height < (std::uint64_t(1) << (p.numres - 1))) {
-        return fail(e, NJ2K_E_ARGUMENT, "Number of resolutions is too high in comparison to the size of tiles\n");
     }
 
     // the samples, copied (OpenJPEG takes the image's planes; the caller keeps its own here)
