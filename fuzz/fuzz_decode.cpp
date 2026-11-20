@@ -12,11 +12,15 @@
 //   too, with the same status. Every allocation goes through a counting hook, which aborts when the
 //   codec holds more than twice the working-memory limit plus its header state (64 bytes for each
 //   input byte, plus 256 KiB), or does not give back everything it took.
-// - the oracle decodes the same request behind its filter, and neo-j2k's decode of it through the
-//   same request code (the test backends) must give the same outcome, image and, in viewer mode,
-//   8-bit copy, unless the codestream shows a departure doc/departures.md lists (departures.h), or
-//   the images differ only where one clamps a sample to its component's minimum and the other to
-//   its maximum (DP-2, the DC shift's edges).
+// - the oracle decodes the same request under the same limits (the Second Life profile with
+//   max_memory at 64 MiB, set with the fork's opj_decoder_set_limits), and so does neo-j2k through the
+//   same request code (the test backends); only a stream that would make OpenJPEG allocate a
+//   tile-part's declared length beyond 64 MiB, which its limits do not bound, is kept from it (OD-3,
+//   fuzz_common.h). The two must give the same outcome, image and, in viewer mode, 8-bit copy,
+//   unless one of them refused for memory (each counts its own structures against the limit), the
+//   codestream shows a departure doc/departures.md lists (departures.h), or the images differ only
+//   where one clamps a sample to its component's minimum and the other to its maximum (DP-2, the DC
+//   shift's edges).
 #include <neoj2k/neoj2k.h>
 
 #include <cstddef>
@@ -24,6 +28,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <memory>
+#include <string>
 #include <vector>
 
 #if defined(_WIN32)
@@ -66,7 +71,7 @@ struct Budget {
     }
 };
 
-constexpr std::uint64_t kWorkingMemory = 64ull << 20;
+constexpr std::uint64_t kWorkingMemory = nj2k::fuzz::kDecodeWorkingMemory;
 
 // neo-j2k from memory, bounded: the decode itself, its memory, and that it gives it all back.
 void neo_decode(const nj2k::fuzz::Input& in)
@@ -169,6 +174,16 @@ const char* outcome_text(const nj2k::test::Outcome& o)
     return o.ok ? "decoded" : o.stage.c_str();
 }
 
+// A refusal for memory: the decoder's memory limit, or an allocation it could not make. The two
+// libraries count different structures against max_memory (OpenJPEG the tile parameters and each
+// tile's structures as it builds them, neo-j2k its working memory, doc/api.md), so they can refuse
+// at different sizes, which says nothing about the decode. Their other limits (tiles, components,
+// layers, the decoded side) are the same and must refuse alike.
+bool memory_refusal(const nj2k::test::Outcome& o)
+{
+    return !o.ok && o.last_error.find("memory") != std::string::npos;
+}
+
 // DP-2, the DC shift's edges: both decode the same image but for samples that one decoder clamps to
 // their component's minimum and the other to its maximum (OpenJPEG's 5/3 shift adds in 32 bits and
 // wraps; its MSVC build rounds a 9/7 sample of 2^31 to INT_MIN; neo-j2k saturates). The request is
@@ -219,18 +234,14 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
     }
     neo_decode(in);
     ++nj2k::fuzz::exercised();
-    if (!nj2k::fuzz::oracle_may_decode(in.codestream, in.reduce)) {
+    if (in.mode != nj2k::test::Mode::Strict && nj2k::fuzz::oracle_psot_bomb(in.codestream)) {
         return 0;
     }
-    nj2k::test::Request rq;
-    rq.data = in.codestream.data();
-    rq.size = in.codestream.size();
-    rq.reduce = in.reduce;
-    rq.layers = in.mode == nj2k::test::Mode::Viewer ? 0 : in.layers;
-    rq.mode = in.mode;
+    const nj2k::test::Request rq = nj2k::fuzz::decode_request(in);  // the limits neo_decode has
     const nj2k::test::Outcome a = oracle->decode(rq), b = neo->decode(rq);
     const bool same = a.ok == b.ok && a.hash == b.hash && a.u8_hash == b.u8_hash;
-    if (same || nj2k::fuzz::decode_departure(in.codestream, static_cast<std::uint32_t>(in.reduce)) ||
+    if (same || memory_refusal(a) || memory_refusal(b) ||
+        nj2k::fuzz::decode_departure(in.codestream, static_cast<std::uint32_t>(in.reduce)) ||
         (a.ok && b.ok && dc_shift_edges(*oracle, *neo, rq))) {
         return 0;
     }

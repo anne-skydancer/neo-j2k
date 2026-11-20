@@ -4,13 +4,14 @@
 // Fuzz target: lossless round trip. The input chooses a small image (1-64 px a side, 1-5
 // components, 1-16 bits, signed or not) and its coding (resolutions, code-block size, progression,
 // mode switches, layers, SOP, EPH, the colour transform); the remaining bytes are the samples. The
-// image is encoded reversibly (5/3) and decoded: every sample must come back exactly, unless the
-// oracle's encoder writes a stream that cannot hold them (OD-6: too few guard bits), which is still
-// encoded and decoded. Today both ends are the oracle; stage 6a encodes with neo-j2k and decodes
-// with both. A failed check says why on stderr, then aborts.
+// image is encoded reversibly (5/3) and decoded: every sample of every stream the encoder writes must
+// come back exactly. The oracle's encoder (the fork's hotfix head, doc/oracle.md) refuses an image
+// whose code-blocks do not fit the guard bits of their band (OD-6) and bounds what its MQ coder
+// writes for terminated passes (OD-4), so nothing is skipped and nothing is left uncompared. Today
+// both ends are the oracle; stage 6a encodes with neo-j2k and decodes with both. A failed check says
+// why on stderr, then aborts.
 #include <openjpeg.h>
 
-#include <algorithm>
 #include <cstdarg>
 #include <cstddef>
 #include <cstdint>
@@ -23,14 +24,6 @@
 
 namespace {
 
-// The known-defect checks of OD-4 (AddressSanitizer builds) and OD-6 (tests in fuzz/CMakeLists.txt)
-// replay their inputs with this set and expect the defect's report; nothing else sets it.
-bool unguarded()
-{
-    static const bool on = nj2k::test::env_value("NJ2K_FUZZ_UNGUARDED") == "1";
-    return on;
-}
-
 [[noreturn]] void fail(const char* format, ...)
 {
     std::va_list args;
@@ -41,97 +34,6 @@ bool unguarded()
     va_end(args);
     std::fflush(stderr);
     std::abort();
-}
-
-// One level of OpenJPEG's forward 5/3 lifting (opj_dwt_encode_and_deinterleave_h_one_row and _v
-// with an even origin: low samples at the even places, an index past either end taking the nearest
-// sample of its kind) on n samples `stride` apart, written back with the low samples first. One
-// sample stays as it is.
-void lift53(std::int32_t* a, int n, int stride, std::vector<std::int32_t>& x)
-{
-    if (n < 2) {
-        return;
-    }
-    const int sn = (n + 1) / 2, dn = n / 2;
-    x.resize(std::size_t(n));
-    for (int i = 0; i < n; ++i) {
-        x[std::size_t(i)] = a[std::ptrdiff_t(i) * stride];
-    }
-    auto s = [&](int i) -> std::int32_t& { return x[std::size_t(2 * std::clamp(i, 0, sn - 1))]; };
-    auto d = [&](int i) -> std::int32_t& { return x[std::size_t(2 * std::clamp(i, 0, dn - 1) + 1)]; };
-    for (int i = 0; i < dn; ++i) {
-        d(i) -= (s(i) + s(i + 1)) >> 1;
-    }
-    for (int i = 0; i < sn; ++i) {
-        s(i) += (d(i - 1) + d(i) + 2) >> 2;
-    }
-    for (int i = 0; i < sn; ++i) {
-        a[std::ptrdiff_t(i) * stride] = s(i);
-    }
-    for (int i = 0; i < dn; ++i) {
-        a[std::ptrdiff_t(sn + i) * stride] = d(i);
-    }
-}
-
-// OD-6 (doc/oracle.md): OpenJPEG's encoder gives every band two guard bits and never checks that
-// the code-blocks fit. A band holds Mb = precision + gain + guard bits - 1 bit planes (gain 0 for
-// LL, 1 for HL and LH, 2 for HH); a code-block that needs more gets a negative zero-bit-plane count
-// (t2.c), which the tag tree writes as 0, so its samples decode to other values without a word.
-// True when every band of every component fits, by the transform the encoder applies to this
-// image (one tile at the origin): the DC level shift, the RCT when asked, then the 5/3 levels,
-// columns before rows.
-bool guard_bits_suffice(std::vector<std::vector<std::int32_t>> planes, int w, int h, int prec, bool sgnd, bool mct,
-                        int numres)
-{
-    constexpr int kGuardBits = 2;  // opj_j2k_setup_encoder, outside the Cinema 2K profile
-    if (!sgnd) {
-        for (auto& plane : planes) {
-            for (auto& v : plane) {
-                v -= 1 << (prec - 1);
-            }
-        }
-    }
-    if (mct) {
-        for (std::size_t i = 0; i < planes[0].size(); ++i) {
-            const std::int32_t r = planes[0][i], g = planes[1][i], b = planes[2][i];
-            planes[0][i] = (r + 2 * g + b) >> 2;
-            planes[1][i] = b - g;
-            planes[2][i] = r - g;
-        }
-    }
-    std::vector<std::int32_t> line;
-    for (auto& plane : planes) {
-        // the largest magnitude in [x0, x1) x [y0, y1) within the band's bit planes
-        auto fits = [&](int x0, int x1, int y0, int y1, int gain) {
-            std::int32_t most = 0;
-            for (int y = y0; y < y1; ++y) {
-                for (int x = x0; x < x1; ++x) {
-                    const std::int32_t v = plane[std::size_t(y) * std::size_t(w) + std::size_t(x)];
-                    most = std::max(most, v < 0 ? -v : v);
-                }
-            }
-            return most < (std::int32_t(1) << (prec + gain + kGuardBits - 1));
-        };
-        int rw = w, rh = h;
-        for (int level = 1; level < numres; ++level) {
-            for (int x = 0; x < rw; ++x) {
-                lift53(plane.data() + x, rh, w, line);
-            }
-            for (int y = 0; y < rh; ++y) {
-                lift53(plane.data() + std::ptrdiff_t(y) * w, rw, 1, line);
-            }
-            const int lw = (rw + 1) / 2, lh = (rh + 1) / 2;
-            if (!fits(lw, rw, 0, lh, 1) || !fits(0, lw, lh, rh, 1) || !fits(lw, rw, lh, rh, 2)) {
-                return false;
-            }
-            rw = lw;
-            rh = lh;
-        }
-        if (!fits(0, rw, 0, rh, 0)) {
-            return false;
-        }
-    }
-    return true;
 }
 
 struct Sink {
@@ -192,12 +94,6 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
     const std::size_t nsamples = size - 12;
     while (numres > 1 && ((w >> (numres - 1)) == 0 || (h >> (numres - 1)) == 0)) {
         --numres;
-    }
-    // OpenJPEG's MQ encoder writes past the code-block buffer when every pass is terminated
-    // (TERMALL) on samples deeper than 8 bits (oracle defect OD-4, doc/oracle.md): kept away from
-    // the oracle until neo-j2k's bounded encoder (stage 6a) takes this target over
-    if ((mode & 4) && prec > 8 && !unguarded()) {
-        return 0;
     }
 
     std::vector<opj_image_cmptparm_t> cp(static_cast<std::size_t>(comps));
@@ -273,30 +169,28 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
         rq.size = sink.pos;
         rq.capture = true;
         const nj2k::test::Outcome o = oracle->decode(rq);
-        // a stream the encoder wrote must decode, and losslessly, where its bands hold the image
-        if (unguarded() || guard_bits_suffice(expected, w, h, prec, sgnd, mct, numres)) {
-            if (!o.ok) {
-                fail("the oracle cannot decode what its encoder wrote (%s: %s)", o.stage.c_str(), o.last_error.c_str());
+        // a stream the encoder wrote must decode, and losslessly
+        if (!o.ok) {
+            fail("the oracle cannot decode what its encoder wrote (%s: %s)", o.stage.c_str(), o.last_error.c_str());
+        }
+        if (o.numcomps != OPJ_UINT32(comps)) {
+            fail("%u components decoded for %d", o.numcomps, comps);
+        }
+        for (int c = 0; c < comps; ++c) {
+            const auto& got = o.planes[std::size_t(c)];
+            const auto& want = expected[std::size_t(c)];
+            if (got.size() != want.size()) {
+                fail("component %d: %zu samples decoded for %zu", c, got.size(), want.size());
             }
-            if (o.numcomps != OPJ_UINT32(comps)) {
-                fail("%u components decoded for %d", o.numcomps, comps);
+            std::size_t wrong = 0, first = 0;
+            for (std::size_t i = 0; i < want.size(); ++i) {
+                if (got[i] != want[i] && wrong++ == 0) {
+                    first = i;
+                }
             }
-            for (int c = 0; c < comps; ++c) {
-                const auto& got = o.planes[std::size_t(c)];
-                const auto& want = expected[std::size_t(c)];
-                if (got.size() != want.size()) {
-                    fail("component %d: %zu samples decoded for %zu", c, got.size(), want.size());
-                }
-                std::size_t wrong = 0, first = 0;
-                for (std::size_t i = 0; i < want.size(); ++i) {
-                    if (got[i] != want[i] && wrong++ == 0) {
-                        first = i;
-                    }
-                }
-                if (wrong) {
-                    fail("component %d: %zu of %zu samples differ, the first at (%zu, %zu): %d for %d", c, wrong,
-                         want.size(), first % std::size_t(w), first / std::size_t(w), got[first], want[first]);
-                }
+            if (wrong) {
+                fail("component %d: %zu of %zu samples differ, the first at (%zu, %zu): %d for %d", c, wrong,
+                     want.size(), first % std::size_t(w), first / std::size_t(w), got[first], want[first]);
             }
         }
     }

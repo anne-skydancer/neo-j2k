@@ -10,14 +10,12 @@ the entry, and move a fuzz-found input to `fuzz/regressions` when neo-j2k is hel
 | Input | Defect | Check |
 |---|---|---|
 | `od3-psot-1g.j2k` | OD-3: a tile-part's declared length (1 GiB) is allocated before it is read | `oracle_known_resources` (counting oracle module, builds without sanitizers): the viewer's request asks the heap for at least 1,000 MiB |
-| `od4-roundtrip-mqc-termall-16bit.bin` | OD-4: the MQ encoder writes past the code-block buffer (TERMALL, 16-bit) | `oracle_known_defect.od4` (AddressSanitizer builds): the round-trip target with its guard off must report the heap-buffer-overflow |
 | `od5-fullres-cblk4-2048-rgba.j2k` | OD-5: code-block and precinct structures of every resolution for a reduced decode | `oracle_known_resources`: the viewer's request at reduce 5 asks the heap for at least 300 MiB |
 
 `od3` and `od5` are made by `fuzz/make_inputs.py --known-defects`, from `corpus/generated/sl_32_rgb_97.j2k`
-and from nothing; `od4` is the round-trip fuzzer's own find. All are synthetic. They are resource bombs
-and a heap overflow: nothing but these checks may decode or encode them.
+and from nothing. Both are synthetic resource bombs: nothing but these checks may decode them.
 
-OD-6's input is not here: the round-trip target runs it as a regression (without the comparison the
-defect spoils), so it stays in `fuzz/regressions/roundtrip-guard-bit-overflow.bin`, and
-`oracle_known_defect.od6` replays it with the guard off, on every compiler and platform: the samples
-must still come back different.
+The encoder's defects OD-4 and OD-6 are fixed at the pin (the fork's `e64db843` and `841b2de4`). Their
+inputs are round-trip regressions now, replayed with every sample compared:
+`fuzz/regressions/roundtrip-mqc-termall-16bit.bin` (OD-4, the round-trip fuzzer's own find, moved from
+here) and `fuzz/regressions/roundtrip-guard-bit-overflow.bin` (OD-6, an image the encoder now refuses).

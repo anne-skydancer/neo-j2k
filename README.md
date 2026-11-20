@@ -9,10 +9,13 @@ bit-identical to OpenJPEG 2.5.4 on x86-64 through OpenJPEG's SSE 9/7 path (`opj_
 x86-64; its scalar path, which AArch64 takes, may be fused into FMA by GCC and Clang), both built and compared
 without floating-point contraction (`-ffp-contract=off`; MSVC `/fp:precise` without `/fp:contract`), lossy 9/7
 included. Everything around the arithmetic is rebuilt for small images, defined partial decodes and bounded
-resources: the decoder limits (`doc/api.md`) bound the work and the memory a codestream can ask for, checked
-from its headers before anything is allocated. Where OpenJPEG departs from the standard, neo-j2k follows the
-standard and lists the departure with its test (`doc/departures.md`). A native Rust crate follows later and is
-tested against the C++ library bit for bit.
+resources: the decoder limits bound the work and the memory a codestream can ask for, checked from its headers
+before anything is allocated. A decoder has none unless it is given some: without them it decodes any size the
+format allows. The profiles (`doc/api.md`) are Second Life textures (1,024 tiles, 8 components, 64 layers, 2,048
+px a side at the decoded resolution, 256 MiB of working memory) and, as a build module, OpenSim textures (the
+same with 16,384 px a side). Where OpenJPEG departs from the standard, neo-j2k follows the standard and lists the
+departure with its test (`doc/departures.md`). A native Rust crate follows later and is tested against the C++
+library bit for bit.
 
 Licence: BSD-2-Clause (`LICENSE`). Code ported from OpenJPEG keeps its own BSD-2-Clause notices (`NOTICE.md`,
 `LICENSE.OpenJPEG`).
@@ -52,7 +55,7 @@ GCC 14+, Clang), Python 3 for the checks. The library needs nothing else.
 |---|---|
 | `include/neoj2k/` | `neoj2k.h` (C API), `neoj2k_openjpeg.h` (OpenJPEG names), `neoj2k.hpp` (C++ wrapper), `compat/` |
 | `src/` | the library |
-| `oracle/` | OpenJPEG at the pinned fork commit (the stage 1a hotfix) and any patches `oracle/PIN` lists, built as the test oracle (`doc/oracle.md`) |
+| `oracle/` | OpenJPEG at the pinned fork commit (the head of the stage 1a hotfix branch, as the package `v2.5.4-cpu-avx2.5` builds it) and any patches `oracle/PIN` lists, built as the test oracle (`doc/oracle.md`) |
 | `tests/` | the runner (`nj2k_diff`), conformance, unit tests, the shared harness (`tests/common`) |
 | `corpus/generated/` | the generated corpus and the oracle's reference tables |
 | `fuzz/` | libFuzzer targets, dictionary, regression inputs |

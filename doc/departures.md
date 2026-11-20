@@ -7,9 +7,11 @@ neo-j2k follows OpenJPEG 2.5.4 on every valid complete stream, and the standard 
 on cut or invalid input (plan T5). Each departure is listed here with the test that holds it. There is no
 compatibility switch. The header fuzz target compares every header read with the oracle's and stops on a
 difference that the main header, or a JP2 file's boxes, do not explain by one of DP-5 to DP-8 and DP-11; the
-decode fuzz target compares every decode the oracle's filter lets through and stops on a difference that
-the main header, a tile-part header or the tile-parts' data do not explain by DP-3, DP-5 to DP-8, DP-12
-or DP-14, or that is not DP-2's (samples one decoder clamps to the minimum and the other to the maximum)
+decode fuzz target compares every decode with the oracle's under the same limits (all but those of
+streams that would make OpenJPEG allocate a tile-part's declared length, OD-3) and stops on a difference
+that is not a refusal for memory (each library counts its own structures against `max_memory`), that the
+main header, a tile-part header or the tile-parts' data do not explain by DP-3, DP-5 to DP-8, DP-12 or
+DP-14, and that is not DP-2's (samples one decoder clamps to the minimum and the other to the maximum)
 (`fuzz/departures.h`). Each check is as narrow as its departure: it names the markers or bytes that make
 the two decoders differ, not merely a marker that could. The reference tests leave out the corpus files of `tests/neoj2k-departures.txt`, and
 the non-regression differential those of `tests/neoj2k-departures-nonregression.txt`, each tested on its

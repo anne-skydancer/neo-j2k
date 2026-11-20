@@ -92,6 +92,10 @@ public:
     }
         REPLAY_FUNCS(REPLAY_GET)
 #undef REPLAY_GET
+        // optional: a library without the limits API takes every request but those with limits
+#define REPLAY_GET_OPTIONAL(f) api_.f = reinterpret_cast<decltype(api_.f)>(sym(#f));
+        REPLAY_LIMIT_FUNCS(REPLAY_GET_OPTIONAL)
+#undef REPLAY_GET_OPTIONAL
         counts_ = reinterpret_cast<CountsFn>(sym("nj2k_oracle_alloc_counts"));
         reset_ = reinterpret_cast<ResetFn>(sym("nj2k_oracle_alloc_reset"));
         return true;

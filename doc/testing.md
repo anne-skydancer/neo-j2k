@@ -41,12 +41,10 @@ and tests both presets.
 | `oracle_cuts.<file>` | the same for every cut point of every generated file up to 4 KB (every 13th one in sanitizer builds) |
 | `oracle_layers` | a cut where a layer starts decodes exactly as the whole file limited to the layers before it (`cp_layer`): an oracle for cut semantics that does not depend on the truncation code (plan audit B5); the oracle's known cases are in `tests/oracle-known-defects.txt` |
 | `oracle_known_resources` | each input of `tests/known-defects` still makes the oracle ask the heap for what `tests/oracle-known-resource-defects.txt` says (OD-3, OD-5), through the counting oracle module (builds without sanitizers) |
-| `oracle_known_defect.od4` | with the round-trip target's guard off, its OD-4 input still makes the oracle's MQ encoder write past its buffer (AddressSanitizer builds) |
-| `oracle_known_defect.od6` | with the round-trip target's guard off, its OD-6 input (`fuzz/regressions`) still comes back with other samples: the oracle's encoder overflows its two guard bits (every compiler and platform) |
 | `conformance_class1` | ISO/IEC 15444-4 class 1, profiles 0 and 1, with the T.803 (2024) peak and MSE limits; skipped without the data |
 | `corpus_regenerates` | the oracle's encoder writes the committed corpus byte for byte on this compiler and platform: the encoder oracle that stage 6a's byte identity relies on |
 | `fuzz_replay.*` | the fuzz targets run over their seeds (the corpus; the JP2 header seeds, made by `fuzz_seeds.header`; the decode seeds with option bytes, made by `fuzz_seeds.decode`; `fuzz/seeds/roundtrip`) and `fuzz/regressions` on every platform; a replay fails when no input gets past the target's filters and guards, and the header target's when a header read differs from the oracle's without a departure to explain it |
-| `fuzz_filters` | the fuzz filters keep every bomb of `fuzz/bombs` from the oracle and let the Second Life sized corpus files through |
+| `fuzz_filters` | the fuzz targets' guards of the oracle: every decode bomb of `fuzz/bombs` kept from it (OD-3) or refused by it under the decode target's limits, with a limit's message; every header bomb refused by the header filter; the Second Life sized corpus files through both, decoding under the limits |
 | `exports` | `neoj2k.dll` / `libneoj2k.so` export exactly the functions `neoj2k.h` declares, all `nj2k_*`, as `abi/exports.txt` lists |
 | `global_state` | the static library's objects hold no writable globals, no thread-local storage, no static initialisers and no LTO objects (MSVC `/GL`, LLVM bitcode, GCC `.gnu.lto_*`); `nj2k_cpu_supported()`'s object needs nothing beyond baseline x86-64, and in the scalar build (`NJ2K_SIMD=SCALAR`) no object of the library does |
 | header checks (build) | `neoj2k.h` and the compatibility header compile as strict C99 (MSVC: C11) and C++20 with warnings as errors |
@@ -59,13 +57,15 @@ reference test can pass having checked nothing. The tests, tools, fuzz targets a
 Nightly (`NJ2K_TEST_NIGHTLY=ON`): `oracle_cuts_nightly` and `neoj2k_cuts_nightly`, every cut point of the
 generated files from 4 to 16 KB, in plain and in viewer mode.
 
-Stage 1c's results on 2026-11-19 (Windows, MSVC 14.51 and clang-cl, RelWithDebInfo; MSVC with
-AddressSanitizer): every test passes. neo-j2k reproduces the reference table's 1,812 lines (756 whole-file
-lines and 1,056 cut digests over 1,028,088 decodes) but for the 30 of its DP-3 file, and the nightly table's
-204 digests over 1,239,348 decodes; the layer-boundary oracle's 198 checks; class 1 conformance 23 of 23 in
-plain mode (18 of 23 in viewer mode, as the oracle); every conformance codestream and JP2 file in plain,
-strict and viewer mode at reduce 0-5 (342 of 342 identical); OpenJPEG's non-regression data, 894 decodes,
-identical but for the three DP-6 files.
+Stage 1c's results on 2026-11-19, again on 2026-11-20 with the oracle at the hotfix head (Windows, MSVC
+14.51 and clang-cl, RelWithDebInfo; the scalar MSVC build; MSVC with AddressSanitizer): every test passes (110
+of 110, and 107 of 107 under AddressSanitizer, which has no bench tests). neo-j2k reproduces the reference
+table's 1,812 lines (756 whole-file lines and 1,056 cut digests over 1,028,088 decodes) but for the 30 of its
+DP-3 file, and the nightly table's 204 digests over 1,239,348 decodes; the layer-boundary oracle's 198 checks;
+class 1 conformance 23 of 23 in plain mode (18 of 23 in viewer mode, as the oracle); every conformance
+codestream and JP2 file in plain, strict and viewer mode at reduce 0-5 (342 of 342 identical); OpenJPEG's
+non-regression data, 894 decodes, identical but for the three DP-6 files. Both tables, recorded again at the
+new pin, are byte for byte the committed ones.
 
 ## The runner: `nj2k_diff`
 
@@ -124,19 +124,23 @@ prefixes): 4 files differ, every one refused by neo-j2k where OpenJPEG reads it,
 nj2k_diff compare --a oracle --b neoj2k --files <mutant list> --reduce 0,5 --modes plain,viewer \
     --kinds full --allow-diff --csv damaged.csv
 # the same files through the decode fuzz target: the memory path under the Second Life limits, its
-# memory bound, its guard bytes and its balance checked, and the oracle comparison behind the filter
+# memory bound, its guard bytes and its balance checked, and the comparison with the oracle under the
+# same limits
 nj2k_fuzz_decode_replay <mutant folder>
 ```
 
-Results on 2026-11-19 (Windows, MSVC 14.51, RelWithDebInfo and AddressSanitizer), stage 1c's review round:
-8,272 damaged decodes (the plan's 4,136 at reduce 0 and 5, in plain and in viewer mode), the same outcome
-table from both builds, no crash, hang or sanitizer report (51 s, and 3 min 56 s under AddressSanitizer).
-Both decoders refuse 4,165 requests and decode 3,695 to the same image; in 412 (103 files) OpenJPEG
-decodes what neo-j2k refuses at the header, every one a recorded departure: a reserved quantization style
-(DP-8, 71 files) or fewer step sizes than sub-bands (DP-6, 32 files). neo-j2k decodes nothing OpenJPEG
-refuses. The decode fuzz target took all 2,068 files without a stop (no memory beyond its bound, no byte
-written outside the planes, every allocation given back, no difference the departures do not explain).
-The outcome table names private textures, so it stays off the repository.
+Results on 2026-11-19 (Windows, MSVC 14.51, RelWithDebInfo and AddressSanitizer), stage 1c's review round,
+and the same on 2026-11-20 with the oracle at the hotfix head: 8,272 damaged decodes (the plan's 4,136 at
+reduce 0 and 5, in plain and in viewer mode), the same outcome table from both builds and from both pins,
+row for row, no crash, hang or sanitizer report (50 s, and 3 min 57 s under AddressSanitizer). Both
+decoders refuse 4,165 requests and decode 3,695 to the same image; in 412 (103 files) OpenJPEG decodes
+what neo-j2k refuses at the header, every one a recorded departure: a reserved quantization style (DP-8,
+71 files) or fewer step sizes than sub-bands (DP-6, 32 files). neo-j2k decodes nothing OpenJPEG refuses.
+The decode fuzz target took all 2,068 files without a stop (no memory beyond its bound, no byte written
+outside the planes, every allocation given back, no difference the departures do not explain), since
+2026-11-20 comparing each with the oracle under the same limits, with no filter: the OD-3 guard kept one
+file (a SOT declaring more than 64 MiB) from the oracle. The outcome table names private textures, so it
+stays off the repository.
 
 ## The corpora
 
@@ -198,26 +202,30 @@ Targets (`fuzz/`):
   (a header it refuses must be refused by the decode too, with the same status); its allocations go
   through a counting hook, and the target aborts when the codec holds more than twice the
   working-memory limit plus its header state, or does not give everything back, or writes a guard
-  byte. Behind the oracle's filter the oracle decodes the same request, and neo-j2k's decode of it
-  through the same request code must agree (outcome, image, the viewer's 8-bit copy), unless the
-  codestream shows DP-3, DP-5 to DP-8, DP-12 or DP-14 (`fuzz/departures.h`, shared with the header
-  target, each check as narrow as its departure), or the images differ only in samples one decoder
-  clamps to the minimum and the other to the maximum (DP-2). Both targets replay OpenJPEG's
-  conformance and non-regression data (318 files) without an unexplained difference.
+  byte. Then the oracle decodes the same request under the same limits (the Second Life profile with
+  `max_memory` at 64 MiB, through the fork's `opj_decoder_set_limits`), and so does neo-j2k through the
+  same request code. The two must agree (outcome, image, the viewer's 8-bit copy), unless one of them
+  refused for memory (each library counts its own structures against `max_memory`; their other limits
+  are the same and must refuse alike), the codestream shows DP-3, DP-5 to DP-8, DP-12 or DP-14
+  (`fuzz/departures.h`, shared with the header target, each check as narrow as its departure), or the
+  images differ only in samples one decoder clamps to the minimum and the other to the maximum (DP-2).
+  Both targets replay OpenJPEG's conformance and non-regression data (318 files) without an
+  unexplained difference.
 - `roundtrip`: a small image and its coding from the input, encoded losslessly and decoded: every sample
-  must come back, unless the transform outgrows the two guard bits the oracle's encoder gives each
-  band (OD-6): such an image is encoded and decoded without the comparison. Seeds: `fuzz/seeds/roundtrip`.
+  of every stream the encoder writes must come back. Nothing is skipped: the oracle's encoder refuses an
+  image its guard bits cannot hold (OD-6) and keeps terminated passes inside its buffers (OD-4), both
+  fixed at the pin. Seeds: `fuzz/seeds/roundtrip`.
 
 The round-trip target drives the oracle (until the encoder, stage 6a), and the header and decode targets
-run the oracle beside neo-j2k behind filters (`fuzz/fuzz_common.h`; for a JP2 file, applied to the
-codestream OpenJPEG reaches through its boxes) that keep OpenJPEG's known bombs out of the way (fork
-audit S2, S3; OD-3, OD-5). The header filter bounds the tiles and components of SIZ, which must follow
-SOC. The decode filter fails closed: it refuses a stream whose main header it cannot parse, or that
-holds a marker OpenJPEG skips by scanning (its reading would then differ from OpenJPEG's), and bounds
-the worst of every COD and COC, of the main header and of every tile-part header: layers, packets, and
-the code-blocks of every resolution at full size (OpenJPEG builds them whatever the reduce factor), plus
-the samples at the decoded level and each tile-part's declared length. `fuzz_filters` checks the filters
-against `fuzz/bombs`.
+run the oracle beside neo-j2k, guarded against OpenJPEG's known bombs (fork audit S2, S3; OD-3, OD-5;
+`fuzz/fuzz_common.h`). The header target reads with no limits behind a filter (for a JP2 file, applied
+to the codestream OpenJPEG reaches through its boxes) that bounds the tiles and components of SIZ,
+which must follow SOC. The decode target has no filter: the oracle decodes under the limits above, which
+it checks from the headers before it allocates what they bound (tiles, components and layers, the
+decoded side, and through `max_memory` the structures of every resolution, OD-5). The one bomb they
+leave, a tile-part's declared length (OD-3), is kept from it in the non-strict modes by a scan of the
+bytes for any SOT that declares more than 64 MiB. `fuzz_filters` checks the guards against
+`fuzz/bombs`.
 
 Pull requests: ClusterFuzzLite, five minutes each with ASan, UBSan and MSan, from the corpus batch
 fuzzing stores and on the code the change touches. ClusterFuzzLite batch fuzzing runs an hour a day with
