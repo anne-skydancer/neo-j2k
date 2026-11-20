@@ -368,6 +368,18 @@ void test_settings()
             }
         }
     }
+    // comments at the edge of Lcom: OpenJPEG writes them correctly up to 65,531 bytes
+    for (const std::size_t n : {std::size_t(65529), std::size_t(65530), std::size_t(65531)}) {
+        const std::string text(n, 'k');
+        UploadSpec us;
+        us.raw = rgb.data();
+        us.width = 200;
+        us.height = 120;
+        us.comps = 3;
+        us.reversible = true;
+        us.comment = text.c_str();
+        CHECK_MSG(same_codestream(us, "long comment"), "comment of %zu bytes", n);
+    }
     // a texture noisier than the buffer OpenJPEG guesses for the codestream holds: both refuse or both encode
     for (const bool reversible : {true, false}) {
         const Raw noise = make_raw(64, 64, 4, 5);
@@ -738,11 +750,11 @@ void test_limits_and_states()
     // DP-18: a comment longer than a marker segment holds is refused, where OpenJPEG writes a wrong length
     {
         Job j;
-        std::string longer(70000, 'c');
+        std::string longer(65532, 'c');  // Lcom = 65536 no longer fits
         j.p.cp_comment = &longer[0];
         CHECK(!j.setup());
         CHECK(j.status() == NJ2K_E_ARGUMENT);
-        std::string longest(65529, 'c');  // the most a COM marker holds
+        std::string longest(65531, 'c');  // the most a COM marker holds (Lcom 65535)
         Job k;
         k.p.cp_comment = &longest[0];
         CHECK(k.run());

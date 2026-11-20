@@ -29,7 +29,7 @@ struct Encoder {
     static constexpr std::uint64_t kMaxSamples = std::uint64_t(1) << 26;
     static constexpr std::uint32_t kMaxComponents = 8;
     static constexpr std::uint32_t kMaxLayers = 100;
-    static constexpr std::size_t kMaxComment = 65535 - 6;
+    static constexpr std::size_t kMaxComment = 65535 - 4;  // Lcom = length + 4 in 16 bits
 
     std::uint32_t magic = kMagic;
     Allocator allocator;

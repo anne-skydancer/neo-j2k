@@ -213,7 +213,7 @@ header maps the `opj_*` names. The statuses of `nj2k_get_status` apply (`NJ2K_E_
 | Layers | `tcp_numlayers` 0 to 100 with `cp_disto_alloc` (rate allocation by distortion): `tcp_rates[i]` is the compression ratio of layer i (a rate of 1 or less, or 0, is lossless); 0 layers is one lossless layer, written back into the parameters |
 | Resolutions | `numresolution` 1 to 33 as OpenJPEG; the image must be at least 2^(n-1) samples a side (OpenJPEG's check, at `nj2k_start_compress`) |
 | Coding | RLCP, code-blocks 64 x 64, no precinct sizes (`csty` 0: one precinct a resolution), no mode switch (`mode` 0), no SOP, EPH, PLT or TLM, no ROI, no POC, no profile |
-| Comment | `cp_comment`, up to 65,529 bytes; none gives OpenJPEG's own (`Created by OpenJPEG version 2.5.4`, so that the bytes are the same) |
+| Comment | `cp_comment`, up to 65,531 bytes (Lcom is 16 bits); none gives OpenJPEG's own (`Created by OpenJPEG version 2.5.4`, so that the bytes are the same) |
 | Extra options | `PLT=NO` and `TLM=NO` (what it does) |
 
 Anything else of OpenJPEG's encoder belongs to the **j2k-extra** module and gives `NJ2K_E_UNSUPPORTED` from the

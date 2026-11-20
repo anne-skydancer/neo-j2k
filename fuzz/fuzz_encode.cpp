@@ -204,7 +204,7 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
         p.cp_comment = &comment[0];
         break;
     default:
-        comment.assign(comment_len + 65530, 'y');  // longer than a marker segment holds
+        comment.assign(comment_len + 65532, 'y');  // longer than a marker segment holds
         p.cp_comment = &comment[0];
         break;
     }
