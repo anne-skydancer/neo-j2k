@@ -48,6 +48,7 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 #include "t1.h"
+#include "t1_tables.h"
 
 #include <cassert>
 #include <cstring>
@@ -330,103 +331,6 @@ Decode a symbol
 
 // ---- mqc.c: the states and the decoder's set-up ----
 
-static const opj_mqc_state_t mqc_states[47 * 2] = {
-    {0x5601, 0, &mqc_states[2], &mqc_states[3]},
-    {0x5601, 1, &mqc_states[3], &mqc_states[2]},
-    {0x3401, 0, &mqc_states[4], &mqc_states[12]},
-    {0x3401, 1, &mqc_states[5], &mqc_states[13]},
-    {0x1801, 0, &mqc_states[6], &mqc_states[18]},
-    {0x1801, 1, &mqc_states[7], &mqc_states[19]},
-    {0x0ac1, 0, &mqc_states[8], &mqc_states[24]},
-    {0x0ac1, 1, &mqc_states[9], &mqc_states[25]},
-    {0x0521, 0, &mqc_states[10], &mqc_states[58]},
-    {0x0521, 1, &mqc_states[11], &mqc_states[59]},
-    {0x0221, 0, &mqc_states[76], &mqc_states[66]},
-    {0x0221, 1, &mqc_states[77], &mqc_states[67]},
-    {0x5601, 0, &mqc_states[14], &mqc_states[13]},
-    {0x5601, 1, &mqc_states[15], &mqc_states[12]},
-    {0x5401, 0, &mqc_states[16], &mqc_states[28]},
-    {0x5401, 1, &mqc_states[17], &mqc_states[29]},
-    {0x4801, 0, &mqc_states[18], &mqc_states[28]},
-    {0x4801, 1, &mqc_states[19], &mqc_states[29]},
-    {0x3801, 0, &mqc_states[20], &mqc_states[28]},
-    {0x3801, 1, &mqc_states[21], &mqc_states[29]},
-    {0x3001, 0, &mqc_states[22], &mqc_states[34]},
-    {0x3001, 1, &mqc_states[23], &mqc_states[35]},
-    {0x2401, 0, &mqc_states[24], &mqc_states[36]},
-    {0x2401, 1, &mqc_states[25], &mqc_states[37]},
-    {0x1c01, 0, &mqc_states[26], &mqc_states[40]},
-    {0x1c01, 1, &mqc_states[27], &mqc_states[41]},
-    {0x1601, 0, &mqc_states[58], &mqc_states[42]},
-    {0x1601, 1, &mqc_states[59], &mqc_states[43]},
-    {0x5601, 0, &mqc_states[30], &mqc_states[29]},
-    {0x5601, 1, &mqc_states[31], &mqc_states[28]},
-    {0x5401, 0, &mqc_states[32], &mqc_states[28]},
-    {0x5401, 1, &mqc_states[33], &mqc_states[29]},
-    {0x5101, 0, &mqc_states[34], &mqc_states[30]},
-    {0x5101, 1, &mqc_states[35], &mqc_states[31]},
-    {0x4801, 0, &mqc_states[36], &mqc_states[32]},
-    {0x4801, 1, &mqc_states[37], &mqc_states[33]},
-    {0x3801, 0, &mqc_states[38], &mqc_states[34]},
-    {0x3801, 1, &mqc_states[39], &mqc_states[35]},
-    {0x3401, 0, &mqc_states[40], &mqc_states[36]},
-    {0x3401, 1, &mqc_states[41], &mqc_states[37]},
-    {0x3001, 0, &mqc_states[42], &mqc_states[38]},
-    {0x3001, 1, &mqc_states[43], &mqc_states[39]},
-    {0x2801, 0, &mqc_states[44], &mqc_states[38]},
-    {0x2801, 1, &mqc_states[45], &mqc_states[39]},
-    {0x2401, 0, &mqc_states[46], &mqc_states[40]},
-    {0x2401, 1, &mqc_states[47], &mqc_states[41]},
-    {0x2201, 0, &mqc_states[48], &mqc_states[42]},
-    {0x2201, 1, &mqc_states[49], &mqc_states[43]},
-    {0x1c01, 0, &mqc_states[50], &mqc_states[44]},
-    {0x1c01, 1, &mqc_states[51], &mqc_states[45]},
-    {0x1801, 0, &mqc_states[52], &mqc_states[46]},
-    {0x1801, 1, &mqc_states[53], &mqc_states[47]},
-    {0x1601, 0, &mqc_states[54], &mqc_states[48]},
-    {0x1601, 1, &mqc_states[55], &mqc_states[49]},
-    {0x1401, 0, &mqc_states[56], &mqc_states[50]},
-    {0x1401, 1, &mqc_states[57], &mqc_states[51]},
-    {0x1201, 0, &mqc_states[58], &mqc_states[52]},
-    {0x1201, 1, &mqc_states[59], &mqc_states[53]},
-    {0x1101, 0, &mqc_states[60], &mqc_states[54]},
-    {0x1101, 1, &mqc_states[61], &mqc_states[55]},
-    {0x0ac1, 0, &mqc_states[62], &mqc_states[56]},
-    {0x0ac1, 1, &mqc_states[63], &mqc_states[57]},
-    {0x09c1, 0, &mqc_states[64], &mqc_states[58]},
-    {0x09c1, 1, &mqc_states[65], &mqc_states[59]},
-    {0x08a1, 0, &mqc_states[66], &mqc_states[60]},
-    {0x08a1, 1, &mqc_states[67], &mqc_states[61]},
-    {0x0521, 0, &mqc_states[68], &mqc_states[62]},
-    {0x0521, 1, &mqc_states[69], &mqc_states[63]},
-    {0x0441, 0, &mqc_states[70], &mqc_states[64]},
-    {0x0441, 1, &mqc_states[71], &mqc_states[65]},
-    {0x02a1, 0, &mqc_states[72], &mqc_states[66]},
-    {0x02a1, 1, &mqc_states[73], &mqc_states[67]},
-    {0x0221, 0, &mqc_states[74], &mqc_states[68]},
-    {0x0221, 1, &mqc_states[75], &mqc_states[69]},
-    {0x0141, 0, &mqc_states[76], &mqc_states[70]},
-    {0x0141, 1, &mqc_states[77], &mqc_states[71]},
-    {0x0111, 0, &mqc_states[78], &mqc_states[72]},
-    {0x0111, 1, &mqc_states[79], &mqc_states[73]},
-    {0x0085, 0, &mqc_states[80], &mqc_states[74]},
-    {0x0085, 1, &mqc_states[81], &mqc_states[75]},
-    {0x0049, 0, &mqc_states[82], &mqc_states[76]},
-    {0x0049, 1, &mqc_states[83], &mqc_states[77]},
-    {0x0025, 0, &mqc_states[84], &mqc_states[78]},
-    {0x0025, 1, &mqc_states[85], &mqc_states[79]},
-    {0x0015, 0, &mqc_states[86], &mqc_states[80]},
-    {0x0015, 1, &mqc_states[87], &mqc_states[81]},
-    {0x0009, 0, &mqc_states[88], &mqc_states[82]},
-    {0x0009, 1, &mqc_states[89], &mqc_states[83]},
-    {0x0005, 0, &mqc_states[90], &mqc_states[84]},
-    {0x0005, 1, &mqc_states[91], &mqc_states[85]},
-    {0x0001, 0, &mqc_states[90], &mqc_states[86]},
-    {0x0001, 1, &mqc_states[91], &mqc_states[87]},
-    {0x5601, 0, &mqc_states[92], &mqc_states[92]},
-    {0x5601, 1, &mqc_states[93], &mqc_states[93]},
-};
-
 static void opj_mqc_init_dec_common(opj_mqc_t *mqc,
                                     OPJ_BYTE *bp,
                                     OPJ_UINT32 len,
@@ -489,114 +393,18 @@ void opj_mqc_resetstates(opj_mqc_t *mqc)
 {
     OPJ_UINT32 i;
     for (i = 0; i < MQC_NUMCTXS; i++) {
-        mqc->ctxs[i] = mqc_states;
+        mqc->ctxs[i] = kMqcStates;
     }
 }
 
 void opj_mqc_setstate(opj_mqc_t *mqc, OPJ_UINT32 ctxno, OPJ_UINT32 msb,
                       OPJ_INT32 prob)
 {
-    mqc->ctxs[ctxno] = &mqc_states[msb + (OPJ_UINT32)(prob << 1)];
+    mqc->ctxs[ctxno] = &kMqcStates[msb + (OPJ_UINT32)(prob << 1)];
 }
 
 // ---- t1_luts.h: the context tables (decoding) ----
 
-static const OPJ_BYTE lut_ctxno_zc[2048] = {
-    0, 1, 3, 3, 1, 2, 3, 3, 5, 6, 7, 7, 6, 6, 7, 7, 0, 1, 3, 3, 1, 2, 3, 3, 5, 6, 7, 7, 6, 6, 7, 7,
-    5, 6, 7, 7, 6, 6, 7, 7, 8, 8, 8, 8, 8, 8, 8, 8, 5, 6, 7, 7, 6, 6, 7, 7, 8, 8, 8, 8, 8, 8, 8, 8,
-    1, 2, 3, 3, 2, 2, 3, 3, 6, 6, 7, 7, 6, 6, 7, 7, 1, 2, 3, 3, 2, 2, 3, 3, 6, 6, 7, 7, 6, 6, 7, 7,
-    6, 6, 7, 7, 6, 6, 7, 7, 8, 8, 8, 8, 8, 8, 8, 8, 6, 6, 7, 7, 6, 6, 7, 7, 8, 8, 8, 8, 8, 8, 8, 8,
-    3, 3, 4, 4, 3, 3, 4, 4, 7, 7, 7, 7, 7, 7, 7, 7, 3, 3, 4, 4, 3, 3, 4, 4, 7, 7, 7, 7, 7, 7, 7, 7,
-    7, 7, 7, 7, 7, 7, 7, 7, 8, 8, 8, 8, 8, 8, 8, 8, 7, 7, 7, 7, 7, 7, 7, 7, 8, 8, 8, 8, 8, 8, 8, 8,
-    3, 3, 4, 4, 3, 3, 4, 4, 7, 7, 7, 7, 7, 7, 7, 7, 3, 3, 4, 4, 3, 3, 4, 4, 7, 7, 7, 7, 7, 7, 7, 7,
-    7, 7, 7, 7, 7, 7, 7, 7, 8, 8, 8, 8, 8, 8, 8, 8, 7, 7, 7, 7, 7, 7, 7, 7, 8, 8, 8, 8, 8, 8, 8, 8,
-    1, 2, 3, 3, 2, 2, 3, 3, 6, 6, 7, 7, 6, 6, 7, 7, 1, 2, 3, 3, 2, 2, 3, 3, 6, 6, 7, 7, 6, 6, 7, 7,
-    6, 6, 7, 7, 6, 6, 7, 7, 8, 8, 8, 8, 8, 8, 8, 8, 6, 6, 7, 7, 6, 6, 7, 7, 8, 8, 8, 8, 8, 8, 8, 8,
-    2, 2, 3, 3, 2, 2, 3, 3, 6, 6, 7, 7, 6, 6, 7, 7, 2, 2, 3, 3, 2, 2, 3, 3, 6, 6, 7, 7, 6, 6, 7, 7,
-    6, 6, 7, 7, 6, 6, 7, 7, 8, 8, 8, 8, 8, 8, 8, 8, 6, 6, 7, 7, 6, 6, 7, 7, 8, 8, 8, 8, 8, 8, 8, 8,
-    3, 3, 4, 4, 3, 3, 4, 4, 7, 7, 7, 7, 7, 7, 7, 7, 3, 3, 4, 4, 3, 3, 4, 4, 7, 7, 7, 7, 7, 7, 7, 7,
-    7, 7, 7, 7, 7, 7, 7, 7, 8, 8, 8, 8, 8, 8, 8, 8, 7, 7, 7, 7, 7, 7, 7, 7, 8, 8, 8, 8, 8, 8, 8, 8,
-    3, 3, 4, 4, 3, 3, 4, 4, 7, 7, 7, 7, 7, 7, 7, 7, 3, 3, 4, 4, 3, 3, 4, 4, 7, 7, 7, 7, 7, 7, 7, 7,
-    7, 7, 7, 7, 7, 7, 7, 7, 8, 8, 8, 8, 8, 8, 8, 8, 7, 7, 7, 7, 7, 7, 7, 7, 8, 8, 8, 8, 8, 8, 8, 8,
-    0, 1, 5, 6, 1, 2, 6, 6, 3, 3, 7, 7, 3, 3, 7, 7, 0, 1, 5, 6, 1, 2, 6, 6, 3, 3, 7, 7, 3, 3, 7, 7,
-    3, 3, 7, 7, 3, 3, 7, 7, 4, 4, 7, 7, 4, 4, 7, 7, 3, 3, 7, 7, 3, 3, 7, 7, 4, 4, 7, 7, 4, 4, 7, 7,
-    1, 2, 6, 6, 2, 2, 6, 6, 3, 3, 7, 7, 3, 3, 7, 7, 1, 2, 6, 6, 2, 2, 6, 6, 3, 3, 7, 7, 3, 3, 7, 7,
-    3, 3, 7, 7, 3, 3, 7, 7, 4, 4, 7, 7, 4, 4, 7, 7, 3, 3, 7, 7, 3, 3, 7, 7, 4, 4, 7, 7, 4, 4, 7, 7,
-    5, 6, 8, 8, 6, 6, 8, 8, 7, 7, 8, 8, 7, 7, 8, 8, 5, 6, 8, 8, 6, 6, 8, 8, 7, 7, 8, 8, 7, 7, 8, 8,
-    7, 7, 8, 8, 7, 7, 8, 8, 7, 7, 8, 8, 7, 7, 8, 8, 7, 7, 8, 8, 7, 7, 8, 8, 7, 7, 8, 8, 7, 7, 8, 8,
-    6, 6, 8, 8, 6, 6, 8, 8, 7, 7, 8, 8, 7, 7, 8, 8, 6, 6, 8, 8, 6, 6, 8, 8, 7, 7, 8, 8, 7, 7, 8, 8,
-    7, 7, 8, 8, 7, 7, 8, 8, 7, 7, 8, 8, 7, 7, 8, 8, 7, 7, 8, 8, 7, 7, 8, 8, 7, 7, 8, 8, 7, 7, 8, 8,
-    1, 2, 6, 6, 2, 2, 6, 6, 3, 3, 7, 7, 3, 3, 7, 7, 1, 2, 6, 6, 2, 2, 6, 6, 3, 3, 7, 7, 3, 3, 7, 7,
-    3, 3, 7, 7, 3, 3, 7, 7, 4, 4, 7, 7, 4, 4, 7, 7, 3, 3, 7, 7, 3, 3, 7, 7, 4, 4, 7, 7, 4, 4, 7, 7,
-    2, 2, 6, 6, 2, 2, 6, 6, 3, 3, 7, 7, 3, 3, 7, 7, 2, 2, 6, 6, 2, 2, 6, 6, 3, 3, 7, 7, 3, 3, 7, 7,
-    3, 3, 7, 7, 3, 3, 7, 7, 4, 4, 7, 7, 4, 4, 7, 7, 3, 3, 7, 7, 3, 3, 7, 7, 4, 4, 7, 7, 4, 4, 7, 7,
-    6, 6, 8, 8, 6, 6, 8, 8, 7, 7, 8, 8, 7, 7, 8, 8, 6, 6, 8, 8, 6, 6, 8, 8, 7, 7, 8, 8, 7, 7, 8, 8,
-    7, 7, 8, 8, 7, 7, 8, 8, 7, 7, 8, 8, 7, 7, 8, 8, 7, 7, 8, 8, 7, 7, 8, 8, 7, 7, 8, 8, 7, 7, 8, 8,
-    6, 6, 8, 8, 6, 6, 8, 8, 7, 7, 8, 8, 7, 7, 8, 8, 6, 6, 8, 8, 6, 6, 8, 8, 7, 7, 8, 8, 7, 7, 8, 8,
-    7, 7, 8, 8, 7, 7, 8, 8, 7, 7, 8, 8, 7, 7, 8, 8, 7, 7, 8, 8, 7, 7, 8, 8, 7, 7, 8, 8, 7, 7, 8, 8,
-    0, 1, 3, 3, 1, 2, 3, 3, 5, 6, 7, 7, 6, 6, 7, 7, 0, 1, 3, 3, 1, 2, 3, 3, 5, 6, 7, 7, 6, 6, 7, 7,
-    5, 6, 7, 7, 6, 6, 7, 7, 8, 8, 8, 8, 8, 8, 8, 8, 5, 6, 7, 7, 6, 6, 7, 7, 8, 8, 8, 8, 8, 8, 8, 8,
-    1, 2, 3, 3, 2, 2, 3, 3, 6, 6, 7, 7, 6, 6, 7, 7, 1, 2, 3, 3, 2, 2, 3, 3, 6, 6, 7, 7, 6, 6, 7, 7,
-    6, 6, 7, 7, 6, 6, 7, 7, 8, 8, 8, 8, 8, 8, 8, 8, 6, 6, 7, 7, 6, 6, 7, 7, 8, 8, 8, 8, 8, 8, 8, 8,
-    3, 3, 4, 4, 3, 3, 4, 4, 7, 7, 7, 7, 7, 7, 7, 7, 3, 3, 4, 4, 3, 3, 4, 4, 7, 7, 7, 7, 7, 7, 7, 7,
-    7, 7, 7, 7, 7, 7, 7, 7, 8, 8, 8, 8, 8, 8, 8, 8, 7, 7, 7, 7, 7, 7, 7, 7, 8, 8, 8, 8, 8, 8, 8, 8,
-    3, 3, 4, 4, 3, 3, 4, 4, 7, 7, 7, 7, 7, 7, 7, 7, 3, 3, 4, 4, 3, 3, 4, 4, 7, 7, 7, 7, 7, 7, 7, 7,
-    7, 7, 7, 7, 7, 7, 7, 7, 8, 8, 8, 8, 8, 8, 8, 8, 7, 7, 7, 7, 7, 7, 7, 7, 8, 8, 8, 8, 8, 8, 8, 8,
-    1, 2, 3, 3, 2, 2, 3, 3, 6, 6, 7, 7, 6, 6, 7, 7, 1, 2, 3, 3, 2, 2, 3, 3, 6, 6, 7, 7, 6, 6, 7, 7,
-    6, 6, 7, 7, 6, 6, 7, 7, 8, 8, 8, 8, 8, 8, 8, 8, 6, 6, 7, 7, 6, 6, 7, 7, 8, 8, 8, 8, 8, 8, 8, 8,
-    2, 2, 3, 3, 2, 2, 3, 3, 6, 6, 7, 7, 6, 6, 7, 7, 2, 2, 3, 3, 2, 2, 3, 3, 6, 6, 7, 7, 6, 6, 7, 7,
-    6, 6, 7, 7, 6, 6, 7, 7, 8, 8, 8, 8, 8, 8, 8, 8, 6, 6, 7, 7, 6, 6, 7, 7, 8, 8, 8, 8, 8, 8, 8, 8,
-    3, 3, 4, 4, 3, 3, 4, 4, 7, 7, 7, 7, 7, 7, 7, 7, 3, 3, 4, 4, 3, 3, 4, 4, 7, 7, 7, 7, 7, 7, 7, 7,
-    7, 7, 7, 7, 7, 7, 7, 7, 8, 8, 8, 8, 8, 8, 8, 8, 7, 7, 7, 7, 7, 7, 7, 7, 8, 8, 8, 8, 8, 8, 8, 8,
-    3, 3, 4, 4, 3, 3, 4, 4, 7, 7, 7, 7, 7, 7, 7, 7, 3, 3, 4, 4, 3, 3, 4, 4, 7, 7, 7, 7, 7, 7, 7, 7,
-    7, 7, 7, 7, 7, 7, 7, 7, 8, 8, 8, 8, 8, 8, 8, 8, 7, 7, 7, 7, 7, 7, 7, 7, 8, 8, 8, 8, 8, 8, 8, 8,
-    0, 3, 1, 4, 3, 6, 4, 7, 1, 4, 2, 5, 4, 7, 5, 7, 0, 3, 1, 4, 3, 6, 4, 7, 1, 4, 2, 5, 4, 7, 5, 7,
-    1, 4, 2, 5, 4, 7, 5, 7, 2, 5, 2, 5, 5, 7, 5, 7, 1, 4, 2, 5, 4, 7, 5, 7, 2, 5, 2, 5, 5, 7, 5, 7,
-    3, 6, 4, 7, 6, 8, 7, 8, 4, 7, 5, 7, 7, 8, 7, 8, 3, 6, 4, 7, 6, 8, 7, 8, 4, 7, 5, 7, 7, 8, 7, 8,
-    4, 7, 5, 7, 7, 8, 7, 8, 5, 7, 5, 7, 7, 8, 7, 8, 4, 7, 5, 7, 7, 8, 7, 8, 5, 7, 5, 7, 7, 8, 7, 8,
-    1, 4, 2, 5, 4, 7, 5, 7, 2, 5, 2, 5, 5, 7, 5, 7, 1, 4, 2, 5, 4, 7, 5, 7, 2, 5, 2, 5, 5, 7, 5, 7,
-    2, 5, 2, 5, 5, 7, 5, 7, 2, 5, 2, 5, 5, 7, 5, 7, 2, 5, 2, 5, 5, 7, 5, 7, 2, 5, 2, 5, 5, 7, 5, 7,
-    4, 7, 5, 7, 7, 8, 7, 8, 5, 7, 5, 7, 7, 8, 7, 8, 4, 7, 5, 7, 7, 8, 7, 8, 5, 7, 5, 7, 7, 8, 7, 8,
-    5, 7, 5, 7, 7, 8, 7, 8, 5, 7, 5, 7, 7, 8, 7, 8, 5, 7, 5, 7, 7, 8, 7, 8, 5, 7, 5, 7, 7, 8, 7, 8,
-    3, 6, 4, 7, 6, 8, 7, 8, 4, 7, 5, 7, 7, 8, 7, 8, 3, 6, 4, 7, 6, 8, 7, 8, 4, 7, 5, 7, 7, 8, 7, 8,
-    4, 7, 5, 7, 7, 8, 7, 8, 5, 7, 5, 7, 7, 8, 7, 8, 4, 7, 5, 7, 7, 8, 7, 8, 5, 7, 5, 7, 7, 8, 7, 8,
-    6, 8, 7, 8, 8, 8, 8, 8, 7, 8, 7, 8, 8, 8, 8, 8, 6, 8, 7, 8, 8, 8, 8, 8, 7, 8, 7, 8, 8, 8, 8, 8,
-    7, 8, 7, 8, 8, 8, 8, 8, 7, 8, 7, 8, 8, 8, 8, 8, 7, 8, 7, 8, 8, 8, 8, 8, 7, 8, 7, 8, 8, 8, 8, 8,
-    4, 7, 5, 7, 7, 8, 7, 8, 5, 7, 5, 7, 7, 8, 7, 8, 4, 7, 5, 7, 7, 8, 7, 8, 5, 7, 5, 7, 7, 8, 7, 8,
-    5, 7, 5, 7, 7, 8, 7, 8, 5, 7, 5, 7, 7, 8, 7, 8, 5, 7, 5, 7, 7, 8, 7, 8, 5, 7, 5, 7, 7, 8, 7, 8,
-    7, 8, 7, 8, 8, 8, 8, 8, 7, 8, 7, 8, 8, 8, 8, 8, 7, 8, 7, 8, 8, 8, 8, 8, 7, 8, 7, 8, 8, 8, 8, 8,
-    7, 8, 7, 8, 8, 8, 8, 8, 7, 8, 7, 8, 8, 8, 8, 8, 7, 8, 7, 8, 8, 8, 8, 8, 7, 8, 7, 8, 8, 8, 8, 8
-};
-
-static const OPJ_BYTE lut_ctxno_sc[256] = {
-    0x9, 0x9, 0xa, 0xa, 0x9, 0x9, 0xa, 0xa, 0xc, 0xc, 0xd, 0xb, 0xc, 0xc, 0xd, 0xb,
-    0x9, 0x9, 0xa, 0xa, 0x9, 0x9, 0xa, 0xa, 0xc, 0xc, 0xb, 0xd, 0xc, 0xc, 0xb, 0xd,
-    0xc, 0xc, 0xd, 0xd, 0xc, 0xc, 0xb, 0xb, 0xc, 0x9, 0xd, 0xa, 0x9, 0xc, 0xa, 0xb,
-    0xc, 0xc, 0xb, 0xb, 0xc, 0xc, 0xd, 0xd, 0xc, 0x9, 0xb, 0xa, 0x9, 0xc, 0xa, 0xd,
-    0x9, 0x9, 0xa, 0xa, 0x9, 0x9, 0xa, 0xa, 0xc, 0xc, 0xd, 0xb, 0xc, 0xc, 0xd, 0xb,
-    0x9, 0x9, 0xa, 0xa, 0x9, 0x9, 0xa, 0xa, 0xc, 0xc, 0xb, 0xd, 0xc, 0xc, 0xb, 0xd,
-    0xc, 0xc, 0xd, 0xd, 0xc, 0xc, 0xb, 0xb, 0xc, 0x9, 0xd, 0xa, 0x9, 0xc, 0xa, 0xb,
-    0xc, 0xc, 0xb, 0xb, 0xc, 0xc, 0xd, 0xd, 0xc, 0x9, 0xb, 0xa, 0x9, 0xc, 0xa, 0xd,
-    0xa, 0xa, 0xa, 0xa, 0xa, 0xa, 0xa, 0xa, 0xd, 0xb, 0xd, 0xb, 0xd, 0xb, 0xd, 0xb,
-    0xa, 0xa, 0x9, 0x9, 0xa, 0xa, 0x9, 0x9, 0xd, 0xb, 0xc, 0xc, 0xd, 0xb, 0xc, 0xc,
-    0xd, 0xd, 0xd, 0xd, 0xb, 0xb, 0xb, 0xb, 0xd, 0xa, 0xd, 0xa, 0xa, 0xb, 0xa, 0xb,
-    0xd, 0xd, 0xc, 0xc, 0xb, 0xb, 0xc, 0xc, 0xd, 0xa, 0xc, 0x9, 0xa, 0xb, 0x9, 0xc,
-    0xa, 0xa, 0x9, 0x9, 0xa, 0xa, 0x9, 0x9, 0xb, 0xd, 0xc, 0xc, 0xb, 0xd, 0xc, 0xc,
-    0xa, 0xa, 0xa, 0xa, 0xa, 0xa, 0xa, 0xa, 0xb, 0xd, 0xb, 0xd, 0xb, 0xd, 0xb, 0xd,
-    0xb, 0xb, 0xc, 0xc, 0xd, 0xd, 0xc, 0xc, 0xb, 0xa, 0xc, 0x9, 0xa, 0xd, 0x9, 0xc,
-    0xb, 0xb, 0xb, 0xb, 0xd, 0xd, 0xd, 0xd, 0xb, 0xa, 0xb, 0xa, 0xa, 0xd, 0xa, 0xd
-};
-
-static const OPJ_BYTE lut_spb[256] = {
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 1, 0, 1, 0, 0, 1, 1, 0, 0, 1, 1, 0, 1, 0, 1, 0, 1, 0, 1,
-    0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 1, 0, 1, 1, 1,
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 1, 0, 1, 0, 0, 1, 1, 0, 0, 1, 1, 0, 1, 0, 1, 0, 1, 0, 1,
-    0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 1, 0, 1, 1, 1,
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 1, 0, 1,
-    0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 1, 0, 1,
-    1, 1, 0, 0, 1, 1, 0, 0, 0, 1, 0, 1, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 0, 1, 0, 1, 0, 1,
-    0, 0, 0, 0, 1, 1, 1, 1, 0, 1, 0, 0, 1, 1, 0, 1, 0, 0, 0, 0, 1, 1, 1, 1, 0, 1, 0, 1, 1, 1, 1, 1
-};
 
 
 // ---- t1.c: the decoding passes ----
@@ -638,7 +446,7 @@ static inline OPJ_UINT32 opj_t1_getctxtno_sc_or_spb_index(OPJ_UINT32 fX,
 
 static inline OPJ_BYTE opj_t1_getctxno_sc(OPJ_UINT32 lu)
 {
-    return lut_ctxno_sc[lu];
+    return kLutCtxnoSc[lu];
 }
 
 static inline OPJ_UINT32 opj_t1_getctxno_mag(OPJ_UINT32 f)
@@ -650,7 +458,7 @@ static inline OPJ_UINT32 opj_t1_getctxno_mag(OPJ_UINT32 f)
 
 static inline OPJ_BYTE opj_t1_getspb(OPJ_UINT32 lu)
 {
-    return lut_spb[lu];
+    return kLutSpb[lu];
 }
 
 
@@ -1414,7 +1222,7 @@ bool t1_decode_cblk(T1& t1_ref, const T1Block& b, const Messages& msg) noexcept
     opj_mqc_t* mqc = &(t1->mqc);
     const OPJ_UINT32 orient = b.orient, roishift = b.roishift, cblksty = b.cblksty;
 
-    mqc->lut_ctxno_zc_orient = lut_ctxno_zc + (orient << 9);
+    mqc->lut_ctxno_zc_orient = kLutCtxnoZc + (orient << 9);
     allocate_buffers(t1, b.w, b.h);
 
     OPJ_INT32 bpno_plus_one = (OPJ_INT32)(roishift + b.numbps);
@@ -1462,7 +1270,7 @@ bool t1_decode_cblk(T1& t1_ref, const T1Block& b, const Messages& msg) noexcept
             {
                 std::uint8_t states[MQC_NUMCTXS];
                 for (OPJ_UINT32 k = 0; k < MQC_NUMCTXS; ++k) {
-                    states[k] = static_cast<std::uint8_t>(mqc->ctxs[k] - mqc_states);
+                    states[k] = static_cast<std::uint8_t>(mqc->ctxs[k] - kMqcStates);
                 }
                 g_t1_trace.segment(g_t1_trace.user, cblkdata + cblkdataindex, seg->len, states,
                                    (cblksty & J2K_CCP_CBLKSTY_RESET) != 0);
@@ -1514,7 +1322,7 @@ T1Trace g_t1_trace{};
 
 const MqState* t1_trace_states() noexcept
 {
-    return mqc_states;
+    return kMqcStates;
 }
 #endif
 
