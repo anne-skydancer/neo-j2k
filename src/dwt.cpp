@@ -901,13 +901,15 @@ constexpr std::size_t kRowWise53 = 512 * 512;
 //
 // The lifting steps of opj_v8dwt_decode, each sample taking the same operations in the same order,
 // on whole rows of the buffer where they lie, so every access is contiguous:
-// - the horizontal pass lifts each row's low and high halves in place, eight samples at a time, then
-//   interleaves them (OpenJPEG gathers eight rows into opj_v8dwt_t and scatters them back);
-// - the vertical pass lifts the low and the high rows in place, a row at a time, the four steps
-//   advancing together down the rows so a row is in the cache from its first step to its last
-//   (OpenJPEG gathers eight-column strips, half a cache line from each row, rows a stride apart),
-//   then puts the rows in their interleaved order by following the permutation's cycles with one
-//   row of scratch. Memory beyond the tile's buffer: a row and a bit a row.
+// - the horizontal pass lifts each row's low and high halves in place, eight samples at a time
+//   (OpenJPEG gathers eight rows into opj_v8dwt_t and scatters them back);
+// - the vertical pass lifts the low and the high rows in place, the four steps advancing together
+//   down the rows, so a row is in the cache from its first step to its last; in the steady state
+//   one sweep over the columns does the scaling and all four steps with every value in registers
+//   (OpenJPEG gathers eight-column strips, half a cache line from each row, rows a stride apart);
+// - one pass then puts the rows in their interleaved order by following the permutation's cycles
+//   with one row of scratch, interleaving each row's columns as it copies it.
+// Memory beyond the tile's buffer: a row and a bit a row.
 
 // opj_v8dwt_decode_step2 on one row's halves where they lie: target t[i], i < min(end, m), takes
 // (s[i - 1 + off] + s[i + off]) * c with s[-1] read as s[0] (the mirror at the first sample, off =
@@ -953,81 +955,58 @@ void row_step2_avx2(float* t, const float* s, std::uint32_t end, std::uint32_t m
 }
 #endif
 
-// One row of the horizontal pass: sn low then dn high samples in row, the first of the
-// resolution's row on parity cas; the row receives them lifted and interleaved (tmp: sn + dn floats)
+// One row's horizontal lifting: sn low then dn high samples in row, the first of the resolution's
+// row on parity cas, lifted where they lie; their interleave is left to the level's row pass
+// (interleave_level), which copies every row anyway: the vertical lifting that comes first treats
+// each column alike, whatever its place in the row
 template <bool kAvx2>
-void h97_row(float* row, std::int32_t sn, std::int32_t dn, std::int32_t cas, float* tmp) noexcept
+void h97_lift(float* row, std::int32_t sn, std::int32_t dn, std::int32_t cas) noexcept
 {
+    const bool lift = cas == 0 ? (dn > 0 || sn > 1) : (sn > 0 || dn > 1);
+    if (!lift) {
+        return;
+    }
     float* lo = row;
     float* hi = row + sn;
     const std::uint32_t usn = static_cast<std::uint32_t>(sn), udn = static_cast<std::uint32_t>(dn);
-    const bool lift = cas == 0 ? (dn > 0 || sn > 1) : (sn > 0 || dn > 1);
-    if (lift) {
-        const std::int32_t a = cas == 0 ? 0 : 1, b = 1 - a;
-        const std::uint32_t ml = static_cast<std::uint32_t>(imin(sn, dn - a));
-        const std::uint32_t mh = static_cast<std::uint32_t>(imin(dn, sn - b));
-        const std::uint32_t la = static_cast<std::uint32_t>(a), lb = static_cast<std::uint32_t>(b);
-#if defined(__AVX2__)
-        if constexpr (kAvx2) {
-            const __m256 vk = _mm256_set1_ps(kK), vt = _mm256_set1_ps(kTwoInvK);
-            std::uint32_t i = 0;
-            for (; i + 8 <= usn; i += 8) {
-                _mm256_storeu_ps(lo + i, _mm256_mul_ps(_mm256_loadu_ps(lo + i), vk));
-            }
-            for (; i < usn; ++i) {
-                lo[i] = lo[i] * kK;
-            }
-            for (i = 0; i + 8 <= udn; i += 8) {
-                _mm256_storeu_ps(hi + i, _mm256_mul_ps(_mm256_loadu_ps(hi + i), vt));
-            }
-            for (; i < udn; ++i) {
-                hi[i] = hi[i] * kTwoInvK;
-            }
-            row_step2_avx2(lo, hi, usn, ml, -kDelta, la);
-            row_step2_avx2(hi, lo, udn, mh, -kGamma, lb);
-            row_step2_avx2(lo, hi, usn, ml, -kBeta, la);
-            row_step2_avx2(hi, lo, udn, mh, -kAlpha, lb);
-        } else
-#endif
-        {
-            for (std::uint32_t i = 0; i < usn; ++i) {
-                lo[i] = lo[i] * kK;
-            }
-            for (std::uint32_t i = 0; i < udn; ++i) {
-                hi[i] = hi[i] * kTwoInvK;
-            }
-            row_step2_scalar(lo, hi, usn, ml, -kDelta, la);
-            row_step2_scalar(hi, lo, udn, mh, -kGamma, lb);
-            row_step2_scalar(lo, hi, usn, ml, -kBeta, la);
-            row_step2_scalar(hi, lo, udn, mh, -kAlpha, lb);
-        }
-    }
-    // interleave: the row's first sample is a low one on cas 0, a high one on cas 1
-    const float* first = cas == 0 ? lo : hi;
-    const float* second = cas == 0 ? hi : lo;
-    const std::uint32_t nfirst = cas == 0 ? usn : udn, nsecond = cas == 0 ? udn : usn;
-    const std::uint32_t pairs = nsecond < nfirst ? nsecond : nfirst;
-    std::uint32_t i = 0;
+    const std::int32_t a = cas == 0 ? 0 : 1, b = 1 - a;
+    const std::uint32_t ml = static_cast<std::uint32_t>(imin(sn, dn - a));
+    const std::uint32_t mh = static_cast<std::uint32_t>(imin(dn, sn - b));
+    const std::uint32_t la = static_cast<std::uint32_t>(a), lb = static_cast<std::uint32_t>(b);
 #if defined(__AVX2__)
     if constexpr (kAvx2) {
-        for (; i + 8 <= pairs; i += 8) {
-            const __m256 f = _mm256_loadu_ps(first + i), s = _mm256_loadu_ps(second + i);
-            const __m256 l = _mm256_unpacklo_ps(f, s), h = _mm256_unpackhi_ps(f, s);
-            _mm256_storeu_ps(tmp + 2 * i, _mm256_permute2f128_ps(l, h, 0x20));
-            _mm256_storeu_ps(tmp + 2 * i + 8, _mm256_permute2f128_ps(l, h, 0x31));
+        const __m256 vk = _mm256_set1_ps(kK), vt = _mm256_set1_ps(kTwoInvK);
+        std::uint32_t i = 0;
+        for (; i + 8 <= usn; i += 8) {
+            _mm256_storeu_ps(lo + i, _mm256_mul_ps(_mm256_loadu_ps(lo + i), vk));
         }
-    }
+        for (; i < usn; ++i) {
+            lo[i] = lo[i] * kK;
+        }
+        for (i = 0; i + 8 <= udn; i += 8) {
+            _mm256_storeu_ps(hi + i, _mm256_mul_ps(_mm256_loadu_ps(hi + i), vt));
+        }
+        for (; i < udn; ++i) {
+            hi[i] = hi[i] * kTwoInvK;
+        }
+        row_step2_avx2(lo, hi, usn, ml, -kDelta, la);
+        row_step2_avx2(hi, lo, udn, mh, -kGamma, lb);
+        row_step2_avx2(lo, hi, usn, ml, -kBeta, la);
+        row_step2_avx2(hi, lo, udn, mh, -kAlpha, lb);
+    } else
 #endif
-    for (; i < pairs; ++i) {
-        tmp[2 * i] = first[i];
-        tmp[2 * i + 1] = second[i];
+    {
+        for (std::uint32_t i = 0; i < usn; ++i) {
+            lo[i] = lo[i] * kK;
+        }
+        for (std::uint32_t i = 0; i < udn; ++i) {
+            hi[i] = hi[i] * kTwoInvK;
+        }
+        row_step2_scalar(lo, hi, usn, ml, -kDelta, la);
+        row_step2_scalar(hi, lo, udn, mh, -kGamma, lb);
+        row_step2_scalar(lo, hi, usn, ml, -kBeta, la);
+        row_step2_scalar(hi, lo, udn, mh, -kAlpha, lb);
     }
-    if (nfirst > pairs) {
-        tmp[2 * pairs] = first[pairs];
-    } else if (nsecond > pairs) {
-        tmp[2 * pairs + 1] = second[pairs];
-    }
-    std::memcpy(row, tmp, std::size_t(usn + udn) * sizeof(float));
 }
 
 // Row operations of the vertical pass over n floats: opj_v8dwt_decode_step1's t * c, step2's
@@ -1084,22 +1063,111 @@ void row_lift_edge(float* t, const float* s, std::uint32_t n, float c2) noexcept
     }
 }
 
+// The vertical schedule's steady state as one sweep over the columns (v97_lift_rows says when):
+// rows k of the low and the high band (L, H) are scaled, and each of the four steps lifts the one
+// target the schedule gives it, every value kept in registers from its load to its store, so a
+// sample is loaded and stored once a level instead of once a step. The operations and their order
+// are row_scale's and row_lift's. cas 0 (a = 0, b = 1): delta on L[k] from H[k-1], H[k]; gamma on
+// H[k-1] from L[k-1], L[k]; beta on L[k-1] from H[k-2], H[k-1]; alpha on H[k-2] from L[k-2],
+// L[k-1]. cas 1 (a = 1, b = 0): delta on L[k-1] from H[k-1], H[k]; gamma on H[k-1] from L[k-2],
+// L[k-1]; beta on L[k-2] from H[k-2], H[k-1]; alpha on H[k-2] from L[k-3], L[k-2].
+template <bool kAvx2, int kCas>
+void v97_sweep(float* const* L, float* const* H, std::uint32_t cols) noexcept
+{
+    // L[0] is row k of the low band, L[1] row k - 1 and so on; H likewise
+    float *l0 = L[0], *l1 = L[1], *l2 = L[2], *h0 = H[0], *h1 = H[1], *h2 = H[2];
+    float* l3 = nullptr;
+    if constexpr (kCas == 1) {
+        l3 = L[3];
+    }
+    std::uint32_t x = 0;
+#if defined(__AVX2__)
+    if constexpr (kAvx2) {
+        const __m256 vk = _mm256_set1_ps(kK), vt = _mm256_set1_ps(kTwoInvK), cd = _mm256_set1_ps(-kDelta),
+                     cg = _mm256_set1_ps(-kGamma), cb = _mm256_set1_ps(-kBeta), ca = _mm256_set1_ps(-kAlpha);
+        auto lift = [](__m256 t, __m256 s1, __m256 s2, __m256 c) {
+            return _mm256_add_ps(t, _mm256_mul_ps(_mm256_add_ps(s1, s2), c));
+        };
+        for (; x + 8 <= cols; x += 8) {
+            const __m256 lk = _mm256_mul_ps(_mm256_loadu_ps(l0 + x), vk);
+            const __m256 hk = _mm256_mul_ps(_mm256_loadu_ps(h0 + x), vt);
+            const __m256 hk1 = _mm256_loadu_ps(h1 + x);
+            const __m256 hk2 = _mm256_loadu_ps(h2 + x);
+            if constexpr (kCas == 0) {
+                const __m256 d = lift(lk, hk1, hk, cd);
+                const __m256 lk1 = _mm256_loadu_ps(l1 + x);
+                const __m256 g = lift(hk1, lk1, d, cg);
+                const __m256 bb = lift(lk1, hk2, g, cb);
+                const __m256 al = lift(hk2, _mm256_loadu_ps(l2 + x), bb, ca);
+                _mm256_storeu_ps(l0 + x, d);
+                _mm256_storeu_ps(h0 + x, hk);
+                _mm256_storeu_ps(h1 + x, g);
+                _mm256_storeu_ps(l1 + x, bb);
+                _mm256_storeu_ps(h2 + x, al);
+            } else {
+                const __m256 d = lift(_mm256_loadu_ps(l1 + x), hk1, hk, cd);
+                const __m256 lk2 = _mm256_loadu_ps(l2 + x);
+                const __m256 g = lift(hk1, lk2, d, cg);
+                const __m256 bb = lift(lk2, hk2, g, cb);
+                const __m256 al = lift(hk2, _mm256_loadu_ps(l3 + x), bb, ca);
+                _mm256_storeu_ps(l0 + x, lk);
+                _mm256_storeu_ps(h0 + x, hk);
+                _mm256_storeu_ps(l1 + x, d);
+                _mm256_storeu_ps(h1 + x, g);
+                _mm256_storeu_ps(l2 + x, bb);
+                _mm256_storeu_ps(h2 + x, al);
+            }
+        }
+    }
+#endif
+    for (; x < cols; ++x) {
+        const float lk = l0[x] * kK, hk = h0[x] * kTwoInvK, hk1 = h1[x], hk2 = h2[x];
+        if constexpr (kCas == 0) {
+            const float d = lk + ((hk1 + hk) * -kDelta);
+            const float lk1 = l1[x];
+            const float g = hk1 + ((lk1 + d) * -kGamma);
+            const float bb = lk1 + ((hk2 + g) * -kBeta);
+            const float al = hk2 + ((l2[x] + bb) * -kAlpha);
+            l0[x] = d;
+            h0[x] = hk;
+            h1[x] = g;
+            l1[x] = bb;
+            h2[x] = al;
+        } else {
+            const float d = l1[x] + ((hk1 + hk) * -kDelta);
+            const float lk2 = l2[x];
+            const float g = hk1 + ((lk2 + d) * -kGamma);
+            const float bb = lk2 + ((hk2 + g) * -kBeta);
+            const float al = hk2 + ((l3[x] + bb) * -kAlpha);
+            l0[x] = lk;
+            h0[x] = hk;
+            l1[x] = d;
+            h1[x] = g;
+            l2[x] = bb;
+            h2[x] = al;
+        }
+    }
+}
+
 // The vertical lifting of cols columns: sn low rows from base, then dn high ones, rows stride
 // floats apart, the resolution's first row on parity cas. The steps are those of opj_v8dwt_decode
 // (row_step2's indices, a row for a sample); step s updates its target rows in order, each as soon
 // as the rows it reads have had step s - 1 (or the scaling) and the row itself its previous step,
 // which also keeps every row from being updated before the steps that read its older value are
-// done with it (step s + 1's targets wait for step s beyond the rows they overwrite).
-// Each row first takes the level's horizontal pass (h97_row: hsn, hdn, hcas, tmp), just before its
+// done with it (step s + 1's targets wait for step s beyond the rows they overwrite). Where each
+// step has exactly one interior target (every row but the first two or three and the last ones),
+// the scaling of the new rows and the four steps are one sweep (v97_sweep); the schedule then runs
+// on, so a step that has more to do in that round (an edge target at the end) still does it.
+// Each row first takes the level's horizontal lifting (h97_lift: hsn, hdn, hcas), just before its
 // first vertical step, while it is in the cache.
 template <bool kAvx2>
 void v97_lift_rows(float* base, std::size_t stride, std::uint32_t cols, std::int32_t sn, std::int32_t dn,
-                   std::int32_t cas, std::int32_t hsn, std::int32_t hdn, std::int32_t hcas, float* tmp) noexcept
+                   std::int32_t cas, std::int32_t hsn, std::int32_t hdn, std::int32_t hcas) noexcept
 {
     const bool lift = cas == 0 ? (dn > 0 || sn > 1) : (sn > 0 || dn > 1);
     if (!lift) {
         for (std::int32_t j = 0; j < sn + dn; ++j) {
-            h97_row<kAvx2>(base + std::size_t(j) * stride, hsn, hdn, hcas, tmp);
+            h97_lift<kAvx2>(base + std::size_t(j) * stride, hsn, hdn, hcas);
         }
         return;
     }
@@ -1125,14 +1193,48 @@ void v97_lift_rows(float* base, std::size_t stride, std::uint32_t cols, std::int
     const std::uint32_t rows = usn > udn ? usn : udn;
     for (std::uint32_t k = 0; k < rows; ++k) {
         if (k < usn) {
-            h97_row<kAvx2>(low(k), hsn, hdn, hcas, tmp);
-            row_scale<kAvx2>(low(k), cols, kK);
-            scaled_low = k + 1;
+            h97_lift<kAvx2>(low(k), hsn, hdn, hcas);
         }
         if (k < udn) {
-            h97_row<kAvx2>(high(k), hsn, hdn, hcas, tmp);
-            row_scale<kAvx2>(high(k), cols, kTwoInvK);
-            scaled_high = k + 1;
+            h97_lift<kAvx2>(high(k), hsn, hdn, hcas);
+        }
+        // the steady state, where the schedule below would scale rows k and give each step the one
+        // interior target v97_sweep takes (its next[] as the sweep leaves it)
+        bool swept = false;
+        if (k < usn && k < udn) {
+            if (cas == 0 && k >= 2 && next[0] == k && next[1] == k - 1 && next[2] == k - 1 && next[3] == k - 2 &&
+                k < steps[0].imax && k - 1 < steps[1].imax && k - 2 < steps[3].imax) {
+                float* const L[3] = {low(k), low(k - 1), low(k - 2)};
+                float* const H[3] = {high(k), high(k - 1), high(k - 2)};
+                v97_sweep<kAvx2, 0>(L, H, cols);
+                next[0] = k + 1;
+                next[1] = k;
+                next[2] = k;
+                next[3] = k - 1;
+                swept = true;
+            } else if (cas == 1 && k >= 3 && next[0] == k - 1 && next[1] == k - 1 && next[2] == k - 2 &&
+                       next[3] == k - 2 && k - 1 < steps[0].imax && k - 1 < steps[1].imax && k - 2 < steps[3].imax) {
+                float* const L[4] = {low(k), low(k - 1), low(k - 2), low(k - 3)};
+                float* const H[3] = {high(k), high(k - 1), high(k - 2)};
+                v97_sweep<kAvx2, 1>(L, H, cols);
+                next[0] = k;
+                next[1] = k;
+                next[2] = k - 1;
+                next[3] = k - 1;
+                swept = true;
+            }
+        }
+        if (swept) {
+            scaled_low = scaled_high = k + 1;
+        } else {
+            if (k < usn) {
+                row_scale<kAvx2>(low(k), cols, kK);
+                scaled_low = k + 1;
+            }
+            if (k < udn) {
+                row_scale<kAvx2>(high(k), cols, kTwoInvK);
+                scaled_high = k + 1;
+            }
         }
         for (std::uint32_t s = 0; s < 4; ++s) {
             const Step& p = steps[s];
@@ -1159,7 +1261,7 @@ void v97_lift_rows(float* base, std::size_t stride, std::uint32_t cols, std::int
     }
 }
 
-// The rows of a vertical pass from their order in the buffer (sn low, then dn high) into the
+// The 5/3 row-wise pass's rows (level53_rows) from their order in the buffer (sn low, then dn high) into the
 // resolution's (the low ones on parity cas): each cycle of the permutation followed with one row of
 // scratch (tmp, row_bytes), every row copied once; visited: a bit a row
 void interleave_rows(void* base_v, std::size_t stride, std::size_t row_bytes, std::uint32_t sn, std::uint32_t dn,
@@ -1191,6 +1293,68 @@ void interleave_rows(void* base_v, std::size_t stride, std::size_t row_bytes, st
     }
 }
 
+// One row's sn low then dn high samples (src) interleaved into dst, the row's first sample a low
+// one on cas 0, a high one on cas 1 (opj_v8dwt_interleave_h's order)
+template <bool kAvx2>
+void interleave_columns(float* dst, const float* src, std::uint32_t sn, std::uint32_t dn, std::uint32_t cas) noexcept
+{
+    const float* first = cas == 0 ? src : src + sn;
+    const float* second = cas == 0 ? src + sn : src;
+    const std::uint32_t nfirst = cas == 0 ? sn : dn, nsecond = cas == 0 ? dn : sn;
+    const std::uint32_t pairs = nsecond < nfirst ? nsecond : nfirst;
+    std::uint32_t i = 0;
+#if defined(__AVX2__)
+    if constexpr (kAvx2) {
+        for (; i + 8 <= pairs; i += 8) {
+            const __m256 f = _mm256_loadu_ps(first + i), s = _mm256_loadu_ps(second + i);
+            const __m256 l = _mm256_unpacklo_ps(f, s), h = _mm256_unpackhi_ps(f, s);
+            _mm256_storeu_ps(dst + 2 * i, _mm256_permute2f128_ps(l, h, 0x20));
+            _mm256_storeu_ps(dst + 2 * i + 8, _mm256_permute2f128_ps(l, h, 0x31));
+        }
+    }
+#endif
+    for (; i < pairs; ++i) {
+        dst[2 * i] = first[i];
+        dst[2 * i + 1] = second[i];
+    }
+    if (nfirst > pairs) {
+        dst[2 * pairs] = first[pairs];
+    } else if (nsecond > pairs) {
+        dst[2 * pairs + 1] = second[pairs];
+    }
+}
+
+// The level's samples put in place: the rows from their order in the buffer (vsn low, then vdn
+// high) into the resolution's (the low ones on parity vcas), each cycle of the permutation followed
+// with one row of scratch (tmp, a row of floats), and every row's columns interleaved on the way
+// (hsn low then hdn high, on parity hcas), so each row is read once and written once; a row that
+// stays where it is goes through tmp. visited: a bit a row.
+template <bool kAvx2>
+void interleave_level(float* base, std::size_t stride, std::uint32_t hsn, std::uint32_t hdn, std::uint32_t hcas,
+                      std::uint32_t vsn, std::uint32_t vdn, std::uint32_t vcas, float* tmp, std::uint8_t* visited) noexcept
+{
+    const std::uint32_t len = vsn + vdn;
+    const std::size_t row_bytes = std::size_t(hsn + hdn) * sizeof(float);
+    std::memset(visited, 0, (len + 7) / 8);
+    // the buffer row whose samples go to row q of the resolution
+    auto source = [&](std::uint32_t q) { return (q & 1) == vcas ? (q - vcas) / 2 : vsn + (q + vcas - 1) / 2; };
+    auto row = [&](std::uint32_t q) { return base + std::size_t(q) * stride; };
+    for (std::uint32_t start = 0; start < len; ++start) {
+        if (visited[start >> 3] & (1u << (start & 7))) {
+            continue;
+        }
+        visited[start >> 3] = static_cast<std::uint8_t>(visited[start >> 3] | (1u << (start & 7)));
+        std::memcpy(tmp, row(start), row_bytes);
+        std::uint32_t cur = start;
+        for (std::uint32_t from = source(start); from != start; from = source(cur)) {
+            interleave_columns<kAvx2>(row(cur), row(from), hsn, hdn, hcas);
+            cur = from;
+            visited[cur >> 3] = static_cast<std::uint8_t>(visited[cur >> 3] | (1u << (cur & 7)));
+        }
+        interleave_columns<kAvx2>(row(cur), tmp, hsn, hdn, hcas);
+    }
+}
+
 // opj_dwt_decode_tile_97, one thread, row-wise
 template <bool kAvx2>
 void decode_97_t(std::int32_t* data, std::uint32_t w, const ResRect* res, std::uint32_t numres, float* wavelet,
@@ -1216,10 +1380,11 @@ void decode_97_t(std::int32_t* data, std::uint32_t w, const ResRect* res, std::u
             level97_columns<kAvx2>(data, w, rw, rh, vsn, vdn, vcas, hsn, hdn, hcas, wavelet);
             continue;
         }
-        v97_lift_rows<kAvx2>(aj, w, rw, vsn, vdn, vcas, hsn, hdn, hcas, wavelet);
-        interleave_rows(aj, std::size_t(w) * sizeof(float), std::size_t(rw) * sizeof(float),
-                        static_cast<std::uint32_t>(vsn), static_cast<std::uint32_t>(vdn), static_cast<std::uint32_t>(vcas),
-                        wavelet, reinterpret_cast<std::uint8_t*>(wavelet + rw));
+        v97_lift_rows<kAvx2>(aj, w, rw, vsn, vdn, vcas, hsn, hdn, hcas);
+        interleave_level<kAvx2>(aj, w, static_cast<std::uint32_t>(hsn), static_cast<std::uint32_t>(hdn),
+                                static_cast<std::uint32_t>(hcas), static_cast<std::uint32_t>(vsn),
+                                static_cast<std::uint32_t>(vdn), static_cast<std::uint32_t>(vcas), wavelet,
+                                reinterpret_cast<std::uint8_t*>(wavelet + rw));
     }
 }
 
