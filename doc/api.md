@@ -142,7 +142,8 @@ buffers from it (plan P2a). OpenJPEG sizes the image differently when the factor
 - Still failing cleanly, with `NJ2K_E_UNSUPPORTED`: `nj2k_get_decoded_tile`, `nj2k_read_tile_header`,
   `nj2k_decode_tile_data` and `nj2k_set_decode_area` (decoding by tile and decode areas, a later stage);
   the encoder (6a). `nj2k_get_cstr_index` gives `NULL` (no codestream index is built, fork audit P5),
-  `nj2k_dump_codec` prints nothing, `nj2k_codec_set_threads` is false (no threads).
+  `nj2k_dump_codec` prints nothing, `nj2k_codec_set_threads` is false (no threads of its own; a host calls
+  stage 5's `nj2k_decoder_set_executor` to lend its own).
 
 ## What stage 1c implements
 
@@ -230,6 +231,87 @@ global-state check stands). The options were:
 Under the OpenJPEG-shaped API the image (`nj2k_image_t` and its sample planes), the stream and its buffer
 come from the C runtime's heap whatever the choice, since their destroy functions take no codec; a
 zero-heap path needs the image and stream handled by the host or by the extension.
+
+## Threads in one image (stage 5)
+
+The library starts no thread and keeps no pool (plan T2, `performance.md` section 6). A host that wants
+a large image decoded on several cores lends the codec its executor:
+
+```c
+typedef void (*nj2k_job_fn)(void *job_ctx, NJ2K_UINT32 index);
+typedef struct nj2k_executor {
+    NJ2K_SIZE_T struct_size;   /* sizeof(nj2k_executor_t) */
+    NJ2K_UINT32 concurrency;   /* how many jobs the host runs at once, the calling thread included */
+    void (*parallel_for)(void *user, NJ2K_UINT32 count, nj2k_job_fn job, void *job_ctx);
+    void *user;
+} nj2k_executor_t;
+NJ2K_BOOL nj2k_decoder_set_executor(nj2k_codec_t *codec, const nj2k_executor_t *executor); /* NULL: none */
+```
+
+- `parallel_for` runs `job(job_ctx, i)` once for every `i < count`, on any threads in any order, the calling
+  thread included, and returns when every job has returned. What the caller wrote before the call is seen
+  by every job, and what every job wrote is seen by the caller once the call returns (each job's run
+  happens before the return, as a mutex or a release/acquire pair gives it): the decoder's stages rely on
+  it, one stage reading what the parts of the one before wrote. Jobs never wait for one another and never
+  call into the codec or the executor, so an executor whose waiting caller runs jobs itself cannot
+  deadlock, even with every worker busy or with many codecs sharing it: every decoder of a process can
+  share the host's one scheduler, and nothing oversubscribes the cores (OpenJPEG's
+  `opj_codec_set_threads` starts a pool per codec, and joins it when the codec is destroyed).
+- `concurrency` says how the work is cut, never how many threads run: each stage is cut into that many
+  parts (at most 64), Tier-1 into twice that many runs of code-blocks of about equal estimated cost (so
+  one slow run is not the tail).
+- Without an executor or with a concurrency below 2, everything runs on the calling thread, with the
+  operations of stages 1c-4. With one, the codec calls it for two things only: the tiles (of 2^18 decoded
+  samples or more in their largest component, 512 x 512) of an image whose largest decoded component has
+  more than 2^22 samples (above 2,048 x 2,048: grey, RGB and RGBA textures up to that size stay one thread
+  each, which is what a saturated host wants), and the clearing of an
+  image plane of 4 MiB or more (1,024 x 1,024 int32 samples) that the first tile written into it does not
+  cover, which only a multi-tile image has, whatever its tiles' sizes. Everything else, small images and
+  textures included, runs on the calling thread and makes no call to the executor (the tests check it, on
+  multi-tile images of small tiles too). The tile threshold and the clear threshold come from probes
+  (`doc/bench.md`, stage 5: a fresh 1 MiB plane cleared in 8 bands took as long as on one thread, a 4 MiB
+  one half as long); inside a large tile, wavelet levels below 2^18 samples and output regions below 2^16
+  samples a component also stay on the calling thread, two estimates not probed on their own (they only
+  apply inside a tile already split). The one-thread decodes run the operations they ran before; what
+  their times do is in `doc/bench.md` (stage 5: within what moving `main`'s own code by a few bytes does,
+  the one-thread Tier-1 walker has no counters: the parts' walker is a function of its own).
+- What runs through it: Tier-1 (the code-blocks, listed in OpenJPEG's order on the calling thread and cut
+  into contiguous runs of about equal estimated cost before anything is decoded), the
+  inverse wavelet's large levels (the horizontal lifting in bands of rows, the vertical lifting in
+  stripes of whole groups of 16 columns, the rows put in order by the permutation's cycles), the colour
+  transform, DC shift and copy into the caller's planes (bands of rows), and the clearing of large image
+  planes a first tile does not cover. Not tiles in parallel: a tile's walk over its tile-parts and its
+  packets (Tier-2) stays on the calling thread, as in OpenJPEG, and two tiles at once would hold two
+  tiles' samples (the peak-memory gate).
+- The same samples, status and messages in the same order for any executor and any concurrency: every
+  part writes its own samples, with the operations of the one-thread code in the same order; nothing is
+  summed across parts; and the one refusal of Tier-1 (bit-planes plus ROI shift at or above 31) is found
+  while listing the code-blocks, the blocks before it decoded as one thread decodes them, its warning
+  given after them.
+- Memory: per Tier-1 run, a scratch of 28 KiB with room for the largest code-block of that run (so the
+  runs' room for coded bytes adds up to at most the tile's coded bytes, which the decoder holds already,
+  whatever a stream declares); per part, a wavelet line; per code-block of a threaded tile, 8 bytes (its
+  estimated cost). It is kept between decodes like the rest of the codec's memory
+  (`nj2k_decoder_set_retained_bytes`), and it is outside the decoder limits' working-memory estimate, so
+  that the limits refuse the same images with or without an executor. When the allocator refuses any of
+  it, what was had for it is given back before the tile is decoded on the calling thread, so the tile has
+  the room it would have had without an executor and the outcome is one thread's (the tests check it under
+  capped allocators at every cap from below the least memory one thread decodes with to above what the
+  threads need, on single- and multi-tile files). What a threaded tile kept is still held while the next
+  tile is laid out, so under an allocator that refuses at exactly that margin, a later tile whose layout
+  needs more than the earlier ones' could in principle be refused where one thread's would not; no tested
+  file does that.
+- The caller's planes (`nj2k_decode_memory`) are written from several threads: rows in bands, and a tile
+  that decodes straight into them by code-blocks and stripes. `nj2k_decode_memory` checks only that a
+  plane's samples fit their sample stride; with one thread, planes that share bytes (two planes over the
+  same bytes, or rows closer than a row's samples reach) were harmless, the last write winning in a fixed
+  order. With an executor, a decode into such planes runs on the calling thread, so it writes what one
+  thread writes: planes are threaded only when no byte is in two samples (each plane's rows apart, and two
+  planes apart or interleaved in common rows, as the viewer's interleaved image is).
+- `nj2k_codec_set_threads` stays false and `nj2k_has_thread_support` false: the library has no threads of
+  its own (plan T2). A caller written for OpenJPEG that checks `opj_codec_set_threads`'s result sees it
+  fail and decodes on one thread; a host that wants threads calls `nj2k_decoder_set_executor` instead. A host that has none either can use a small pool of its own (the tests' `tests/common/thread_pool.h`
+  is one: workers started once and joined at its end, the caller running jobs while it waits).
 
 ## Builds and ABI
 

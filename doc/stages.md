@@ -15,7 +15,7 @@ a pull request into it (stage 0 into `main`); the stack lands on `main` in order
 | 2 | fused output pass: the colour transform, the DC shift and the copy into the caller's buffers in one pass; the viewer's interleaved 8-bit image in registers sixteen pixels a step, regions of a few pixels a pixel at a time (done: `src/output.cpp`, `doc/bench.md`; the output tail 5.05-5.12x net at 1024^2 on a quiet machine with its planes 64-byte aligned as the decoder allocates them (4.88-5.07x on unaligned planes, which the library never produces), 3-8 % above the floor of reading its 12.6 MB of planes and writing its pixels: the plan's 5x in every quiet run) |
 | 3 | row-wise wavelet on large levels: every access along whole rows, the horizontal pass fused into the vertical one, the vertical steps one register sweep in the steady state, the rows put in order and their columns interleaved in one pass at the end (9/7: 5.1-5.4x net at 1024^2 in each of fifteen runs, median 5.2x); small levels keep OpenJPEG's structure; int16 lanes for the 5/3 not tried (they need a range proof from the decoded bit-planes, D2) (done: `src/dwt.cpp`, `doc/bench.md`) |
 | 4 | Tier-1 tuning, each kept only when a bench shows it: the MQ renormalisation by count-leading-zeros (kept under the faster-and-bit-exact rule; at about 6-8 % of Tier-1 it is below the plan's 10 % gate); empty-column skipping and select-based decisions (dropped); the lane-per-code-block MQ prototype (`bench/nj2k_mq_lanes.cpp`, not adopted); the renormalisation costs few-pixel requests some Tier-1 time (code layout; four ways of keeping it for whole decodes only measured slower), which the tile set-up's step sizes without `ldexp` more than pay back (`doc/bench.md`) |
-| 5 | threads for large images and encodes |
+| 5 | threads for large images and encodes: the decoder's part done (`doc/api.md` "Threads in one image", `doc/bench.md`); the encoder's parallel Tier-1 and wavelet come with stage 6b, through the same executor |
 | 6a-6b | encoder, byte-identical to OpenJPEG for good (D9), then its speed |
 | 7a-7b | the native Rust twin, bit-identical to the C++ (no FFI; the C++ library is the oracle in its tests) |
 | 8 | packages and the viewer relinked against `neoj2k.dll` / `libneoj2k.so`, A/B on the devel build |
@@ -68,6 +68,34 @@ contents as proposed):
 | j2k-htj | HTJ2K (Part 15) decode and encode |
 | j2k-codestream | JPT streams, the codestream index, the dump |
 | j2k-utils | the command-line tools (compress, decompress, dump) with their image-format input and output |
+
+Stage 5 (2026-11-20), as the plan and its audit settled it (technical default T2, performance.md section
+6): the library starts no thread and keeps no pool; the host lends a codec its executor
+(`nj2k_decoder_set_executor`), whose waiting caller runs jobs itself, so every decoder shares the host's one
+scheduler and nothing oversubscribes; `nj2k_codec_set_threads` stays false. Tiles of 2^18 decoded samples
+and more in an image whose largest component has more than 2^22 samples (above 2,048 x 2,048) run Tier-1 (contiguous code-block runs of equal estimated cost), the wavelet's large levels (row
+bands, column stripes of 16, the rows' cycles) and the output (row bands) through it, and so do the clears
+of image planes of 4 MiB or more; smaller tiles, a codec without an executor and caller's planes that share
+bytes run on the calling thread with the operations of stages 1c-4. Gates (`doc/bench.md`): identical
+output for 1, 2, 4, 8, 16 and 64 threads (CI, the private bench corpus, the large images, both builds, the
+memory and the stream API, under capped allocators); faster than OpenJPEG at 1, 4 and 8 threads on every
+large image with no higher peak from memory (the stream API's multi-tile peaks are stage 1c's, above
+OpenJPEG's: a known exception for j2k-core, accepted by the owner on 2026-11-20; the j2k-tile module's
+low-memory stream closes it, and the memory-buffer API is not affected); ThreadSanitizer in CI, and the decode fuzz target's executor
+under ClusterFuzzLite's sanitizers; small images within what moving `main`'s own code by a few bytes does
+(the one-thread Tier-1 walker has no counters since the owner's call of 2026-11-20), and a saturated host
+decodes 1,024^2 and 2,048^2 textures one thread each, as without an executor (`doc/bench.md`). Two departures from the plan's section 2.7, both measured: whole
+decodes split from tiles of 2^18 decoded samples in an image of more than 2^22 samples a component (owner,
+2026-11-20: textures up to 2,048^2 stay one thread each; the plan had 256^2, and at 256^2 RGB 8 threads
+used the cores at 43 % efficiency, `doc/bench.md`), and Tier-1 cut into contiguous runs of about
+equal estimated cost rather than handed out largest first (contiguous runs keep each part's walk to its
+first block in OpenJPEG's order; with twice as many runs as parts, a slow run is not the tail).
+Not done, and why: tiles in parallel (a tile's walk over its tile-parts and packets is serial in OpenJPEG
+too, and two tiles at once would hold two tiles' samples, against the peak-memory gate), and the plan's
+64-byte padding of subband rows (the wavelet's column stripes are cut on 64-byte multiples instead; row
+bands, the stripes of a tile whose width is not a multiple of 16, and the code-blocks of neighbouring bands
+in Tier-1 can share a cache line only where they meet, a line per edge: 4,095 x 4,097 and 8,191 x 8,193
+scaled as 4,096^2 and 8,192^2 did).
 
 Decided (2026-11-18/19):
 

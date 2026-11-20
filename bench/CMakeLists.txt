@@ -11,6 +11,16 @@ if(TARGET nj2k_oracle_counting)
   add_dependencies(nj2k_bench nj2k_oracle_counting)
 endif()
 
+# The large-image bench (one decode a process against the oracle at N threads, and the saturated
+# host; bench/run_large.py drives it)
+add_executable(nj2k_large nj2k_large.cpp)
+target_link_libraries(nj2k_large PRIVATE nj2k_test_common)
+if(WIN32)
+  target_link_libraries(nj2k_large PRIVATE psapi)
+endif()
+nj2k_fp_strict(nj2k_large)
+nj2k_program_exceptions(nj2k_large)
+
 # The stage gates' kernel timings (the library's internals, from the static library)
 add_executable(nj2k_kernels nj2k_kernels.cpp)
 target_link_libraries(nj2k_kernels PRIVATE nj2k_test_common)

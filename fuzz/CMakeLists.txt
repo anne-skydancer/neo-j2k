@@ -6,7 +6,11 @@
 # build against a plain driver, nj2k_fuzz_<target>_replay, and CTest replays the seeds (the corpus,
 # the option-prefixed decode seeds and the JP2 header seeds of make_inputs.py, the round-trip seeds)
 # and fuzz/regressions through them on every compiler and platform. The guards' own test checks
-# the bombs of fuzz/bombs against the guards the targets give the oracle.
+# the bombs of fuzz/bombs against the guards the targets give the oracle. Stage 5: the decode
+# target decodes each input again with every stage split, through an executor that runs the parts
+# one after the other (so the sanitizers see the threaded path), and compares; and
+# nj2k_fuzz_decode_threads_replay, the decode target built with NJ2K_FUZZ_THREADS, does the same
+# through a pool of threads (the ThreadSanitizer job replays the seeds and regressions through it).
 set(NJ2K_FUZZ_TARGETS header decode roundtrip)
 
 if(NJ2K_BUILD_FUZZERS)
@@ -47,6 +51,11 @@ if(NJ2K_BUILD_TESTS)
     nj2k_fp_strict(nj2k_fuzz_${t}_replay)
     nj2k_program_exceptions(nj2k_fuzz_${t}_replay)
   endforeach()
+  add_executable(nj2k_fuzz_decode_threads_replay fuzz_decode.cpp standalone_main.cpp)
+  target_link_libraries(nj2k_fuzz_decode_threads_replay PRIVATE nj2k_test_common)
+  target_compile_definitions(nj2k_fuzz_decode_threads_replay PRIVATE NJ2K_FUZZ_THREADS=1)
+  nj2k_fp_strict(nj2k_fuzz_decode_threads_replay)
+  nj2k_program_exceptions(nj2k_fuzz_decode_threads_replay)
 
   # The decode seeds with option bytes (viewer mode, reduce levels, cuts, layer limits) and the
   # header target's JP2 seeds are made from the corpus by make_inputs.py, as the fuzz jobs make them.
@@ -74,6 +83,11 @@ if(NJ2K_BUILD_TESTS)
            COMMAND nj2k_fuzz_decode_replay "${_nj2k_corpus}" "${_nj2k_regressions}" ${_nj2k_decode_seeds})
   if(_nj2k_decode_seeds)
     set_tests_properties(fuzz_replay.decode PROPERTIES FIXTURES_REQUIRED nj2k_decode_seeds)
+  endif()
+  add_test(NAME fuzz_replay.decode_threads
+           COMMAND nj2k_fuzz_decode_threads_replay "${_nj2k_corpus}" "${_nj2k_regressions}" ${_nj2k_decode_seeds})
+  if(_nj2k_decode_seeds)
+    set_tests_properties(fuzz_replay.decode_threads PROPERTIES FIXTURES_REQUIRED nj2k_decode_seeds)
   endif()
   # the round-trip target reads coding parameters, not codestreams: its own seeds
   add_test(NAME fuzz_replay.roundtrip

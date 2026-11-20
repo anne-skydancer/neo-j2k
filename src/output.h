@@ -58,6 +58,15 @@ struct CopyComp {
 void write_group(const CopyComp* comps, std::uint32_t k, Mct mct, std::uint32_t sample_type, const nj2k_plane_t* planes,
                  std::uint32_t numplanes) noexcept;
 
+// Stage 5: the same passes with the rows cut into bands for the host's executor (parallel.h), every
+// sample taking the same operations; a region of fewer than jobs.output_samples samples a component
+// runs on the calling thread.
+struct Jobs;
+void write_group_jobs(const CopyComp* comps, std::uint32_t k, Mct mct, std::uint32_t sample_type,
+                      const nj2k_plane_t* planes, std::uint32_t numplanes, const Jobs& jobs) noexcept;
+void finish_in_place_mct_jobs(const InPlaceComp* three, Mct mct, const Jobs& jobs) noexcept;
+void finish_in_place_one_jobs(const InPlaceComp& comp, const Jobs& jobs) noexcept;
+
 namespace kernels {
 // The row kernels, scalar references and AVX2 versions, for the kernel tests: the colour transform
 // out of place and the DC shift in place (each picks mct.cpp's row kernel), the

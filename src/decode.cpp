@@ -62,6 +62,7 @@
 
 #include "codec.h"
 #include "output.h"
+#include "parallel.h"
 #include "tile.h"
 
 namespace nj2k::detail {
@@ -85,6 +86,70 @@ struct Range {
     std::uint64_t pos;
     std::uint32_t len;
 };
+
+// Whether the caller's planes can take rows from several threads at once (stage 5): no byte is in
+// two samples, that is a plane's rows lie apart (a row's samples within its row stride), and two
+// planes either lie apart or are interleaved in common rows (the same strides, their samples apart
+// within a row, and both planes' rows within one row stride). Then bands of rows, blocks and stripes
+// never write a byte another part writes. One thread writes planes that share bytes in its fixed
+// order (the last write wins); parts would race over them, so such a decode keeps to one thread.
+// (nj2k_decode_memory checks only that a plane's samples fit their sample stride: with one thread,
+// shared bytes were harmless.)
+bool planes_apart(const nj2k_output_t& o, const OutComp* comps) noexcept
+{
+    constexpr std::uint32_t kMaxChecked = 32;  // more planes than that: one thread
+    if (o.numplanes > kMaxChecked) {
+        return false;
+    }
+    const std::uint64_t ss = o.sample_type == NJ2K_SAMPLE_U8 ? 1 : o.sample_type == NJ2K_SAMPLE_U16 ? 2 : 4;
+    struct Span {
+        std::uint64_t lo, hi, row0, span, ars;
+        bool used;
+    };
+    Span sp[kMaxChecked];
+    for (std::uint32_t k = 0; k < o.numplanes; ++k) {
+        const nj2k_plane_t& pl = o.planes[k];
+        const OutComp& c = comps[pl.component];
+        sp[k].used = c.w != 0 && c.h != 0;
+        if (!sp[k].used) {
+            continue;
+        }
+        const std::uint64_t ars = pl.row_stride < 0 ? 0 - std::uint64_t(pl.row_stride) : std::uint64_t(pl.row_stride);
+        const std::uint64_t span = std::uint64_t(c.w - 1) * pl.sample_stride + ss;  // (2^32 - 1)^2 + 4 at most: fits
+        if ((c.h > 1 && span > ars) || (c.h > 1 && ars > (UINT64_MAX >> 2) / (c.h - 1)) || span > (UINT64_MAX >> 2)) {
+            return false;
+        }
+        const std::uint64_t down = std::uint64_t(c.h - 1) * ars;
+        const std::uint64_t base = reinterpret_cast<std::uintptr_t>(pl.data);
+        const std::uint64_t lo = pl.row_stride < 0 ? base - down : base;
+        if (lo > base || lo > UINT64_MAX - down - span) {
+            return false;
+        }
+        sp[k] = Span{lo, lo + down + span, base, span, ars, true};
+    }
+    for (std::uint32_t p = 0; p < o.numplanes; ++p) {
+        for (std::uint32_t q = p + 1; q < o.numplanes; ++q) {
+            const Span& a = sp[p];
+            const Span& b = sp[q];
+            if (!a.used || !b.used || a.hi <= b.lo || b.hi <= a.lo) {
+                continue;
+            }
+            const nj2k_plane_t& pa = o.planes[p];
+            const nj2k_plane_t& pb = o.planes[q];
+            if (pa.row_stride != pb.row_stride || pa.sample_stride != pb.sample_stride) {
+                return false;
+            }
+            const std::uint64_t first = a.row0 < b.row0 ? a.row0 : b.row0;
+            const std::uint64_t end = a.row0 + a.span > b.row0 + b.span ? a.row0 + a.span : b.row0 + b.span;
+            const std::uint64_t off = ((a.row0 > b.row0 ? a.row0 - b.row0 : b.row0 - a.row0)) % pa.sample_stride;
+            if ((sp[p].ars && end - first > a.ars) || off < ss || off > pa.sample_stride - ss) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
 
 // A tile's walk state (OpenJPEG keeps it in its opj_tcp_t), made when the tile first appears.
 struct TileWalk {
@@ -121,10 +186,65 @@ struct Walk {
     PackedCursor ppm{nullptr, 0};
     std::uint64_t image_need = UINT64_MAX;  // image_working_memory, once a tile needs it
     bool direct_tile = false;                // the tile decodes into the caller's planes (direct_output)
+    // threads in one image (stage 5): the host's executor, when the codec has one and the caller's
+    // planes share no byte (planes_apart); the current tile's stages run through it when the tile is
+    // large enough (tile_exec, null otherwise)
+    Jobs jobs{};
+    bool have_jobs = false;
+    const Jobs* tile_exec = nullptr;
 
     Walk(Decoder& dec, const CodestreamBytes& bytes, OutComp* c, const OutSink& s) noexcept
         : d(dec), mh(*dec.header), b(bytes), comps(c), sink(s), msg(dec.messages)
     {
+        have_jobs = d.jobs(jobs) && (sink.image_planes || planes_apart(*sink.output, comps));
+    }
+
+    // The current tile through the executor (stage 5), when there is one, the image's largest
+    // decoded component has more than parallel_tile samples and the tile's largest at least
+    // parallel_tile_floor: the code-blocks' costs and Tier-1's runs
+    // (plan_t1), a Tier-1 scratch a run, and the wavelet's larger scratch. When any of that cannot be had, what
+    // was had for it is given back and the tile runs on this thread, which decodes it the same.
+    // Its working memory is outside the decoder limits' estimate (so that the limits refuse the same
+    // images with or without an executor): per run a Tier-1 scratch (28 KiB) with room for the
+    // largest code-block of its run (over all runs at most the tile's coded bytes, which the decoder
+    // holds already), per part a wavelet line, and 8 bytes per code-block (its estimated cost).
+    bool threaded_tile(Tile& t, TileJobs& tj) noexcept
+    {
+        if (!have_jobs || t.largest_component_samples() < d.parallel_tile_floor) {
+            return false;
+        }
+        std::uint64_t image = 0;  // the image's largest decoded component
+        for (std::uint32_t c = 0; c < mh.numcomps; ++c) {
+            const std::uint64_t n = std::uint64_t(comps[c].w) * comps[c].h;
+            image = n > image ? n : image;
+        }
+        if (image <= d.parallel_tile) {
+            return false;
+        }
+        bool ok = d.blocks.grow(d.allocator, t.cblk_costs_bytes());
+        if (ok) {
+            t.plan_t1(tj, 2 * jobs.width, d.blocks.p);  // more runs than threads: a slow run is not the tail
+            ok = d.t1_parts.ensure(d.allocator, tj.runs);
+        }
+        for (std::uint32_t p = 0; ok && p < tj.runs; ++p) {
+            ok = d.t1_parts.t1[p].reserve(d.allocator, tj.run_bytes[p]);
+        }
+        const std::size_t one = t.dwt_scratch_bytes_needed();
+        if (ok && !d.dwt.grow(d.allocator, t.dwt_scratch_bytes_needed(jobs.width))) {
+            ok = false;
+        }
+        if (!ok) {
+            // this thread's decode then has the room it would have had without an executor
+            d.t1_parts.release(d.allocator);
+            d.blocks.release(d.allocator);
+            if (d.dwt.size > one) {
+                d.dwt.release(d.allocator);
+            }
+            return false;
+        }
+        tj.jobs = &jobs;
+        tj.t1 = d.t1_parts.t1;
+        return true;
     }
 
     // ---- the stream, over the bytes in memory -------------------------------------------------
@@ -915,7 +1035,12 @@ struct Walk {
                     return NJ2K_E_NO_MEMORY;
                 }
                 if (dst.w != l_width_dest || dst.h != l_height_dest) {
-                    std::memset(dst.data, 0, w * h * sizeof(std::int32_t));
+                    std::int32_t* plane = dst.data;
+                    by_bands(dst.h, std::uint64_t(w) * h * sizeof(std::int32_t),
+                             [&](std::uint32_t j0, std::uint32_t j1) noexcept {
+                                 std::memset(plane + std::size_t(j0) * w, 0,
+                                             std::size_t(j1 - j0) * w * sizeof(std::int32_t));
+                             });
                 }
             }
         }
@@ -965,10 +1090,13 @@ struct Walk {
                 clear_planes(p[i].cc.component);
             }
         }
-        if (sink.image_planes) {
-            write_group(cc, k, mct, NJ2K_SAMPLE_I32, own, k);
+        const std::uint32_t type = sink.image_planes ? NJ2K_SAMPLE_I32 : sink.output->sample_type;
+        const nj2k_plane_t* planes = sink.image_planes ? own : sink.output->planes;
+        const std::uint32_t numplanes = sink.image_planes ? k : sink.output->numplanes;
+        if (tile_exec) {
+            write_group_jobs(cc, k, mct, type, planes, numplanes, *tile_exec);
         } else {
-            write_group(cc, k, mct, sink.output->sample_type, sink.output->planes, sink.output->numplanes);
+            write_group(cc, k, mct, type, planes, numplanes);
         }
         for (std::uint32_t i = 0; i < k; ++i) {
             comps[p[i].cc.component].written = true;
@@ -1082,13 +1210,21 @@ struct Walk {
         std::uint32_t c = 0;
         if (t.mct != Mct::kNone) {
             InPlaceComp three[3] = {view(0), view(1), view(2)};
-            finish_in_place_mct(three, t.mct);
+            if (tile_exec) {
+                finish_in_place_mct_jobs(three, t.mct, *tile_exec);
+            } else {
+                finish_in_place_mct(three, t.mct);
+            }
             c = 3;
         }
         for (; c < mh.numcomps; ++c) {
             const InPlaceComp one = view(c);
             if (one.active) {
-                finish_in_place_one(one);
+                if (tile_exec) {
+                    finish_in_place_one_jobs(one, *tile_exec);
+                } else {
+                    finish_in_place_one(one);
+                }
             }
         }
         t.mct = Mct::kNone;
@@ -1108,27 +1244,47 @@ struct Walk {
             // a row at once when its samples are packed, else each sample with a store of its
             // own size (a memset call per sample took a second for a 16,384-pixel image)
             const std::size_t ss = o.sample_type == NJ2K_SAMPLE_U8 ? 1 : o.sample_type == NJ2K_SAMPLE_U16 ? 2 : 4;
-            for (std::uint32_t j = 0; j < dst.h; ++j) {
-                std::uint8_t* row = base + static_cast<std::int64_t>(j) * pl.row_stride;
-                if (pl.sample_stride == ss) {
-                    std::memset(row, 0, std::size_t(dst.w) * ss);
-                } else if (ss == 1) {
-                    for (std::uint32_t i = 0; i < dst.w; ++i) {
-                        row[std::size_t(i) * pl.sample_stride] = 0;
-                    }
-                } else if (ss == 2) {
-                    const std::uint16_t zero = 0;
-                    for (std::uint32_t i = 0; i < dst.w; ++i) {
-                        std::memcpy(row + std::size_t(i) * pl.sample_stride, &zero, sizeof zero);
-                    }
-                } else {
-                    const std::uint32_t zero = 0;
-                    for (std::uint32_t i = 0; i < dst.w; ++i) {
-                        std::memcpy(row + std::size_t(i) * pl.sample_stride, &zero, sizeof zero);
+            by_bands(dst.h, std::uint64_t(dst.w) * dst.h * ss, [&](std::uint32_t j0, std::uint32_t j1) noexcept {
+                for (std::uint32_t j = j0; j < j1; ++j) {
+                    std::uint8_t* row = base + static_cast<std::int64_t>(j) * pl.row_stride;
+                    if (pl.sample_stride == ss) {
+                        std::memset(row, 0, std::size_t(dst.w) * ss);
+                    } else if (ss == 1) {
+                        for (std::uint32_t i = 0; i < dst.w; ++i) {
+                            row[std::size_t(i) * pl.sample_stride] = 0;
+                        }
+                    } else if (ss == 2) {
+                        const std::uint16_t zero = 0;
+                        for (std::uint32_t i = 0; i < dst.w; ++i) {
+                            std::memcpy(row + std::size_t(i) * pl.sample_stride, &zero, sizeof zero);
+                        }
+                    } else {
+                        const std::uint32_t zero = 0;
+                        for (std::uint32_t i = 0; i < dst.w; ++i) {
+                            std::memcpy(row + std::size_t(i) * pl.sample_stride, &zero, sizeof zero);
+                        }
                     }
                 }
-            }
+            });
         }
+    }
+
+    // rows(j0, j1) over [0, h) of an image plane of the given bytes: in bands through the executor
+    // when the codec has one and the plane has jobs.clear_bytes or more (the clears of planes a first
+    // tile does not cover: a 16,384-pixel image's are a gigabyte a component), else at once
+    template <class F>
+    void by_bands(std::uint32_t h, std::uint64_t bytes, F&& rows) noexcept
+    {
+        std::uint32_t parts = 1;
+        if (have_jobs && bytes >= jobs.clear_bytes) {
+            parts = h < jobs.width ? h : jobs.width;
+        }
+        if (parts < 2) {
+            rows(0u, h);
+            return;
+        }
+        auto band = [&](std::uint32_t i) noexcept { rows(part_begin(h, parts, i), part_begin(h, parts, i + 1)); };
+        jobs.run(parts, band);
     }
 
     // the caller's planes of component compno but the one the tile decoded into (direct_output):
@@ -1257,14 +1413,18 @@ struct Walk {
         if (st == NJ2K_OK) {
             st = attach_samples(t, whole_image);
         }
-        if (st == NJ2K_OK) {
+        TileJobs tj;
+        tile_exec = nullptr;
+        if (st == NJ2K_OK && threaded_tile(t, tj)) {
+            tile_exec = &jobs;
+        } else if (st == NJ2K_OK) {
             if (!d.t1.ready(d.allocator) || !d.t1.reserve(d.allocator, t.largest_cblk_bytes()) ||
                 !d.dwt.ensure(d.allocator, t.dwt_scratch_bytes_needed())) {
                 st = nomem();
             }
         }
         if (st == NJ2K_OK) {
-            st = t.decode_samples(d.t1, d.dwt.p, resno, msg);
+            st = t.decode_samples(d.t1, d.dwt.p, resno, msg, tile_exec ? &tj : nullptr);
         }
         // a tile that is the image's planes is finished where it is; any other goes into the image
         // finished on the way (write_tile)
@@ -1474,7 +1634,13 @@ struct Walk {
                     cc[c] = CopyComp{tc.data, tc.data_w, 0, 0, comps[c].w, comps[c].h, t.finish_of(c), c, true};
                 }
                 if (one) {
-                    write_group(cc, mh.numcomps, t.mct, sink.output->sample_type, sink.output->planes, sink.output->numplanes);
+                    if (tile_exec) {
+                        write_group_jobs(cc, mh.numcomps, t.mct, sink.output->sample_type, sink.output->planes,
+                                         sink.output->numplanes, *tile_exec);
+                    } else {
+                        write_group(cc, mh.numcomps, t.mct, sink.output->sample_type, sink.output->planes,
+                                    sink.output->numplanes);
+                    }
                     for (std::uint32_t c = 0; c < mh.numcomps; ++c) {
                         comps[c].resno_decoded = resno[c];
                         comps[c].written = true;

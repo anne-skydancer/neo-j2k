@@ -18,6 +18,7 @@
 #include "jp2.h"
 #include "memory.h"
 #include "messages.h"
+#include "parallel.h"
 #include "stream.h"
 #include "t1.h"
 #include "work_arena.h"
@@ -41,6 +42,22 @@ struct Scratch {
         size = n;
         return true;
     }
+    // As ensure, but a failed allocation keeps the buffer there was (the threaded path's larger
+    // needs, which fall back to one thread when they cannot be met)
+    bool grow(const Allocator& a, std::size_t n) noexcept
+    {
+        if (n <= size) {
+            return true;
+        }
+        void* q = a.allocate(n, 64);
+        if (!q) {
+            return false;
+        }
+        release(a);
+        p = q;
+        size = n;
+        return true;
+    }
     void release(const Allocator& a) noexcept
     {
         if (p) {
@@ -49,6 +66,18 @@ struct Scratch {
         p = nullptr;
         size = 0;
     }
+};
+
+// The Tier-1 scratches of a threaded tile's parts (stage 5), kept between decodes as the decoder's
+// own T1 is. Each is 256 bytes (sizeof(T1)), in an array aligned to 64 bytes, so two parts' scratches
+// never share a cache line.
+struct T1Parts {
+    T1* t1 = nullptr;
+    std::uint32_t count = 0;
+    // at least parts scratches, each ready (its fixed buffers); false when the allocator refuses
+    bool ensure(const Allocator& a, std::uint32_t parts) noexcept;
+    void release(const Allocator& a) noexcept;
+    std::size_t bytes() const noexcept;
 };
 
 struct Decoder {
@@ -105,6 +134,17 @@ struct Decoder {
     // estimate_factor (decode_working_memory, computed once per header and factor; UINT32_MAX: none)
     std::uint64_t estimate = 0;
     std::uint32_t estimate_factor = UINT32_MAX;
+    // threads in one image (stage 5): the host's executor, the parts' Tier-1 scratches and the
+    // code-blocks' costs of a threaded tile; last, so the fields above keep their places
+    nj2k_executor_t executor = {0, 0, nullptr, nullptr};
+    T1Parts t1_parts;
+    Scratch blocks;
+    // the sizes a decode splits from (parallel.h; set_parallel_thresholds for the tests)
+    std::uint64_t parallel_tile = kParallelTileSamples;
+    std::uint64_t parallel_tile_floor = kParallelTileFloor;
+    std::uint64_t parallel_level = kParallelLevelArea;
+    std::uint64_t parallel_output = kParallelOutputSamples;
+    std::uint64_t parallel_clear = kParallelClearBytes;
 
     static Decoder* from(nj2k_codec_t* codec) noexcept
     {
@@ -112,6 +152,8 @@ struct Decoder {
         return d && d->magic == kMagic ? d : nullptr;
     }
 
+    // The executor as a decode's stages use it: false without one (or with a concurrency below 2).
+    bool jobs(Jobs& out) const noexcept;
     // Memory kept for the next decode: what is above retain goes back to the allocator.
     void trim_after_decode() noexcept;
     void release_all() noexcept;

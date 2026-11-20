@@ -370,7 +370,93 @@ namespace nj2k::detail {
 
 std::size_t Decoder::kept_bytes() const noexcept
 {
-    return std::size_t(work.reserved() + tile_arena.reserved()) + t1.bytes() + planes.size + dwt.size + input.size;
+    return std::size_t(work.reserved() + tile_arena.reserved()) + t1.bytes() + planes.size + dwt.size + input.size +
+           t1_parts.bytes() + blocks.size;
+}
+
+bool Decoder::jobs(Jobs& out) const noexcept
+{
+    if (!executor.parallel_for || executor.concurrency < 2) {
+        return false;
+    }
+    out.ex = &executor;
+    out.width = executor.concurrency < kMaxJobs ? executor.concurrency : kMaxJobs;
+    out.level_area = parallel_level;
+    out.output_samples = parallel_output;
+    out.clear_bytes = parallel_clear;
+    return true;
+}
+
+static_assert(sizeof(T1) % 64 == 0, "a part's Tier-1 scratch shares a cache line with the next part's");
+
+bool T1Parts::ensure(const Allocator& a, std::uint32_t parts) noexcept
+{
+    if (parts > count) {
+        auto* more = static_cast<T1*>(a.allocate(std::size_t(parts) * sizeof(T1), alignof(T1) < 64 ? 64 : alignof(T1)));
+        if (!more) {
+            return false;
+        }
+        for (std::uint32_t i = 0; i < parts; ++i) {
+            ::new (static_cast<void*>(more + i)) T1();
+        }
+        // the scratches there were hand their buffers over, the only state worth keeping (the MQ
+        // decoder's state, whose context pointer points into its own scratch, is set afresh by every
+        // code-block's decode)
+        if (t1) {
+            for (std::uint32_t i = 0; i < count; ++i) {
+                more[i].data = t1[i].data;
+                more[i].flags = t1[i].flags;
+                more[i].cblkdata = t1[i].cblkdata;
+                more[i].cblkdata_size = t1[i].cblkdata_size;
+            }
+            a.release(t1, std::size_t(count) * sizeof(T1));
+        }
+        t1 = more;
+        count = parts;
+    }
+    for (std::uint32_t i = 0; i < parts; ++i) {
+        if (!t1[i].ready(a)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+void T1Parts::release(const Allocator& a) noexcept
+{
+    if (!t1) {
+        return;
+    }
+    for (std::uint32_t i = 0; i < count; ++i) {
+        t1[i].release(a);
+    }
+    a.release(t1, std::size_t(count) * sizeof(T1));
+    t1 = nullptr;
+    count = 0;
+}
+
+std::size_t T1Parts::bytes() const noexcept
+{
+    std::size_t n = std::size_t(count) * sizeof(T1);
+    for (std::uint32_t i = 0; i < count; ++i) {
+        n += t1[i].bytes();
+    }
+    return n;
+}
+
+bool set_parallel_thresholds(nj2k_codec_t* codec, std::uint64_t tile_samples, std::uint64_t level_area,
+                             std::uint64_t output_samples, std::uint64_t clear_bytes) noexcept
+{
+    Decoder* d = Decoder::from(codec);
+    if (!d) {
+        return false;
+    }
+    d->parallel_tile = tile_samples;
+    d->parallel_tile_floor = tile_samples < kParallelTileFloor ? tile_samples : kParallelTileFloor;
+    d->parallel_level = level_area;
+    d->parallel_output = output_samples;
+    d->parallel_clear = clear_bytes;
+    return true;
 }
 
 void Decoder::trim_after_decode() noexcept
@@ -385,13 +471,18 @@ void Decoder::trim_after_decode() noexcept
     if (kept_bytes() <= retain) {
         return;
     }
-    // the largest first: a stream decode's bytes, a tile's samples, the wavelet's lines
+    // the largest first: a stream decode's bytes, a tile's samples, the wavelet's lines; a threaded
+    // tile's code-block costs and its parts' Tier-1 scratches before those of the calling thread
     input.release(allocator);
     if (kept_bytes() > retain) {
         planes.release(allocator);
     }
     if (kept_bytes() > retain) {
         dwt.release(allocator);
+    }
+    if (kept_bytes() > retain) {
+        blocks.release(allocator);
+        t1_parts.release(allocator);
     }
     if (kept_bytes() > retain) {
         t1.release(allocator);
@@ -411,6 +502,8 @@ void Decoder::release_all() noexcept
     planes.release(allocator);
     dwt.release(allocator);
     input.release(allocator);
+    blocks.release(allocator);
+    t1_parts.release(allocator);
 }
 
 }  // namespace nj2k::detail
@@ -1176,6 +1269,24 @@ NJ2K_API NJ2K_BOOL NJ2K_CALLCONV nj2k_decoder_set_retained_bytes(nj2k_codec_t* p
         return NJ2K_FALSE;
     }
     d->retain = bytes;
+    return finish(d, NJ2K_OK);
+}
+
+NJ2K_API NJ2K_BOOL NJ2K_CALLCONV nj2k_decoder_set_executor(nj2k_codec_t* p_codec, const nj2k_executor_t* executor)
+{
+    Decoder* d = Decoder::from(p_codec);
+    if (!d) {
+        return NJ2K_FALSE;
+    }
+    if (!executor) {
+        d->executor = nj2k_executor_t{0, 0, nullptr, nullptr};
+        return finish(d, NJ2K_OK);
+    }
+    if (executor->struct_size < sizeof(nj2k_executor_t) || !executor->parallel_for) {
+        return fail(d, NJ2K_E_ARGUMENT, "nj2k_decoder_set_executor: the executor is incomplete\n");
+    }
+    d->executor = *executor;
+    d->executor.struct_size = sizeof(nj2k_executor_t);
     return finish(d, NJ2K_OK);
 }
 

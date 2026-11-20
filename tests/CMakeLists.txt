@@ -68,6 +68,8 @@ endfunction()
 
 nj2k_add_test(api_unit nj2k_api_unit)
 nj2k_add_test(decode_unit nj2k_decode_unit "${NJ2K_CORPUS}")
+# stage 5: threads in one image (one thread against 2-16 parts; the ThreadSanitizer job runs it)
+nj2k_add_test(decode_threads nj2k_decode_unit "${NJ2K_CORPUS}" --threads)
 nj2k_add_test(header_unit nj2k_header_unit "${NJ2K_CORPUS}" "${PROJECT_SOURCE_DIR}/fuzz/bombs"
               "${CMAKE_CURRENT_SOURCE_DIR}/known-defects")
 

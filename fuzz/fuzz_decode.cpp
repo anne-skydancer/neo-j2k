@@ -21,6 +21,14 @@
 //   codestream shows a departure doc/departures.md lists (departures.h), or the images differ only
 //   where one clamps a sample to its component's minimum and the other to its maximum (DP-2, the DC
 //   shift's edges).
+// - Threads in one image (stage 5): neo-j2k decodes each input again through an executor with every
+//   stage of the decode split however small the image, and aborts unless the statuses, the planes and
+//   every message equal the one-thread decode's. The plain target's executor starts no thread: it
+//   runs a stage's parts one after the other on the calling thread, last part first (3 parts, 6
+//   Tier-1 runs), so libFuzzer and ClusterFuzzLite's sanitizers (address, undefined, memory) cover the
+//   threaded path's partitions and their order-independence. Built with NJ2K_FUZZ_THREADS
+//   (nj2k_fuzz_decode_threads_replay), it uses a pool of threads instead (2 and 4 parts); the
+//   ThreadSanitizer job replays the seeds and regressions through it.
 #include <neoj2k/neoj2k.h>
 
 #include <cstddef>
@@ -37,6 +45,11 @@
 
 #include "departures.h"
 #include "fuzz_common.h"
+
+#include "../src/parallel.h"
+#if defined(NJ2K_FUZZ_THREADS)
+#include "thread_pool.h"
+#endif
 
 namespace {
 
@@ -73,14 +86,45 @@ struct Budget {
 
 constexpr std::uint64_t kWorkingMemory = nj2k::fuzz::kDecodeWorkingMemory;
 
-// neo-j2k from memory, bounded: the decode itself, its memory, and that it gives it all back.
-void neo_decode(const nj2k::fuzz::Input& in)
+// What neo_decode gave: each call's status, the planes after each decode, and every message.
+struct NeoResult {
+    std::vector<nj2k_status_t> statuses;
+    std::vector<std::uint8_t> planes;
+    std::string messages;
+};
+
+void collect(const char* m, void* user)
 {
+    *static_cast<std::string*>(user) += m;
+}
+
+#if !defined(NJ2K_FUZZ_THREADS)
+// An executor that starts no thread: the parts one after the other, the last first
+void serial_parallel_for(void*, NJ2K_UINT32 count, nj2k_job_fn job, void* ctx)
+{
+    for (NJ2K_UINT32 i = count; i-- > 0;) {
+        job(ctx, i);
+    }
+}
+#endif
+
+// neo-j2k from memory, bounded: the decode itself, its memory, and that it gives it all back. With
+// an executor, every stage of the decode goes through it (set_parallel_thresholds at 0).
+NeoResult neo_decode(const nj2k::fuzz::Input& in, const nj2k_executor_t* executor = nullptr)
+{
+    NeoResult result;
     Budget budget;
     {
         nj2k_allocator_t hook{sizeof(nj2k_allocator_t), Budget::alloc, Budget::release, &budget};
         nj2k_codec_t* codec = nj2k_create_decompress_with_allocator(NJ2K_CODEC_J2K, &hook);
         if (!codec) {
+            std::abort();
+        }
+        nj2k_set_info_handler(codec, collect, &result.messages);
+        nj2k_set_warning_handler(codec, collect, &result.messages);
+        nj2k_set_error_handler(codec, collect, &result.messages);
+        if (executor && (!nj2k_decoder_set_executor(codec, executor) ||
+                         !nj2k::detail::set_parallel_thresholds(codec, 0, 0, 0, 0))) {
             std::abort();
         }
         nj2k_dparameters_t params;
@@ -101,6 +145,7 @@ void neo_decode(const nj2k::fuzz::Input& in)
         if (!nj2k_read_header_memory(codec, in.codestream.data(), in.codestream.size(), &image)) {
             // the decode reads the header again, and refuses it as the header read did
             const nj2k_status_t header = nj2k_get_status(codec);
+            result.statuses.push_back(header);
             if (nj2k_decode_memory(codec, in.codestream.data(), in.codestream.size(), &none) ||
                 nj2k_get_status(codec) != header) {
                 std::fprintf(stderr, "nj2k_decode_memory: status %d where the header read gave %d\n",
@@ -111,6 +156,7 @@ void neo_decode(const nj2k::fuzz::Input& in)
             // above the limits at the decoded resolution: no planes for it, and the decode refuses it
             // as the dimensions check did, before it writes anything
             const nj2k_status_t limit = nj2k_get_status(codec);
+            result.statuses.push_back(limit);
             if (nj2k_decode_memory(codec, in.codestream.data(), in.codestream.size(), &none) ||
                 nj2k_get_status(codec) != limit) {
                 std::fprintf(stderr, "nj2k_decode_memory: status %d where nj2k_get_decoded_dimensions gave %d\n",
@@ -155,9 +201,13 @@ void neo_decode(const nj2k::fuzz::Input& in)
                 std::abort();
             }
             check_guards();
+            result.statuses.push_back(st);
+            result.planes = raw;
             // and again, from the header the codec holds
             (void)nj2k_decode_memory(codec, in.codestream.data(), in.codestream.size(), &out);
             check_guards();
+            result.statuses.push_back(nj2k_get_status(codec));
+            result.planes.insert(result.planes.end(), raw.begin(), raw.end());
         }
         nj2k_destroy_codec(codec);
     }
@@ -167,6 +217,7 @@ void neo_decode(const nj2k::fuzz::Input& in)
                      budget.peak, bound, budget.live, in.codestream.size());
         std::abort();
     }
+    return result;
 }
 
 const char* outcome_text(const nj2k::test::Outcome& o)
@@ -232,7 +283,26 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
     if (in.codestream.empty()) {
         return 0;
     }
-    neo_decode(in);
+    // threads: the one-thread decode against the same through the executor, every stage split
+#if defined(NJ2K_FUZZ_THREADS)
+    static nj2k::test::ThreadPool pool(3);
+    const nj2k_executor_t executors[] = {pool.executor(2), pool.executor(4)};
+#else
+    const nj2k_executor_t executors[] = {{sizeof(nj2k_executor_t), 3, serial_parallel_for, nullptr}};
+#endif
+    const NeoResult one = neo_decode(in);
+    for (const nj2k_executor_t& ex : executors) {
+        const std::uint32_t parts = ex.concurrency;
+        const NeoResult many = neo_decode(in, &ex);
+        if (many.statuses != one.statuses || many.planes != one.planes || many.messages != one.messages) {
+            std::fprintf(stderr,
+                         "decode through %u parts differs from one thread's (%s, reduce %d, %zu bytes): %s%s%s\n",
+                         parts, nj2k::test::mode_name(in.mode), in.reduce, in.codestream.size(),
+                         many.statuses != one.statuses ? "statuses " : "", many.planes != one.planes ? "planes " : "",
+                         many.messages != one.messages ? "messages" : "");
+            std::abort();
+        }
+    }
     ++nj2k::fuzz::exercised();
     if (in.mode != nj2k::test::Mode::Strict && nj2k::fuzz::oracle_psot_bomb(in.codestream)) {
         return 0;

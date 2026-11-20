@@ -11,6 +11,7 @@
 #include <neoj2k/neoj2k.h>
 
 #include "mct.h"
+#include "parallel.h"
 
 #if defined(__AVX2__)
 #include <immintrin.h>
@@ -407,6 +408,12 @@ inline void mct_rows(Mct mct, const std::int32_t* a, const std::int32_t* b, cons
 {
     NJ2K_K(mct_rows)(mct, a, b, c, oa, ob, oc, n);
 }
+// mct_rows for the bands of the threaded passes (stage 5, mct_in_place_rows)
+inline void mct_rows_part(Mct mct, const std::int32_t* a, const std::int32_t* b, const std::int32_t* c,
+                          std::int32_t* oa, std::int32_t* ob, std::int32_t* oc, std::size_t n) noexcept
+{
+    NJ2K_K(mct_rows)(mct, a, b, c, oa, ob, oc, n);
+}
 inline void finish_row(std::int32_t* p, std::size_t n, const Finish& f) noexcept
 {
     NJ2K_K(finish_row)(p, n, f);
@@ -569,6 +576,45 @@ void write_group(const CopyComp* comps, std::uint32_t k, Mct mct, std::uint32_t 
     }
 }
 
+namespace {
+
+// finish_in_place_mct's transform over rows [j0, j1) of the three buffers (and with rows, their
+// shift), for the bands of the threaded passes; the one-thread passes keep their own loops and their
+// own wrapper of the transform's kernel (link-time code generation compiles mct_rows by its callers)
+void mct_in_place_rows(const InPlaceComp* p, Mct mct, bool rows, std::uint32_t j0, std::uint32_t j1) noexcept
+{
+    const std::uint32_t bw = p[0].buf_w;
+    for (std::uint32_t j = j0; j < j1; ++j) {
+        const std::size_t at = std::size_t(j) * bw;
+        mct_rows_part(mct, p[0].data + at, p[1].data + at, p[2].data + at, p[0].data + at, p[1].data + at,
+                      p[2].data + at, bw);
+        for (std::uint32_t k = 0; rows && k < 3; ++k) {
+            if (p[k].active && j < p[k].h && p[k].w) {
+                finish_row(p[k].data + at, p[k].w, p[k].f);
+            }
+        }
+    }
+}
+
+// finish_in_place_one over rows [j0, j1)
+void finish_in_place_rows(const InPlaceComp& p, std::uint32_t j0, std::uint32_t j1) noexcept
+{
+    for (std::uint32_t j = j0; j < j1; ++j) {
+        finish_row(p.data + std::size_t(j) * p.buf_w, p.w, p.f);
+    }
+}
+
+// The bands a pass of rows rows of row_samples samples is cut into: 1 below jobs.output_samples
+std::uint32_t bands_of(const Jobs& jobs, std::uint32_t rows, std::uint64_t row_samples) noexcept
+{
+    if (std::uint64_t(rows) * row_samples < jobs.output_samples) {
+        return 1;
+    }
+    return rows < jobs.width ? rows : jobs.width;
+}
+
+}  // namespace
+
 void finish_in_place_mct(const InPlaceComp* p, Mct mct) noexcept
 {
     // every sample of the three buffers takes the transform (the buffers as flat arrays), then each
@@ -600,6 +646,67 @@ void finish_in_place_one(const InPlaceComp& p) noexcept
     for (std::uint32_t j = 0; j < p.h; ++j) {
         finish_row(p.data + std::size_t(j) * p.buf_w, p.w, p.f);
     }
+}
+
+void write_group_jobs(const CopyComp* comps, std::uint32_t k, Mct mct, std::uint32_t sample_type,
+                      const nj2k_plane_t* planes, std::uint32_t numplanes, const Jobs& jobs) noexcept
+{
+    const CopyComp& c0 = comps[0];
+    const std::uint32_t parts = bands_of(jobs, c0.h, c0.w);
+    if (parts < 2) {
+        write_group(comps, k, mct, sample_type, planes, numplanes);
+        return;
+    }
+    // each band the same group of components, its rows' sources and places (every sample of the
+    // region takes the same operations wherever the band starts)
+    auto band = [&](std::uint32_t i) noexcept {
+        const std::uint32_t y0 = part_begin(c0.h, parts, i), y1 = part_begin(c0.h, parts, i + 1);
+        CopyComp cc[4];
+        for (std::uint32_t c = 0; c < k; ++c) {
+            cc[c] = comps[c];
+            cc[c].src += std::size_t(y0) * cc[c].src_stride;
+            cc[c].y += y0;
+            cc[c].h = y1 - y0;
+        }
+        write_group(cc, k, mct, sample_type, planes, numplanes);
+    };
+    jobs.run(parts, band);
+}
+
+void finish_in_place_mct_jobs(const InPlaceComp* p, Mct mct, const Jobs& jobs) noexcept
+{
+    const std::uint32_t bw = p[0].buf_w;
+    const bool rows = p[1].buf_w == bw && p[2].buf_w == bw;
+    const std::uint32_t parts = bands_of(jobs, p[0].buf_h, bw);
+    if (parts < 2) {
+        finish_in_place_mct(p, mct);
+        return;
+    }
+    auto band = [&](std::uint32_t i) noexcept {
+        mct_in_place_rows(p, mct, rows, part_begin(p[0].buf_h, parts, i), part_begin(p[0].buf_h, parts, i + 1));
+    };
+    jobs.run(parts, band);
+    for (std::uint32_t k = 0; !rows && k < 3; ++k) {
+        if (p[k].active) {
+            finish_in_place_one_jobs(p[k], jobs);
+        }
+    }
+}
+
+void finish_in_place_one_jobs(const InPlaceComp& p, const Jobs& jobs) noexcept
+{
+    if (p.w == 0) {
+        return;
+    }
+    const std::uint32_t parts = bands_of(jobs, p.h, p.w);
+    if (parts < 2) {
+        finish_in_place_rows(p, 0, p.h);
+        return;
+    }
+    auto band = [&](std::uint32_t i) noexcept {
+        finish_in_place_rows(p, part_begin(p.h, parts, i), part_begin(p.h, parts, i + 1));
+    };
+    jobs.run(parts, band);
 }
 
 }  // namespace nj2k::detail
