@@ -261,8 +261,10 @@ NJ2K_BOOL nj2k_decoder_set_executor(nj2k_codec_t *codec, const nj2k_executor_t *
   parts (at most 64), Tier-1 into twice that many runs of code-blocks of about equal estimated cost (so
   one slow run is not the tail).
 - Without an executor or with a concurrency below 2, everything runs on the calling thread, with the
-  operations of stages 1c-4. With one, the codec calls it for two things only: a tile of 2^18 decoded
-  samples or more over its components (a 512 x 512 grey or a 296 x 296 RGB tile), and the clearing of an
+  operations of stages 1c-4. With one, the codec calls it for two things only: the tiles (of 2^18 decoded
+  samples or more in their largest component, 512 x 512) of an image whose largest decoded component has
+  more than 2^22 samples (above 2,048 x 2,048: grey, RGB and RGBA textures up to that size stay one thread
+  each, which is what a saturated host wants), and the clearing of an
   image plane of 4 MiB or more (1,024 x 1,024 int32 samples) that the first tile written into it does not
   cover, which only a multi-tile image has, whatever its tiles' sizes. Everything else, small images and
   textures included, runs on the calling thread and makes no call to the executor (the tests check it, on
@@ -272,8 +274,7 @@ NJ2K_BOOL nj2k_decoder_set_executor(nj2k_codec_t *codec, const nj2k_executor_t *
   samples a component also stay on the calling thread, two estimates not probed on their own (they only
   apply inside a tile already split). The one-thread decodes run the operations they ran before; what
   their times do is in `doc/bench.md` (stage 5: within what moving `main`'s own code by a few bytes does,
-  but for Tier-1's one walker for one thread and the parts, whose run counters cost reduced decodes of 64 and
-  128 px textures up to about 2 %).
+  the one-thread Tier-1 walker has no counters: the parts' walker is a function of its own).
 - What runs through it: Tier-1 (the code-blocks, listed in OpenJPEG's order on the calling thread and cut
   into contiguous runs of about equal estimated cost before anything is decoded), the
   inverse wavelet's large levels (the horizontal lifting in bands of rows, the vertical lifting in

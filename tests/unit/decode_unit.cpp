@@ -2597,8 +2597,9 @@ std::size_t threads_capped(nj2k::test::ThreadPool& pool, const std::string& name
     return decodes;
 }
 
-// A grey image of side x side in tiles of tile x tile (the oracle's encoder): no tile reaches the
-// tile threshold, so only a plane clear of kParallelClearBytes or more may call the executor.
+// A grey image of side x side in tiles of tile x tile (the oracle's encoder). With side up to 2,048 the
+// image is below the tile threshold, so only a plane clear of kParallelClearBytes or more may call the
+// executor; a larger side with tiles of kParallelTileFloor samples or more is threaded tile by tile.
 Bytes small_tiles_image(std::uint32_t side, std::uint32_t tile)
 {
     EncodeSpec e;
@@ -2621,16 +2622,17 @@ Bytes small_tiles_image(std::uint32_t side, std::uint32_t tile)
     return data;
 }
 
-// The images of test_large_generated, made by the oracle's encoder: large enough for the library's
-// own thresholds (no forcing)
+// The images of test_large_generated, made by the oracle's encoder: five above the library's own tile
+// threshold (a component of more than 2^22 samples, so no forcing), and a 1,024 x 1,024 RGB one below it
+// (the last, which the executor must never see)
 std::vector<std::pair<std::string, Bytes>> large_threaded_images()
 {
     auto oracle = make_oracle_backend();
     const struct {
         int w, h, comps;
         bool reversible;
-    } images[] = {{1024, 1024, 3, true}, {2048, 600, 4, true}, {600, 2048, 1, true}, {2048, 600, 3, false},
-                  {1023, 1031, 3, false}};
+    } images[] = {{2051, 2051, 3, true}, {2049, 2050, 1, true}, {2100, 2000, 1, true}, {2051, 2052, 3, false},
+                  {2053, 2049, 1, false}, {1024, 1024, 3, true}};
     std::vector<std::pair<std::string, Bytes>> out;
     std::mt19937 rng(20261120);
     for (const auto& im : images) {
@@ -2686,9 +2688,13 @@ void test_threads(const std::string& files)
     // tile threshold and whose planes are below the clear threshold (the corpus, decoded into the
     // viewer's 8-bit image and into int32 planes, and 512 x 512 grey in 4 and in 16 tiles, whose plane
     // clears were split before), but for 1,024 x 1,024 grey in 256 tiles of 64 x 64 into int32 planes
-    // (a 4 MiB clear) and for a 1,024 x 1,024 RGB image in one tile
+    // (a 4 MiB clear), for a 2,051 x 2,051 RGB image in one tile (a component above 2^22 samples) and
+    // for a 2,112 x 2,112 grey image in four tiles of 1,056 (the image's component above 2^22 samples,
+    // each tile above the tile floor), while a 1,024 x 1,024 RGB image in one tile, which the viewer
+    // decodes a thread each, makes no call
     const Bytes tiles512_4 = small_tiles_image(512, 256), tiles512_16 = small_tiles_image(512, 128);
     const Bytes tiles1024 = small_tiles_image(1024, 64);
+    const Bytes tiles2112 = small_tiles_image(2112, 1056);
     {
         std::string m;
         nj2k_codec_t* codec = threaded_codec(0, &pool, 8, false, m);
@@ -2700,10 +2706,9 @@ void test_threads(const std::string& files)
             if (!codec || !mh) {
                 return;
             }
-            const std::uint64_t tile = std::min<std::uint64_t>(mh->xtsiz, mh->width()) *
-                                       std::min<std::uint64_t>(mh->ytsiz, mh->height()) * mh->csiz;
+            const std::uint64_t tile = std::uint64_t(mh->width()) * mh->height();  // the image's component
             const std::uint64_t plane = mh->width() * mh->height() * sizeof(std::int32_t);
-            if (tile >= nj2k::detail::kParallelTileSamples || plane >= nj2k::detail::kParallelClearBytes) {
+            if (tile > nj2k::detail::kParallelTileSamples || plane >= nj2k::detail::kParallelClearBytes) {
                 return;
             }
             (void)threaded_decode(codec, data, data.size(), NJ2K_SAMPLE_U8, Layout::BottomUpInterleaved, m, false);
@@ -2717,14 +2722,19 @@ void test_threads(const std::string& files)
         }
         small(tiles512_4);
         small(tiles512_16);
+        small(large.back().second);  // 1,024 x 1,024 RGB, one tile
         CHECK_MSG(pool.batches() == before, "the executor ran %llu batches for %zu images below the thresholds",
                   static_cast<unsigned long long>(pool.batches() - before), below);
         (void)threaded_decode(codec, tiles1024, tiles1024.size(), NJ2K_SAMPLE_I32, Layout::Guarded, m, false);
         const std::uint64_t clear = pool.batches() - before;
         CHECK_MSG(clear > 0, "the executor did not clear the plane of a 1024 x 1024 image in 64 x 64 tiles");
+        const std::uint64_t mid = pool.batches();
+        (void)threaded_decode(codec, tiles2112, tiles2112.size(), NJ2K_SAMPLE_U8, Layout::BottomUpInterleaved, m,
+                              false);
+        CHECK_MSG(pool.batches() > mid, "the executor was not used for the tiles of a 2112 x 2112 image");
         (void)threaded_decode(codec, large[0].second, large[0].second.size(), NJ2K_SAMPLE_U8,
                               Layout::BottomUpInterleaved, m, false);
-        CHECK_MSG(pool.batches() > before + clear, "the executor was not used for a 1024 x 1024 RGB image");
+        CHECK_MSG(pool.batches() > before + clear, "the executor was not used for a 2051 x 2051 RGB image");
         if (codec) {
             nj2k_destroy_codec(codec);
         }
@@ -2734,7 +2744,7 @@ void test_threads(const std::string& files)
     // planes that share bytes (every component into one plane's bytes, and rows that overlap): such a
     // decode keeps to one thread (no batch) and writes what one thread writes
     {
-        const Bytes& data = large[0].second;  // 1024 x 1024 RGB, one tile
+        const Bytes& data = large[0].second;  // 2051 x 2051 RGB, one tile
         auto shared = [&](nj2k::test::ThreadPool* p, std::int64_t row, std::vector<std::uint8_t>& buf) {
             std::string m;
             nj2k_codec_t* codec = threaded_codec(0, p, 8, false, m);
@@ -2768,6 +2778,7 @@ void test_threads(const std::string& files)
     // the plane clears' bands and the small tiles through the executor: one thread's outcome
     {
         const std::size_t n = threads_file(pool, "1024x1024 in 64 x 64 tiles", tiles1024, false, 1, true) +
+                              threads_file(pool, "2112x2112 in 1056 x 1056 tiles", tiles2112, false, 0, true) +
                               threads_file(pool, "512x512 in 128 x 128 tiles", tiles512_16, true, 1, false);
         std::printf("threads: small-tile images, %zu threaded decodes equal to one thread's\n", n);
     }

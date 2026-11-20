@@ -380,15 +380,16 @@ std::size_t Tile::dwt_scratch_bytes_needed(std::uint32_t parts) const noexcept
     return most;
 }
 
-std::uint64_t Tile::decoded_samples() const noexcept
+std::uint64_t Tile::largest_component_samples() const noexcept
 {
-    std::uint64_t n = 0;
+    std::uint64_t most = 0;
     for (std::uint32_t c = 0; c < numcomps; ++c) {
         if (!in->selected || in->selected[c]) {
-            n += std::uint64_t(comps[c].data_w) * comps[c].data_h;
+            const std::uint64_t n = std::uint64_t(comps[c].data_w) * comps[c].data_h;
+            most = n > most ? n : most;
         }
     }
-    return n;
+    return most;
 }
 
 std::size_t Tile::largest_cblk_bytes() const noexcept
@@ -517,15 +518,25 @@ inline bool decode_store(T1& t1, const T1Block& b, std::int32_t* dst, std::uint3
 #define NJ2K_NOINLINE __attribute__((noinline))
 #endif
 
-// Tier-1 of the code-blocks [first, last) of the walk, in its order; false at a block OpenJPEG
-// refuses (after the warning), as opj_t1_decode_cblks stops there. One thread decodes [0, all) here,
-// and each part of a threaded tile its own run, so Tier-1 has this one caller whoever runs it. The
-// shared library is built with link-time code generation, which compiles a function by where it is
-// called from: with Tier-1 called from two places (one thread's loop and the parts'), whole decodes
-// of 1024 x 1024 textures came out about 1 % slower on one thread (measured); with this one caller,
-// kept out of line, they did not (doc/bench.md, stage 5).
-NJ2K_NOINLINE bool decode_blocks(Tile& t, T1& t1, const Messages& msg, std::uint32_t first,
-                                 std::uint32_t last) noexcept
+// Tier-1 of the whole walk on one thread, in its order; false at a block OpenJPEG refuses (after the
+// warning), as opj_t1_decode_cblks stops there. No counters: this is main's loop, and a decode that
+// runs on one thread (every small texture) pays for nothing the threaded path needs (doc/bench.md,
+// stage 5, gate 3: the run counters alone cost reduced 64 and 128 pixel decodes about 2 %).
+NJ2K_NOINLINE bool decode_blocks(Tile& t, T1& t1, const Messages& msg) noexcept
+{
+    return for_each_cblk(t, [&](const T1Block& b, std::int32_t* dst, std::uint32_t stride, bool reversible,
+                                float stepsize) noexcept {
+        return decode_store(t1, b, dst, stride, reversible, stepsize, msg);
+    });
+}
+
+// Tier-1 of the code-blocks [first, last) of the walk, for one part of a threaded tile; false at a block
+// OpenJPEG refuses (plan_t1 stopped before it, so this does not happen). A function of its own, with the
+// counters the run needs: the shared library is built with link-time code generation, which compiles a
+// function by where it is called from, and a Tier-1 reached from two loops is compiled for neither's
+// good, so the loops stay out of line.
+NJ2K_NOINLINE bool decode_run(Tile& t, T1& t1, const Messages& msg, std::uint32_t first,
+                              std::uint32_t last) noexcept
 {
     std::uint32_t i = 0;
     bool refused = false;
@@ -554,7 +565,7 @@ nj2k_status_t t1_jobs(Tile& t, const TileJobs& tj, const Messages& msg) noexcept
     const Messages quiet;
     auto part = [&](std::uint32_t p) noexcept {
         // none of the run is refused (plan_t1 stopped before the refused block), so nothing is said here
-        (void)decode_blocks(t, tj.t1[p], quiet, tj.bounds[p], tj.bounds[p + 1]);
+        (void)decode_run(t, tj.t1[p], quiet, tj.bounds[p], tj.bounds[p + 1]);
     };
     tj.jobs->run(tj.runs, part);
     if (tj.refused) {
@@ -647,7 +658,7 @@ nj2k_status_t Tile::decode_samples(T1& t1, void* dwt_scratch, const std::uint32_
         if (const nj2k_status_t st = t1_jobs(*this, *tj, msg); st != NJ2K_OK) {
             return st;
         }
-    } else if (!decode_blocks(*this, t1, msg, 0, UINT32_MAX)) {
+    } else if (!decode_blocks(*this, t1, msg)) {
         return NJ2K_E_DATA;
     }
 

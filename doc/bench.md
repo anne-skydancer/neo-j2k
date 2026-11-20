@@ -615,8 +615,9 @@ Through the stream API (two rounds; load 26 % mean, 54 % max), neo-j2k / OpenJPE
 0.60, 0.40, 0.33 (703 ms against 2,152). The peaks are as from memory but for the multi-tile images: 238 and
 3,131 MB against OpenJPEG's 210 and 3,097, at every count. That is stage 1c's stream input, which holds the
 codestream (the low-memory stream belongs to the j2k-tile module, owner 2026-11-20), unchanged by threads:
-**an exception to the gate's "no higher peak" for the stream API's multi-tile images, for the owner to
-accept or not**; from memory, the viewer's way, the gate holds.
+**a known exception to the gate's "no higher peak" for the stream API's multi-tile images, accepted by the
+owner (2026-11-20) for j2k-core**: the j2k-tile module's low-memory stream closes it, and the memory-buffer
+API (the viewer's way, from memory), where the gate holds, is not affected.
 
 Widths that are not a multiple of 16 (the wavelet's column stripes then share a cache line with their
 neighbour where each row meets the next stripe), same method, three rounds:
@@ -631,12 +632,39 @@ neighbour where each row meets the next stripe), same method, three rounds:
 The odd sizes scale as the even ones do (OpenJPEG's own times differ between them, hence the last
 column): the shared lines cost nothing measurable, so the plan's 64-byte row padding stays undone.
 
+With the owner's tile threshold of 2^22 samples a component (the image's largest component; a tile still needs
+2^18), the gate again at N = 1, 4 and 8 (`run_large.py --images g4096_97,g4096t_53,g8192_97 --threads 1,4,8
+--rounds 2`; load 28 % mean, 51 % max; ms / MB), and one round for 16,384² (load 33 % mean, 58 % max), neo-j2k
+against OpenJPEG:
+
+| Image | N | OpenJPEG | neo-j2k | neo-j2k / OpenJPEG |
+|---|---|---|---|---|
+| 4,096², 1 tile, 9/7 | 1 | 399 / 205 | 233 / 200 | 0.58 |
+| | 4 | 186 / 206 | 75 / 201 | 0.40 |
+| | 8 | 136 / 207 | 47 / 201 | 0.34 |
+| 4,096², 16 tiles, 5/3 | 1 | 3,204 / 248 | 2,944 / 244 | 0.92 |
+| | 4 | 876 / 248 | 767 / 245 | 0.88 |
+| | 8 | 489 / 249 | 425 / 245 | 0.87 |
+| 8,192², 1 tile, 9/7 | 1 | 1,672 / 813 | 957 / 792 | 0.57 |
+| | 4 | 794 / 815 | 348 / 793 | 0.44 |
+| | 8 | 600 / 816 | 240 / 793 | 0.40 |
+| 16,384², 256 tiles, 9/7 | 1 | 5,828 / 3,134 | 3,434 / 3,130 | 0.59 |
+| | 4 | 2,848 / 3,135 | 1,206 / 3,131 | 0.42 |
+| | 8 | 2,272 / 3,135 | 956 / 3,131 | 0.42 |
+
+neo-j2k is as before: faster at every count with no higher peak, and every decode gave one hash. A rule
+that looked at the tile alone would have left the 16 tiles of 1,024^2 (1 M samples each) on one thread at every
+N (the N = 1 row's 2.9 s against OpenJPEG's 0.49 s at 8): the image's size decides, and the tile's floor only
+keeps many small tiles away from the executor.
+
 ### The saturated host
 
 The viewer's case: many decodes at once. Eight host threads (every core) each decode the image again and
 again through `nj2k_decode_memory`, each with a codec of its own, first each on its own thread and then all
-lent one pool of 8; five rounds, taking turns, each run about 3 s; medians. Every decode gave the one-thread
-hash.
+lent one pool of 8; five rounds, taking turns, each run about 3 s; every decode gave the one-thread hash.
+
+**With the first thresholds (tiles of 2^18 decoded samples over their components), the plan's "no throughput
+loss with the pool saturated" was not met at 1,024^2** (the review round's numbers):
 
 | Image | decodes a second, one thread each | the same, one shared pool | CPU ms a decode, one thread each / pool |
 |---|---|---|---|
@@ -644,15 +672,28 @@ hash.
 | 2,048² RGB 9/7, one tile | 73.2 | 71.7 (0.98) | 105 / 106 |
 | 4,096² RGB 9/7, one tile | 15.2 | 16.3 (1.07) | 490 / 449 |
 
-**The plan's "no throughput loss with the pool saturated" is not met for the smaller of these sizes:** with
-every core already busy, splitting a 1,024² decode costs about 5 % more CPU (Tier-1's planning walk and each
-run's walk to its first block, the threaded wavelet's extra passes, jobs running on other cores' caches)
-and 7 % of the throughput; at 2,048², 2 % (within this run's spread); at 4,096², the pool gains 7 % (one
-image's working set at a time). An idle host gets the 1,024² decode in about a fifth of the time (the table
-below). For the owner: keep the threshold at 2^18 samples a tile (latency for large textures, a few percent
-of throughput when the host is saturated), raise it (e.g. to 2^22, so the viewer's textures up to 2,048²
-RGB stay one thread each), or let the host lend the executor only when it has idle cores (the API allows it
-per codec, before each decode).
+Splitting a 1,024^2 decode cost about 5 % more CPU (Tier-1's planning walk and each run's walk to its first
+block, the threaded wavelet's extra passes, jobs running on other cores' caches) and 7 % of the throughput.
+
+**The owner's call (2026-11-20): the threshold is now an image of more than 2^22 samples a component**
+(above 2,048 x 2,048), so that the viewer's textures up to 2,048^2 stay one thread each (a tile must also
+have 2^18 samples in its largest component, as before: an image of many small tiles never calls the executor
+for a tile). The same test with that build:
+
+| Image | decodes a second, one thread each | the same, one shared pool | CPU ms a decode, one thread each / pool |
+|---|---|---|---|
+| 1,024² RGB 9/7, one tile | 307, 324, 269 | 299, 321, 257 (0.98, 0.99, 0.95) | 23 / 23 |
+| 2,048² RGB 9/7, one tile | 71.2, 69.0 | 71.7, 69.7 (1.01, 1.01) | 105 / 105 |
+| 4,096² RGB 9/7, one tile | 15.3, 13.4 | 16.2, 14.0 (1.06, 1.05) | 485 / 452 |
+
+(The first two rows are the same code path on both sides: the executor is never called, which the tests
+check, so what the ratios show is the run-to-run spread, which grew in the last runs when another job shared
+the machine. Control: `nj2k_large sat <file> 8 100 1` run twice in a row, no executor on either side, gave
+259.6 against 252.1, 236.2 against 230.3 and 247.0 against 198.5 decodes a second.) At 4,096^2 the pool
+gains 5-6 %, as before (one image's working set at a time). The 1,024^2 and 2,048^2 gate is therefore met
+by construction: no executor call, the one-thread operations. An idle host that wants a 1,024^2 decode in
+about a fifth of the time can still force it: nothing but the threshold stops the executor from being used
+at that size.
 
 ### Identity (the gate)
 
@@ -664,8 +705,9 @@ decoding twice) and the four large images (140 decodes), in the AVX2 and the sca
 
 ### Where threads start
 
-A tile is split from 2^18 decoded samples over its components on (a 512 x 512 grey or a 296 x 296 RGB
-tile). One codec decoding the same texture from memory again and again, one thread against N with every
+These probes are from the first thresholds (a tile split from 2^18 decoded samples over its components: a
+512 x 512 grey or a 296 x 296 RGB tile); the owner has since raised the image threshold to 2^22 samples a
+component and kept 2^18 as the tile's floor (the saturated host, above). One codec decoding the same texture from memory again and again, one thread against N with every
 stage forced (`nj2k_large split`, median of 60 each, taking turns, quiet machine; first run of the stage,
 before the review fixes, which did not touch these paths): the time at 1 thread, then the time at N
 threads as a fraction of it.
@@ -689,67 +731,67 @@ bands, medians:
 | 1 thread (µs) | 0.3 | 1.5 | 91 | 361 | 1,268 | 4,246 |
 | 8 bands (time vs 1) | 1.00 | 3.80 | 1.12 | 0.51 | 0.46 | 0.50 |
 
-So a plane is cleared in bands from 4 MiB on (`kParallelClearBytes`). The wavelet's level threshold (2^18
+So a plane is cleared in bands from 4 MiB on (`kParallelClearBytes`). The owner's raise of the tile threshold
+to 2^22 samples leaves this one at 4 MiB, because the two are not the same question: the clear is a few
+milliseconds of memory bandwidth that 8 bands halve from 4 MiB (a 16 MiB plane, the one of a 2,048^2 image
+in several tiles, clears in 1.3 ms against 0.6) and costs a saturated host no more CPU than the clear itself,
+while the tile threshold decides whether a decode of tens of milliseconds is split (and pays the walks
+and passes that the saturated host showed). Only a multi-tile image has a plane to clear this way, and the
+viewer's textures are one tile. The wavelet's level threshold (2^18
 samples) and the output's (2^16 samples a component) are estimates, not probed on their own: they apply only
 inside a tile already split.
 
 ### Small images: no executor, as the viewer decodes
 
-The viewer's request on neo-j2k's own path through `main`'s and this stage's shared library. An interleaved
-bench with libraries of the same code in one process cannot resolve these classes (a library's time in the
-reduced classes moved by up to 15 % from one copy to another), so each library runs in a process of its own
-(`nj2k_bench --a neolib:<library>=<name> --mode viewer --kinds full,budget,first --reduce 0-5 --pin 7`, the
-32-256 px files then the 512 and 1024 px ones, about 30 s each), the libraries in turn, three rounds (load
-from other processes 2-6 % mean). Three libraries besides stage 5, each built the same way:
+The viewer's request on neo-j2k's own path through `main`'s and this stage's shared library (`main` is the tip
+of the base branch, 6b6cc16, stage 2-4 merged). An interleaved bench with libraries of the same code in one
+process cannot resolve these classes (a library's time in the reduced classes moved by up to 15 % from one
+copy to another), so each library runs in a process of its own (`nj2k_bench --a neolib:<library>=<name>
+--mode viewer --kinds full,budget,first --reduce 0-5 --pin 7`, the 32-256 px files then the 512 and 1024 px
+ones, about 20 s each), the libraries in turn, three rounds (the corpus: the 188 real textures of the owner's bench corpus and the 5
+generated `sl_*` files of the repository). Three
+libraries besides stage 5, each built the same way (shared library only, `-DNJ2K_BUILD_STATIC=OFF`):
 
-- **ctl**: `main` with only stage 5's one-thread Tier-1 walker (`decode_blocks` over `for_each_cblk`, its
-  run counters and refusal flag), no threaded code at all: does that work cost the reduced decodes?
+- **ctl**: `main` with only the walker as stage 5 first had it (`decode_blocks` over `for_each_cblk`, with the
+  run counters and the refusal flag), no threaded code at all: does that work cost the reduced decodes?
 - **pad**: `main` with one unused exported function of 14 instructions added in `codec.cpp`. Its machine code
-  is `main`'s byte for byte (compared function by function); only the places of the functions after it
-  move (Tier-1's cleanup pass from a 48-byte to a 32-byte offset in its cache line).
-- stage 5, whose Tier-1 and wavelet kernels are also `main`'s machine code byte for byte (only the addresses
-  of their tables differ), at other places.
+  is `main`'s function by function (compared from the link map and the disassembly, addresses of data and
+  jumps normalised; the ones that differ are `nj2k_status_string` and the CRT's start-up code); only the
+  places of the functions after it move.
+- stage 5: the one-thread Tier-1 walker is now `decode_blocks` with no counters (the same `for_each_cblk`
+  walk, `decode_store` for each block), and the threaded runs use `decode_run`, a second function that has the
+  counters. The Tier-1 kernel (`t1_decode_cblk`, `t1_store`, the passes) and the wavelet are `main`'s
+  instructions with only the addresses of their tables changed; the output pass's `write_group` and
+  `finish_in_place_mct` and the walker are code of stage 5 (the walker is a function of its own where `main`
+  inlines the loop into `decode_samples`).
 
-Ratios to `main` (median per file, then over the class; a library's own three runs spread by up to 2.6 %,
-mostly under 1 %, and by 3.4-5 % in the budget class of 256² at reduce 3). Stage 5 and `main` ran in two
-rounds of three runs (one with ctl, one with pad); its range covers both:
+Ratios to `main` (median per file over the three rounds, then the range of the classes' medians):
 
 | Request | ctl / main | pad / main | stage 5 / main |
 |---|---|---|---|
-| 32² whole and at reduce 1-5 | 1.001-1.017 | within ±1.2 % | 0.996-1.015 |
-| 64² at reduce 1, 2, 3 | 1.017, 1.018, 1.012 | within ±1.2 % | 1.006-1.015 |
-| 128² at reduce 2, 3, 4 | 1.018, 1.020, 1.018 | within ±1.2 % | 1.004-1.014 |
-| 64-512² whole | 0.986-1.003 | up to 1.013 (256²) | 1.002-1.016 |
-| 1024² whole at reduce 0, 1, 2 | 1.007, 1.001, 0.997 | 1.015 at reduce 0 | 1.021, 1.022, 1.018 (two runs: 1.015-1.024) |
-| the viewer's budgets, 64-1024² | 0.992-1.023 | up to 1.021 (512² r4); 1.066 (256² r3) | 0.991-1.021; 1.048-1.068 (256² r3) |
-| first 600 bytes, 32-1024² | 0.998-1.012 | up to 1.024 (1024²) | 1.000-1.014 |
+| 32² whole and at reduce 1-5 | 1.005-1.009 | 0.986-0.991 | 0.991-1.001 |
+| 64² at reduce 1, 2, 3 | 0.998-1.008 | 0.982-0.990 | 1.000-1.008 |
+| 128² at reduce 2, 3, 4 | 0.987-0.990 | 0.986-0.992 | 0.995-0.998 |
+| 64-512² whole | 0.996-1.011 | 0.993-1.005 | 0.998-1.010 |
+| 1024² whole at reduce 0, 1, 2 | 1.021, 1.016, 1.016 | 1.006, 1.004, 1.003 | 1.010, 1.006, 1.007 |
+| the viewer's budgets, 64-1024² | 0.985-1.024 | 0.982-1.005 | 0.991-1.021 |
+| the viewer's budgets, 64 and 128² | 0.985-1.009 | 0.982-0.991 | 0.991-1.007 |
+| first 600 bytes, 32-1024² | 0.987-1.013 | 0.983-0.996 | 0.989-1.007 |
 
 What it shows:
-- Moving `main`'s own unchanged code by a few bytes changes classes by up to 2.4 % (6.6 % in the budget class
-  of 256² at reduce 3, which every library varies most in): the noise of a build, not of two copies of one
-  DLL, is about ±2 % here.
-- Stage 5's figures lie within that band: its largest, whole 1,024² decodes at 1.015-1.024, is where `pad`
-  is 1.015; with Tier-1's machine code `main`'s byte for byte, it is layout, not work.
-- The control's one-thread walker does cost the reduced decodes of 64 and 128 px textures about 2 % (0.2-0.7 µs
-  a request) in each of those classes, 0.8-2.3 % in their budget classes: per code-block, the run counters and
-  the call through the walker. In stage 5 the same walker measured 0.4-2.1 % there in this round (budget
-  128² at reduce 4 the most), 2-4 % in the stage's first round (another build, another layout).
-
-Gate 3 as written ("no slower than `main` within the noise of two copies of one DLL") is therefore not met
-by this measure for whole 1,024² decodes (2 %) and for the walker's 64-128 px reduced decodes (up to 2 %),
-and could not be by any build whose code moves: the same method shows `main` against itself moved 1.5-2.4 %.
-**For the owner:** accept stage 5's small-image cost as within the layout noise, or hold it (the walker's
-counters could go, at the price of a second Tier-1 caller, which cost whole 1,024² decodes 1-1.5 % in the
-stage's first round). The arrangements tried in the first round (the interleaved bench, so their small-class
-figures are the uncertain ones):
-- the parts calling Tier-1's entry points from a second place: whole 1024² decodes 1.0-1.5 % slower (stable in
-  every run), small reduced decodes no slower;
-- Tier-1 called from one function for one thread and the parts (`decode_blocks`, the committed arrangement):
-  whole decodes as `main`'s, reduced small ones 2-4 % slower;
-- the small wavelet levels of a threaded tile run through the threaded path's own loop: the small levels'
-  transform compiled differently for one thread too, so they go through one thread's own call;
-- Tier-1's entry points kept out of line, or compiled twice from one source for the two callers: whole 1024²
-  decodes 1.4 % slower again.
+- **Decision of the owner (2026-11-20): the one-thread walker loses its counters.** Reduced 64² and 128²
+  decodes are 0.995-1.008 of `main`'s, inside what the `pad` control does to the same classes (0.982-0.992) and
+  what the libraries' own spread is (about 1 %). The earlier round (against a stale `main`, the pre-stage-2
+  code) is discarded.
+- This round did not reproduce the first round's ~2 % for `ctl` on these classes (0.987-1.008): the counters'
+  cost was a few tenths of a microsecond a request, near the layout noise, and it moves with the build.
+  Removing them takes the cost out where it was measured; the control is no longer needed to show it.
+- Whole 1,024² decodes are 1.003-1.010 of `main`'s for stage 5 and 1.003-1.006 for `pad`: code placement.
+  The separate `decode_run` does not cost them what Tier-1 reached from two loops cost in the first round
+  (1.0-1.5 %, an arrangement where the kernel was compiled for each caller): the kernel stays `main`'s.
+- Gate 3 as written ("no slower than `main` within the noise of two copies of one DLL, 0.5 %") is met
+  within the noise of this measurement for reduced 64 and 128 px decodes, and for the others within the
+  placement effect `pad` shows (up to 1 % on 1,024² whole decodes here).
 
 ### Not measured
 

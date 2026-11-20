@@ -2146,9 +2146,11 @@ NJ2K_API NJ2K_BOOL NJ2K_CALLCONV nj2k_decoder_set_retained_bytes(nj2k_codec_t *p
  * decoded on several cores lends the codec its executor, so every decoder of the process shares the
  * host's one scheduler and nothing oversubscribes the cores, however many decoders run at once.
  * Without an executor everything runs on the calling thread, as before. With one, the codec calls it
- * only for a tile of 2^18 decoded samples or more over its components (a 512 x 512 grey or a
- * 296 x 296 RGB tile), and to clear an image plane of 4 MiB or more that the first tile written into
- * it does not cover (a multi-tile image): small images and textures stay on the calling thread. A
+ * only for the tiles (of 2^18 decoded samples or more in their largest component) of an image whose
+ * largest decoded component has more than 2^22 samples (larger than 2,048 x 2,048: grey, RGB and
+ * RGBA textures up to that size run one thread each), and to clear an image plane of 4 MiB or more
+ * that the first tile written into it does not cover (a multi-tile image): small images and
+ * textures stay on the calling thread. A
  * codec decodes the same samples, and gives the same status and the same messages in the same order,
  * whatever the executor and its concurrency.
  */

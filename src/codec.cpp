@@ -452,6 +452,7 @@ bool set_parallel_thresholds(nj2k_codec_t* codec, std::uint64_t tile_samples, st
         return false;
     }
     d->parallel_tile = tile_samples;
+    d->parallel_tile_floor = tile_samples < kParallelTileFloor ? tile_samples : kParallelTileFloor;
     d->parallel_level = level_area;
     d->parallel_output = output_samples;
     d->parallel_clear = clear_bytes;

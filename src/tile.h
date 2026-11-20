@@ -174,9 +174,9 @@ public:
     // parts: the wavelet's threaded levels' parts (0: one thread)
     std::size_t dwt_scratch_bytes_needed(std::uint32_t parts = 0) const noexcept;
     // The room a threaded decode's code-block costs need (plan_t1's cost), and the decoded
-    // samples of the components decoded, which say whether the tile is large enough to split.
+    // samples of the largest component decoded, which say whether the tile is large enough to split.
     std::size_t cblk_costs_bytes() const noexcept;
-    std::uint64_t decoded_samples() const noexcept;
+    std::uint64_t largest_component_samples() const noexcept;
     // Tier-1's runs for at most max_runs parts (tj.runs, bounds, run_bytes, refused), from the
     // packet headers alone; cost has room for cblk_costs_bytes().
     void plan_t1(TileJobs& tj, std::uint32_t max_runs, void* cost) noexcept;

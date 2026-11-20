@@ -21,10 +21,16 @@ namespace nj2k::detail {
 
 // The most parts a stage is cut into (the executor's concurrency is clamped to it).
 inline constexpr std::uint32_t kMaxJobs = 64;
-// A tile is decoded through the executor from this many decoded samples over its components on (a
-// 512 x 512 grey or a 296 x 296 RGB tile): below it a stage's parts would take less than the tens of
-// microseconds an executor needs to start and join them (performance.md section 6).
-inline constexpr std::uint64_t kParallelTileSamples = std::uint64_t(1) << 18;
+// A tile is decoded through the executor only in an image whose largest decoded component has more than
+// this many samples (2,048 x 2,048: grey, RGB and RGBA textures up to that size stay on the calling
+// thread, one thread each, which is what a host decoding many of them at once wants: with every core
+// busy, splitting a 1,024^2 decode lost 7 % of the throughput at the former threshold of 2^18 samples
+// over the components, doc/bench.md stage 5). For a single tile that is the tile's own size.
+inline constexpr std::uint64_t kParallelTileSamples = std::uint64_t(1) << 22;
+// And only a tile whose largest component has at least this many samples (512 x 512): below it a stage's
+// parts would take less than the tens of microseconds an executor needs to start and join them
+// (performance.md section 6), as in an image of many small tiles.
+inline constexpr std::uint64_t kParallelTileFloor = std::uint64_t(1) << 18;
 // Inside such a tile, a wavelet level is split from this area (samples of the level) on; smaller
 // levels run on the calling thread, as before. An estimate (not probed on its own): it applies only
 // inside a tile already split.
@@ -72,9 +78,9 @@ inline std::uint32_t part_begin(std::uint32_t total, std::uint32_t n, std::uint3
     return static_cast<std::uint32_t>(std::uint64_t(total) * i / n);
 }
 
-// For the tests: the sizes a codec splits from (tile samples, wavelet level area, output samples a
-// component, plane clear bytes), so that the corpus's small files take every threaded path; false
-// for a null codec. Not exported from the shared library (only nj2k_* names are).
+// For the tests: the sizes a codec splits from (image samples, which also lowers the tile floor to
+// itself, wavelet level area, output samples a component, plane clear bytes), so that the corpus's
+// small files take every threaded path; false for a null codec. Not exported from the shared library (only nj2k_* names are).
 bool set_parallel_thresholds(nj2k_codec_t* codec, std::uint64_t tile_samples, std::uint64_t level_area,
                              std::uint64_t output_samples, std::uint64_t clear_bytes) noexcept;
 
