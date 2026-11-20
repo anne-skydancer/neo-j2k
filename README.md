@@ -30,7 +30,8 @@ reduce policy and the decoded dimensions.
 Stage 1c, the decoder: whole and partial codestreams decode bit-identical to the oracle at every reduce level and
 every cut point (the stage 1a semantics: every complete codeword segment kept), through OpenJPEG's API or from
 memory into the caller's buffers (`nj2k_read_header_memory`, `nj2k_decode_memory`: one decoder per thread, the
-main header parsed once, the input never copied, no heap call once warmed up for images up to 256 x 256).
+main header parsed once, the caller's bytes read in place and never written, no heap call once warmed up for
+images up to 256 x 256). Large images decode too, on one thread as fast as OpenJPEG or faster (`doc/bench.md`).
 Decoding by tile and decode areas come later, the encoder in 6a (`doc/stages.md`).
 
 ## Build and test

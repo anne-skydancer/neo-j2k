@@ -49,13 +49,26 @@ passes the Second Life profile at every reduce level (`doc/testing.md`). Where t
   ever is: tile parameters exist only for tiles whose headers carry markers, plan S2);
 - layers: as each COD is read, main header and tile-part headers;
 - the side and the working memory: before decoding (`nj2k_get_decoded_dimensions()` runs the same
-  check). The working memory is computed from the header: the decoded samples, the coefficients of the
-  largest tile when there are several, the code-block and precinct state of every resolution of that tile,
-  and fixed scratch (`decode_working_memory`, `src/header.cpp`). The memory a decode takes beyond the
-  header stays within it for every corpus file at every reduce level (`decode_unit`, `test_memory_bound`);
-  what packets add per code-block (segments, data ranges) is bounded by the working arena, which never
-  reserves more than `max_memory` either;
+  check). The working memory is computed from the header: the decoded samples, the wavelet's lines and
+  fixed scratch, and for the largest tile with the main header's coding its coefficients when there are
+  several tiles, the code-block and precinct state of every resolution and the packet iterator's table
+  (`decode_working_memory`, `src/header.cpp`; computed once per header and reduce factor). The memory a
+  decode takes beyond the header stays within it for every corpus file at every reduce level
+  (`decode_unit`, `test_memory_bound`);
+- a tile whose own COD or COC changes its coding: its working memory again, with its own parameters,
+  before the tile is allocated (`test_tile_memory_limit`);
+- while decoding: what packets add per code-block (segments, data ranges) goes into the working arena,
+  which never reserves more than `max_memory`, and a tile's decoded samples are refused when, with what
+  the arena holds, they would pass it;
 - the header state itself: the decoder's arena never reserves more than `max_memory`.
+
+The codestream's own bytes are outside `max_memory`: the memory API reads the caller's bytes, and
+`nj2k_decode()` holds the stream's (below).
+
+The side is the decoded side, after the reduce factor, so `nj2k_read_header()` and
+`nj2k_read_header_memory()` do not check it: a host reads a header at reduce 0 to learn the image's size,
+then chooses a factor. It sizes its buffers only once `nj2k_get_decoded_dimensions()` (or its own checks)
+accepts the decoded components; the decode fuzz target does exactly that (`fuzz/fuzz_decode.cpp`).
 
 A profile unknown to the build (the OpenSim one with `NJ2K_PROFILE_OPENSIM=OFF`) sets no limits and makes
 `nj2k_decoder_limits_init()` return false, as the fork's API does: check the result.
@@ -93,8 +106,10 @@ default, OpenJPEG's behaviour) a reduce factor at or above a component's number 
 (`NJ2K_E_LIMIT`, at `nj2k_read_header()` when the factor came before it, else at
 `nj2k_set_decoded_resolution_factor()`, which then changes nothing: fork audit S1); under `CLAMP` it is
 lowered to the coarsest level the main header gives every component (plan W4), and the components'
-`factor` says which level is used. A viewer's further rule (decode the coarsest level only while it stays
-small) stays the viewer's.
+`factor` says which level is used. A tile whose own COD or COC leaves a component no more resolutions
+than the factor in effect has no level of the image's size, so it is refused (`NJ2K_E_LIMIT`) under
+either policy, before anything of it is written (`decode_unit`, `test_clamp_tile_styles`). A viewer's
+further rule (decode the coarsest level only while it stays small) stays the viewer's.
 
 `nj2k_get_decoded_dimensions(codec, image)` sets each component's `factor`, `x0`, `y0`, `w` and `h` to
 what the decode will deliver, before decoding, and runs the decode's limit checks: a host sizes its
@@ -134,8 +149,11 @@ buffers from it (plan P2a). OpenJPEG sizes the image differently when the factor
 - `nj2k_decode` and `nj2k_end_decompress`: the decode of OpenJPEG 2.5.4 at the oracle's pin, the same
   image for every request of the reference tables, whole or cut, at every reduce level, in plain, strict
   and viewer mode (`doc/testing.md`). The stream's bytes are read into the codec's memory first (one
-  buffer, kept for the next decode up to the retained bytes). `nj2k_end_decompress` reads nothing more,
-  also for a JP2 file (DP-13), and returns true. The status after a decode is `NJ2K_OK`, or
+  buffer, kept for the next decode up to the retained bytes): up to the length the host gave, or a JP2
+  file's codestream box end when the box gives its length (DP-15), taken at once when the length is
+  known and grown by doubling when it is not. That buffer is the decode's input and lies outside
+  `max_memory`. `nj2k_end_decompress` reads nothing more, also for a JP2 file (DP-13), returns true and
+  leaves the decode's status as it was. The status after a decode is `NJ2K_OK`, or
   `NJ2K_TRUNCATED` when the bytes end before the codestream does (no EOC, a tile-part cut short, a tile
   missing): the image then holds what arrived. Packets that claim more bytes than their tile-part holds,
   in a codestream that is otherwise whole, decode as OpenJPEG decodes them, with its warning, and the
@@ -146,11 +164,21 @@ buffers from it (plan P2a). OpenJPEG sizes the image differently when the factor
   the tile grid and the fewest resolutions without allocating; `nj2k_decode_memory` decodes into the
   caller's planes, `NJ2K_SAMPLE_I32`, `NJ2K_SAMPLE_U8` or `NJ2K_SAMPLE_U16` (the low bits, as an 8-bit copy
   of the image keeps them), with any row stride (negative for bottom-up) and sample stride (interleaved
-  components), so the viewer's raw image is written in one pass. The bytes are only read during the call
-  and never copied: code-block data is read where it lies. The codec is the per-thread decoder: one per
-  thread, kept by the caller; after a failed call it takes the reduce factor for its next codestream as
-  before a header (`nj2k_set_decoded_resolution_factor` keeps it and returns false), and its next header
-  read starts afresh.
+  components), so the viewer's raw image is written in one pass. The caller's bytes are read only during
+  the call, never written and never duplicated: data is read in place, apart from each code-block's bytes
+  (copied into a padded buffer for the MQ decoder's sentinel), the tile-parts of a tile that has several
+  (gathered in the working arena), the tile-part headers' marker segments and the main header (kept to
+  know it again). The codec is the per-thread decoder: one per thread, kept by the caller. After a failed
+  header read it takes the reduce factor for its next codestream as before a header
+  (`nj2k_set_decoded_resolution_factor` keeps it and returns false), and its next header read starts
+  afresh; after a failed decode it still holds the header, which checks a new factor at once. A
+  component selection (`nj2k_set_decoded_components` after the header read) holds for the decodes of
+  that header until the next `nj2k_read_header_memory` or a decode that reads another header; a plane
+  for a component left out is refused (`NJ2K_E_OUTPUT`), and a selection decodes a JP2 file's
+  codestream components as `nj2k_decode` does, without its palette or channel definitions.
+  `nj2k_read_header_memory` does not check the decoded side or the working memory (above);
+  `nj2k_get_decoded_dimensions` does, and `nj2k_decode_memory` refuses what they refuse before it
+  writes anything.
 - `nj2k_decoder_set_retained_bytes`: what the codec keeps between decodes (its working arenas, the Tier-1,
   wavelet and tile buffers, a stream's bytes), 8 MiB by default. A warmed-up codec makes no heap call to
   decode images up to 256 x 256 again, the same one or another (`decode_unit`, `test_zero_heap`: no

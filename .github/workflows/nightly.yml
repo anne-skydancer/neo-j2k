@@ -1,11 +1,11 @@
 # SPDX-License-Identifier: BSD-2-Clause
 # Copyright (c) 2026, Anne Skydancer (neo-j2k)
 #
-# Nightly, on Linux only: every cut point of
-# the generated files up to 16 KB against the oracle's nightly reference table, in plain and viewer
-# mode; then ten minutes of libFuzzer per target with AddressSanitizer and UndefinedBehaviorSanitizer.
-# The fuzzers start from the corpus the earlier nights grew, kept in the Actions cache (merged down
-# to the inputs that add coverage), and from the seeds; findings are uploaded as an artifact.
+# Nightly, on Linux only: every cut point of the generated files up to 16 KB against the oracle's
+# nightly reference table, in plain and viewer mode; then ten minutes of libFuzzer per target with
+# AddressSanitizer and UndefinedBehaviorSanitizer. The fuzzers start from the corpus the earlier
+# nights grew, kept in the Actions cache (merged down to the inputs that add coverage), and from the
+# seeds; findings are uploaded as an artifact.
 name: Nightly
 
 on:
