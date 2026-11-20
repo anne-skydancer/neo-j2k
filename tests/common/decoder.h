@@ -135,6 +135,21 @@ std::unique_ptr<Backend> make_neoj2k_library_backend(const std::string& path, co
                                                      std::string* error);
 std::unique_ptr<Backend> make_library_backend(const std::string& path, const std::string& name, std::string* error);
 
+// A codestream from the oracle's encoder with the layout a test needs (the upload encode above
+// fixes its own): one 8-bit plane of samples a component (rows top first, w x h of that
+// component's size), each component's subsampling, the tile size (0: one tile), 5/3 lossless or
+// 9/7 at one rate layer, the resolutions, and the colour transform on or off (OpenJPEG's encoder
+// refuses it for components of different sizes; the test patches the COD for that case).
+struct EncodeSpec {
+    std::uint32_t width = 0, height = 0;
+    std::vector<std::uint32_t> dx, dy;           // per component
+    std::vector<std::vector<std::uint8_t>> planes;  // per component, its own size
+    std::uint32_t tile = 0;
+    bool reversible = true, mct = false;
+    int numres = 6;
+};
+bool oracle_encode(const EncodeSpec& spec, std::vector<std::uint8_t>& out);
+
 // Viewer behaviour shared by every backend (indra/llimage, llimagej2coj, release line).
 namespace viewer {
 constexpr std::uint64_t kMaxComponents = 8;      // MAX_IMAGE_COMPONENTS (llimage.h)

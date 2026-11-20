@@ -138,6 +138,11 @@ private:
 
 }  // namespace
 
+bool oracle_encode(const EncodeSpec& spec, std::vector<std::uint8_t>& out)
+{
+    return REPLAY_NS::replay_encode(REPLAY_NS::linked_api(), spec, out);
+}
+
 std::unique_ptr<Backend> make_oracle_backend()
 {
     (void)single_thread_openjpeg();
