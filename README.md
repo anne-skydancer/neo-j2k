@@ -38,8 +38,9 @@ images up to 256 x 256). Large images decode too, on one thread as fast as OpenJ
 Decoding by tile and decode areas come later, the encoder in 6a (`doc/stages.md`).
 
 Stages 2-4, speed on one thread with the same output: the colour transform, DC shift and copy into the
-caller's buffers fused into one pass; the inverse wavelet row-wise on large levels; the MQ decoder's
-renormalisation by count-leading-zeros (`doc/bench.md`).
+caller's buffers fused into one pass (the viewer's 8-bit image in registers); the inverse wavelet row-wise on
+large levels, its vertical steps in one sweep; the MQ decoder's renormalisation by count-leading-zeros; no
+heap call once warmed up, from the first repeat of a request on (`doc/bench.md`).
 
 ## Build and test
 

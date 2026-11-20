@@ -231,13 +231,14 @@ these classes are as slow, so it is not stage 4. With every tile finished in pla
 stage 2 build alone already shows it, and stage 3 adds nothing. What is left is the write path's fixed work
 per tile (preparing up to four components, matching the planes, a row loop over a few short rows) or code
 layout: a few hundred cycles. It is accepted as measured, against the 8-24 % gained on every decode with more
-than a few pixels; a fast path to buy it back would need a profile first.
+than a few pixels; a fast path to buy it back would need a profile first. (The profile came later: see "The
+owner's three items" below, which also found Tier-1's part.)
 
 Heap calls after warm-up, per request: none up to 512² but in one file, and one allocation and one free at
 1024² whole (the 8 MiB the codec keeps, as in stage 1c). The one file is a 32² RGBA texture whose whole decode
 makes one allocation and two frees (4,096 bytes) a request in `main` and in every stage build alike. It comes
 from stage 1c, not from these stages, and lies outside the zero-heap test, which runs on the generated corpus;
-it is reported for a fix of its own.
+it is reported for a fix of its own (fixed below, "Zero heap after warm-up").
 
 The first run (under load: other processes 26 % mean, 53 % p90, 88 % max), each stage's build:
 
@@ -339,3 +340,158 @@ the literature reports no CPU coder that vectorises Part 1 context modelling, an
 occupancy for the same divergence. Not adopted; the prototype and its numbers stay as the record. The
 1.41× is an upper bound for lanes: the prototype's scalar replay looks the MQ states up by index where the
 library follows pointers, and neither side forms contexts.
+
+## Stages 2-4: the owner's three items (2026-11-20)
+
+Three items the owner set before the merge, each on the pull request's branch as commits of its own:
+zero heap calls after warm-up for every file of both corpora, the kernel gates of the plan, and the few-pixel
+requests no slower than `main`. Same machine and method as above (MSVC 14.51 RelWithDebInfo, pinned to core
+7, interleaved, time-boxed, the load recorded).
+
+### Zero heap after warm-up
+
+One 32² RGBA texture of the bench corpus made one allocation and two frees (4,096 bytes) on every repeat of
+its request, in `main` and in every stage. A diagnostic build that records the stack of each allocator call
+put it in the tile-part header arena (`Decoder::tile_arena`: the tile-part headers' COD, COC, QCD, QCC, RGN,
+POC and PPT markers). The arena starts with a 2 KiB block and adds blocks as a decode needs them;
+`Arena::reset` merges them into one block of their total, so that a decode needing no more fits it, but it
+ran when the next decode started. A request whose tile-part headers held more markers than any request
+before it grew the arena, and its first repeat freed the two blocks and took the merged one. The arena's
+contents die with the decode, so the merge now happens at the end of it (`Decoder::trim_after_decode`, next
+to the work arena's), and the repeat of any request finds memory it fits in.
+
+`decode_unit` checks it per request, as the bench counts it: the viewer's request through the bench's own
+backend (one codec kept across every request, the Second Life limits), every file up to 512², at reduce 0-5,
+whole, cut to the bytes the viewer asks for at that level, and the first 600 bytes; each request once, then
+again: the repeat must make no allocator call and no `operator new`. On the generated corpus in CI (58
+files, 521 requests) and with `--heap-files <list>` on the bench corpus locally (172 files, 1,623 requests),
+both builds: no heap call. Without the fix it fails on both corpora (`packed_ppt_tiles.j2k`, and a 128²
+RGBA texture: which file shows it depends on what was decoded before).
+
+512² decodes make none already. 1024² whole decodes make one allocation and one free a request (the
+12-16 MiB of the tile's samples, above the 8 MiB a codec keeps by default). They can make none with
+`nj2k_decoder_set_retained_bytes` at 17 MiB or more: measured on 12 textures of 1024², that saves 1.3 ms
+of 30.8 (4 %, the page faults of fresh memory) and keeps 16.3 MiB per codec instead of the 8 MiB limit. Not
+without cost, so the default stays; the viewer may raise it for its decode threads.
+
+### The kernel gates
+
+Run on the final head three times (101 rounds at 1024², quiet machine, 4-10 % load):
+
+| Kernel | Size | Stage 1c, net | Before these commits, net | Now, net | Gain net | Gain gross | Plan gate |
+|---|---|---|---|---|---|---|---|
+| Output tail (RGB 9/7, 8-bit interleaved, bottom-up) | 1024² | 1,121-1,174 µs | 452 µs (2.5×) | 259-275 µs | **4.24-4.33×** | 2.28-2.31× | ≥ 5× |
+| | 4096² | 24.1 ms | | 5.0 ms | 4.8× | 2.61× | |
+| Inverse 9/7, 5 levels | 1024² | 2,393-2,515 µs | 583 µs (4.2×) | 477-484 µs | **5.02-5.19×** | 4.10-4.25× | ≥ 5× |
+| | 4096² | 43.2 ms | | 8.9 ms | 4.87× | 4.09× | |
+| Inverse 5/3, 5 levels | 1024² | 957-1,013 µs | | 408-421 µs | 2.3-2.4× | 2.00-2.06× | |
+
+**Output tail.** The fused pass of stage 2 still went through a stack buffer: the transform into it, each
+component's shift there, then the store of the low bytes, three trips through L1 a sample. For the viewer's
+image (1 to 4 components interleaved in 8-bit pixels, each finished into [0, 255]) a sample now goes from its
+source row to its byte in registers, sixteen pixels a step: the transform as before, the 9/7 rounding by
+cvtps after min(2^30, v) (2^31 and above to the top, NaN to the bottom, as before), the shift and clamp in
+16-bit lanes (for 0 <= lo <= hi <= 255 and a shift below 2^15 a saturating pack, a saturating add and a clamp
+equal the 64-bit add and clamp), and the pixels packed by shifts, unpacks and a byte shuffle. 1,131 µs net
+in stage 1c, 452 before, 263 now. The 5× gate (226 µs) is out of reach at this size: the input is 12.6 MB
+of int32 planes in the L3, and reading them alone, three streams and nothing else, takes 201-230 µs (55-63
+GB/s on one core) before the 3.1 MB of pixels are written; a kernel that only stores the low bytes cannot
+go below that floor, and this one runs at it. Measured and dropped: the same pass in 32-bit lanes (387 µs).
+
+**9/7 wavelet.** Its parts at 1024², each alone after a copy: the horizontal pass 390 µs, the vertical
+lifting 260, the pass that puts the rows in order 156 (a full read and write of the level from the L3); 630
+fused. Two changes, each sample keeping OpenJPEG's operations in its order:
+- where the vertical schedule gives each step exactly one interior target, the scaling of the two new rows
+  and the four steps are one sweep over the columns with every value in registers (6 or 7 loads and 5 or 6
+  stores for 8 columns of the two rows, against 14 loads and 6 stores in six passes); the schedule runs on
+  after it for the edge rows;
+- the horizontal lifting leaves each row's halves in place, and the row pass interleaves the columns as it
+  copies every row (the vertical lifting treats each column alike), so one interleave and one memcpy a row
+  fewer.
+
+Measured and dropped (each bit-exact): the horizontal steps in registers with lane shifts (eight shuffles per
+16 samples cost what the passes did), the scalings folded into the steps (more multiplies, slower), the step
+loops unrolled by two (slower), software prefetch of the next rows (no change), row-wise thresholds from 32²
+to 256² (no change). What is left of the top level is two passes over 4 MB of L3 (the lifting in place and
+the row permutation, which a buffer the size of the level would avoid, and memory may not grow) and the
+horizontal steps' arithmetic. The gate is met, by less than the run-to-run spread (4.94-5.19× over six runs).
+
+### Few-pixel requests
+
+Requests whose output is a few pixels were 1-3 % slower than `main`. A static build of each with rdtsc probes
+around the tile's set-up, the packets, the samples and the hand-over (the minimum per file over thousands of
+repeats, which load does not move) showed where:
+
+- **The write path** (stage 2): about 260 cycles a 32² file at reduce 5 (1x1x4) against `main`'s 140 for the
+  same work, and 480 against 430 at 128² reduce 5. About 160 cycles of bookkeeping before any sample moved
+  (`hand_over_whole`'s check, then `write_tile`'s grouping through `Prepared` copies and the pairing checks),
+  then a call per kernel and row into AVX2 kernels that only ran their scalar tails; and MSVC built the
+  per-sample float bit casts (a memcpy of an int32 held in a register) out of byte stores on the stack, which
+  the float load after them waited on. Now the viewer's single tile goes straight to one `write_group` pass,
+  regions of up to four pixels go a pixel at a time with the per-sample operations inline (`mct.h`, the one
+  copy the scalar kernels loop over, by `std::bit_cast`), and a region of up to 128 samples whose rows follow
+  one another is finished as one run: 196 cycles at 1x1x4 (`main` 141), 419 at 4x4x4 (`main` 425).
+- **Tier-1** (stage 4): about 600 cycles more than `main` at 256² reduce 5. With `main`'s `t1.cpp` in this
+  build every few-pixel class is faster than `main`, but whole decodes lose stage 4's 5-7 %; and the same
+  Tier-1 source moves by up to 1,000 cycles between builds (code layout). Keeping the counting
+  renormalisation for whole decodes only was tried four ways and dropped, each slower in both regimes: the
+  passes compiled twice and chosen by code-block size, the loop on the MPS path only, one counted step with
+  the loop as fallback, the count in the 64x64 passes only.
+- **The tile's set-up**: `Tile::init` called the C runtime's `ldexp` once per band for the step sizes (64
+  calls for a 32² RGBA tile); the same double built from its exponent bits takes 300-500 cycles off every
+  request.
+
+The shared libraries, interleaved, two runs in opposite load orders, two copies of each (load 24-27 %):
+
+| Request | Files | main µs | final / main, run 1 | run 2 | main copy / main, run 1 | run 2 |
+|---|---|---|---|---|---|---|
+| 32² at reduce 3 | 28 | 3.93 | 0.976, 0.976 | 0.957, 0.955 | 1.005 | 0.994 |
+| 32² at reduce 4 | 28 | 3.45 | 0.979, 0.982 | 0.972, 0.965 | 1.004 | 0.996 |
+| 32² at reduce 5 (1x1 floor) | 28 | 3.09 | 0.973, 0.971 | 0.967, 0.962 | 1.003 | 0.994 |
+| 64² at reduce 5 | 32 | 5.44 | 0.963, 0.963 | 0.958, 0.952 | 1.009 | 0.996 |
+| 128² at reduce 4 | 32 | 9.27 | 0.998, 0.990 | 0.973, 0.979 | 0.999 | 0.993 |
+| 128² at reduce 5 | 32 | 6.41 | 1.003, 0.994 | 0.983, 0.980 | 1.005 | 0.991 |
+| 256² at reduce 5 | 40 | 12.35 | 1.007, 1.002 | 1.000, 1.001 | 0.999 | 1.004 |
+| 512² at reduce 5 | 40 | 62.55 | 0.985, 0.978 | 0.980, 0.979 | 1.000 | 1.001 |
+| 32², first 600 bytes | 2 | 4.25 | 0.991, 0.987 | 0.996, 0.990 | 1.004 | 1.003 |
+| 64², first 600 bytes | 29 | 4.55 | 0.955, 0.952 | 0.947, 0.942 | 1.005 | 0.994 |
+| 128², first 600 bytes | 24 | 4.69 | 0.994, 0.985 | 0.972, 0.966 | 1.004 | 0.985 |
+| 256², first 600 bytes | 38 | 6.51 | 0.999, 0.992 | 0.987, 0.984 | 0.997 | 0.995 |
+| 512², first 600 bytes | 38 | 13.02 | 0.985, 0.974 | 0.969, 0.977 | 0.994 | 1.012 |
+| 1024², first 600 bytes | 34 | 23.95 | 0.964, 0.965 | 0.964, 0.965 | 0.997 | 1.002 |
+
+Every few-pixel class is as fast as `main` or faster; the closest, 256² at reduce 5, is 0.0-0.7 % above it,
+inside the spread of the two copies of `main` (up to 1.5 % on these classes in these runs). Every decode is
+identical to the oracle's, and no request makes a heap call after warm-up but the 1024² whole ones (above).
+
+### Whole decodes and large images
+
+The interleaved bench of the final head against `main` and the oracle (both libraries twice; 1,437
+configurations in 275 s under a load of 37 % mean and 84 % p90, so read the ratios, not the times):
+
+| Request | oracle µs | main µs | final µs | final / main |
+|---|---|---|---|---|
+| 32² whole | 36.0 | 10.3 | **7.9** | 0.83 |
+| 64² whole | 403 | 371 | **338** | 0.91 |
+| 128² whole | 643 | 580 | **502** | 0.87 |
+| 256² whole | 2,279 | 2,120 | **1,811** | 0.83 |
+| 512² whole | 13,521 | 12,193 | **10,452** | 0.83 |
+| 1024² whole | 38,390 | 35,171 | **26,093** | 0.77 |
+
+The earlier quiet run of these commits (before the last one, which does not touch whole decodes beyond its
+300-500 cycles: load 10 % mean) gave 0.885, 0.915, 0.870, 0.825, 0.846 and 0.760 for the same classes.
+
+Large images, a process a decode (OpenJPEG, `main`, final; three rounds, two for 16,384², medians and the
+highest peak commit; load 33 % mean, 100 % max, sampled every 4 s); every decode identical to OpenJPEG's:
+
+| Image | OpenJPEG ms / MB | main ms / MB | final ms / MB | final / OpenJPEG |
+|---|---|---|---|---|
+| 4,096², one tile, 9/7, from memory | 438 / 205 | 403 / 200 | **271 / 200** | 0.62 |
+| 4,096², 16 tiles, 5/3, from memory | 3,291 / 248 | 3,257 / 246 | **3,146 / 244** | 0.96 |
+| 8,192², one tile, 9/7, from memory | 1,776 / 813 | 1,634 / 792 | **1,078 / 792** | 0.61 |
+| 16,384², 256 tiles, 9/7, from memory | 6,406 / 3,134 | 5,370 / 3,131 | **4,465 / 3,130** | 0.70 |
+| the same through the stream API | 406, 3,225, 2,387, 6,362 ms | 354, 3,205, 1,673, 5,974 | **237, 2,992, 1,016, 3,710** | 0.58, 0.93, 0.43, 0.58 |
+
+Peak memory is unchanged by these commits (the wavelet's scratch and the stack buffer as before); the stream
+API's higher peak on multi-tile images is stage 1c's (238 and 3,131 MB against 209 and 3,096: the
+low-memory stream belongs to the j2k-tile module).
