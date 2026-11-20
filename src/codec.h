@@ -140,8 +140,7 @@ struct Decoder {
     T1Parts t1_parts;
     Scratch blocks;
     // the sizes a decode splits from (parallel.h; set_parallel_thresholds for the tests)
-    std::uint64_t parallel_tile = kParallelTileSamples;
-    std::uint64_t parallel_tile_floor = kParallelTileFloor;
+    std::uint64_t parallel_tile = kParallelTileFloor;
     std::uint64_t parallel_level = kParallelLevelArea;
     std::uint64_t parallel_output = kParallelOutputSamples;
     std::uint64_t parallel_clear = kParallelClearBytes;

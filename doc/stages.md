@@ -72,8 +72,8 @@ contents as proposed):
 Stage 5 (2026-11-20), as the plan and its audit settled it (technical default T2, performance.md section
 6): the library starts no thread and keeps no pool; the host lends a codec its executor
 (`nj2k_decoder_set_executor`), whose waiting caller runs jobs itself, so every decoder shares the host's one
-scheduler and nothing oversubscribes; `nj2k_codec_set_threads` stays false. Tiles of 2^18 decoded samples
-and more in an image whose largest component has more than 2^22 samples (above 2,048 x 2,048) run Tier-1 (contiguous code-block runs of equal estimated cost), the wavelet's large levels (row
+scheduler and nothing oversubscribes; `nj2k_codec_set_threads` stays false. With an executor lent, tiles whose
+largest component has 2^18 samples or more run Tier-1 (contiguous code-block runs of equal estimated cost), the wavelet's large levels (row
 bands, column stripes of 16, the rows' cycles) and the output (row bands) through it, and so do the clears
 of image planes of 4 MiB or more; smaller tiles, a codec without an executor and caller's planes that share
 bytes run on the calling thread with the operations of stages 1c-4. Gates (`doc/bench.md`): identical
@@ -83,10 +83,11 @@ large image with no higher peak from memory (the stream API's multi-tile peaks a
 OpenJPEG's: a known exception for j2k-core, accepted by the owner on 2026-11-20; the j2k-tile module's
 low-memory stream closes it, and the memory-buffer API is not affected); ThreadSanitizer in CI, and the decode fuzz target's executor
 under ClusterFuzzLite's sanitizers; small images within what moving `main`'s own code by a few bytes does
-(the one-thread Tier-1 walker has no counters since the owner's call of 2026-11-20), and a saturated host
-decodes 1,024^2 and 2,048^2 textures one thread each, as without an executor (`doc/bench.md`). Two departures from the plan's section 2.7, both measured: whole
-decodes split from tiles of 2^18 decoded samples in an image of more than 2^22 samples a component (owner,
-2026-11-20: textures up to 2,048^2 stay one thread each; the plan had 256^2, and at 256^2 RGB 8 threads
+(the one-thread Tier-1 walker has no counters since the owner's call of 2026-11-20). Host guidance (owner,
+2026-11-20, superseding the first round's image-level guard of 2^22 samples; `doc/api.md`,
+`doc/bench.md`): the host lends the executor only when it has idle cores, and nothing when its decode queue
+is backed up. Two departures from the plan's section 2.7, both measured: whole
+decodes split from tiles of 2^18 samples in the largest component (the plan had 256^2, and at 256^2 RGB 8 threads
 used the cores at 43 % efficiency, `doc/bench.md`), and Tier-1 cut into contiguous runs of about
 equal estimated cost rather than handed out largest first (contiguous runs keep each part's walk to its
 first block in OpenJPEG's order; with twice as many runs as parts, a slow run is not the tail).

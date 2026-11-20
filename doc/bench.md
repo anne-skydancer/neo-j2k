@@ -632,8 +632,8 @@ neighbour where each row meets the next stripe), same method, three rounds:
 The odd sizes scale as the even ones do (OpenJPEG's own times differ between them, hence the last
 column): the shared lines cost nothing measurable, so the plan's 64-byte row padding stays undone.
 
-With the owner's tile threshold of 2^22 samples a component (the image's largest component; a tile still needs
-2^18), the gate again at N = 1, 4 and 8 (`run_large.py --images g4096_97,g4096t_53,g8192_97 --threads 1,4,8
+With the first round's image guard (2^22 samples a component, since removed: see the saturated host; these images
+are all above it, so the figures stand), the gate again at N = 1, 4 and 8 (`run_large.py --images g4096_97,g4096t_53,g8192_97 --threads 1,4,8
 --rounds 2`; load 28 % mean, 51 % max; ms / MB), and one round for 16,384² (load 33 % mean, 58 % max), neo-j2k
 against OpenJPEG:
 
@@ -652,9 +652,8 @@ against OpenJPEG:
 | | 4 | 2,848 / 3,135 | 1,206 / 3,131 | 0.42 |
 | | 8 | 2,272 / 3,135 | 956 / 3,131 | 0.42 |
 
-neo-j2k is as before: faster at every count with no higher peak, and every decode gave one hash. A rule
-that looked at the tile alone would have left the 16 tiles of 1,024^2 (1 M samples each) on one thread at every
-N (the N = 1 row's 2.9 s against OpenJPEG's 0.49 s at 8): the image's size decides, and the tile's floor only
+neo-j2k is as before: faster at every count with no higher peak, and every decode gave one hash. With an
+executor lent the tile decides: the 16 tiles of 1,024^2 (1 M samples each) are threaded, and the tile floor
 keeps many small tiles away from the executor.
 
 ### The saturated host
@@ -675,10 +674,12 @@ loss with the pool saturated" was not met at 1,024^2** (the review round's numbe
 Splitting a 1,024^2 decode cost about 5 % more CPU (Tier-1's planning walk and each run's walk to its first
 block, the threaded wavelet's extra passes, jobs running on other cores' caches) and 7 % of the throughput.
 
-**The owner's call (2026-11-20): the threshold is now an image of more than 2^22 samples a component**
-(above 2,048 x 2,048), so that the viewer's textures up to 2,048^2 stay one thread each (a tile must also
-have 2^18 samples in its largest component, as before: an image of many small tiles never calls the executor
-for a tile). The same test with that build:
+**The owner's call (2026-11-20), first round: an image guard of 2^22 samples a component** (a first-round
+measurement, not reproduced in the second round below) (above
+2,048 x 2,048), so that the viewer's textures up to 2,048^2 stay one thread each on a saturated host. With
+that build the 1,024^2 and 2,048^2 rows never called the executor (the first two rows' ratios are
+run-to-run spread; control: `nj2k_large sat <file> 8 100 1` twice, no executor, gave 259.6 against 252.1,
+236.2 against 230.3 and 247.0 against 198.5 decodes a second), and 4,096^2 gained 5-6 %:
 
 | Image | decodes a second, one thread each | the same, one shared pool | CPU ms a decode, one thread each / pool |
 |---|---|---|---|
@@ -686,14 +687,54 @@ for a tile). The same test with that build:
 | 2,048² RGB 9/7, one tile | 71.2, 69.0 | 71.7, 69.7 (1.01, 1.01) | 105 / 105 |
 | 4,096² RGB 9/7, one tile | 15.3, 13.4 | 16.2, 14.0 (1.06, 1.05) | 485 / 452 |
 
-(The first two rows are the same code path on both sides: the executor is never called, which the tests
-check, so what the ratios show is the run-to-run spread, which grew in the last runs when another job shared
-the machine. Control: `nj2k_large sat <file> 8 100 1` run twice in a row, no executor on either side, gave
-259.6 against 252.1, 236.2 against 230.3 and 247.0 against 198.5 decodes a second.) At 4,096^2 the pool
-gains 5-6 %, as before (one image's working set at a time). The 1,024^2 and 2,048^2 gate is therefore met
-by construction: no executor call, the one-thread operations. An idle host that wants a 1,024^2 decode in
-about a fifth of the time can still force it: nothing but the threshold stops the executor from being used
-at that size.
+**The owner's call (2026-11-20), second and final: busy or idle is the host's decision, and the image guard
+is removed.** "If busy, one thread; if idle, threads." The host lends the executor
+(`nj2k_decoder_set_executor`) only when it has idle cores, for example when its decode queue holds fewer
+jobs than it has workers, and lends nothing when the queue is backed up. The library cannot know what else
+the host runs, so it keeps no guard of its own: with an executor lent, a tile whose largest component has
+2^18 samples or more (`kParallelTileFloor`) is threaded, a 1,024^2 RGB texture included; with none, nothing
+is. That is why the saturated-host measurements are kept: they are the cost the host rule avoids, and a host
+that lends the executor to every decode on a saturated pool pays it (the first round's 7 % of throughput did
+not reproduce; the 3 % of CPU below did). The 4 MiB plane clear is unchanged.
+
+The saturated host again with the executor lent at 1,024^2 RGB 9/7 (`nj2k_large sat <file> 8 40 <1|8>`,
+eight host threads, five interleaved pairs, MSVC RelWithDebInfo, other jobs sharing the machine):
+
+| Run | decodes a second, no executor | the same, executor lent (pool of 8) |
+|---|---|---|
+| 1-5 | 280.7, 232.5, 259.6, 269.1, 261.1 | 279.7, 261.8, 266.0, 285.0, 254.8 (1.00, 1.13, 1.02, 1.06, 0.98) |
+
+Throughput is within noise (median 261.1 against 266.0, ratio 1.02; the first round's 7 % loss did not
+reproduce). The CPU cost did: 7,500 / 7,610 / 7,656 / 7,313 / 7,828 ms of CPU for 320 decodes without the
+executor against 7,953 / 7,828 / 8,125 / 7,688 / 7,656 ms with it, +2.9 % on the medians (23.8 against
+24.5 ms a decode; per pair -2 % to +6 %; the planning walk and the threaded wavelet's extra passes).
+A saturated host has no idle core to spend it on, so the rule stands: do not lend the executor there.
+
+### The idle host: one decode at a time
+
+One host thread decoding the same RGB 9/7 one-tile image again and again (`nj2k_large sat <file> 1 <decodes> <N>`:
+N = 1 lends no executor, N > 1 lends a pool of N - 1 workers and the calling thread, at the library's own
+thresholds), three rounds with the two sides taking turns, other jobs sharing the machine. Every cell is
+kept (decodes a second). The no-executor side ran in all of the N = 1, 4 and 8 sets (a median of 12 cells),
+the lent side three times at each count (a median of 3):
+
+| Image | no executor, all 12 runs | N = 4 lent, 3 runs | N = 8 lent, 3 runs |
+|---|---|---|---|
+| 512² RGB | 123.9, 173.4, 174.3, 174.5, 174.9, 175.7, 174.2, 142.9, 173.4, 174.3, 170.2, 174.1 | 248.1, 256.8, 254.6 | 277.8, 278.5, 279.7 |
+| 1,024² RGB | 44.2, 44.3, 44.1, 39.6, 43.4, 43.7, 38.3, 42.5, 43.7, 13.8, 44.3, 44.3 | 65.4, 51.9, 47.7 | 68.6, 79.5, 74.8 |
+| 2,048² RGB | 10.3, 8.8, 9.8, 9.8, 9.4, 9.9, 9.9, 8.4, 9.6, 9.7, 7.0, 7.1 | 15.5, 15.4, 16.8 | 19.0, 19.0, 17.4 |
+
+| Image | no executor (median) | N = 4 lent | N = 8 lent | speed-up at 4 / 8 |
+|---|---|---|---|---|
+| 512² RGB | 174.2 | 254.6 | 278.5 | 1.46x / 1.60x |
+| 1,024² RGB | 43.7 | 51.9 | 74.8 | not claimed / 1.71x |
+| 2,048² RGB | 9.7 | 15.5 | 19.0 | 1.60x / 1.96x |
+
+The slow cells of the no-executor side (123.9 and 142.9 at 512², 13.8 at 1,024², 7.0 and 7.1 at 2,048²) are
+runs that another job disturbed; they are in the medians, which they barely move. 512² RGB has 2^18 samples
+a component, the floor, so it is threaded. The 1,024² cell at 4 threads (47.7 to 65.4 in its three runs) is
+too noisy to support a claim at 4 threads; the 8-thread cells are consistent. An idle host decodes a 1,024²
+texture 1.7 times as fast with eight threads, and a 2,048² one twice as fast.
 
 ### Identity (the gate)
 
@@ -706,8 +747,10 @@ decoding twice) and the four large images (140 decodes), in the AVX2 and the sca
 ### Where threads start
 
 These probes are from the first thresholds (a tile split from 2^18 decoded samples over its components: a
-512 x 512 grey or a 296 x 296 RGB tile); the owner has since raised the image threshold to 2^22 samples a
-component and kept 2^18 as the tile's floor (the saturated host, above). One codec decoding the same texture from memory again and again, one thread against N with every
+512 x 512 grey or a 296 x 296 RGB tile); the tile threshold is now 2^18 samples in the largest component,
+with no image guard (the host decides; see the saturated host, above).
+
+One codec decoding the same texture from memory again and again, one thread against N with every
 stage forced (`nj2k_large split`, median of 60 each, taking turns, quiet machine; first run of the stage,
 before the review fixes, which did not touch these paths): the time at 1 thread, then the time at N
 threads as a fraction of it.
@@ -731,12 +774,10 @@ bands, medians:
 | 1 thread (µs) | 0.3 | 1.5 | 91 | 361 | 1,268 | 4,246 |
 | 8 bands (time vs 1) | 1.00 | 3.80 | 1.12 | 0.51 | 0.46 | 0.50 |
 
-So a plane is cleared in bands from 4 MiB on (`kParallelClearBytes`). The owner's raise of the tile threshold
-to 2^22 samples leaves this one at 4 MiB, because the two are not the same question: the clear is a few
-milliseconds of memory bandwidth that 8 bands halve from 4 MiB (a 16 MiB plane, the one of a 2,048^2 image
-in several tiles, clears in 1.3 ms against 0.6) and costs a saturated host no more CPU than the clear itself,
-while the tile threshold decides whether a decode of tens of milliseconds is split (and pays the walks
-and passes that the saturated host showed). Only a multi-tile image has a plane to clear this way, and the
+So a plane is cleared in bands from 4 MiB on (`kParallelClearBytes`). The clear stays at 4 MiB whatever the
+tile threshold: it is memory bandwidth only, a few milliseconds that 8 bands halve from 4 MiB (a 16 MiB
+plane, the one of a 2,048^2 image in several tiles, clears in 1.3 ms against 0.6), with none of the walks
+and passes that splitting a decode adds. Only a multi-tile image has a plane to clear this way, and the
 viewer's textures are one tile. The wavelet's level threshold (2^18
 samples) and the output's (2^16 samples a component) are estimates, not probed on their own: they apply only
 inside a tile already split.

@@ -345,12 +345,10 @@ NJ2K_BOOL nj2k_decoder_set_executor(nj2k_codec_t *codec, const nj2k_executor_t *
   one slow run is not the tail).
 - Without an executor or with a concurrency below 2, everything runs on the calling thread, with the
   operations of stages 1c-4. With one, the codec calls it for two things only: the tiles (of 2^18 decoded
-  samples or more in their largest component, 512 x 512) of an image whose largest decoded component has
-  more than 2^22 samples (above 2,048 x 2,048: grey, RGB and RGBA textures up to that size stay one thread
-  each, which is what a saturated host wants), and the clearing of an
+  samples or more in their largest component, 512 x 512), and the clearing of an
   image plane of 4 MiB or more (1,024 x 1,024 int32 samples) that the first tile written into it does not
-  cover, which only a multi-tile image has, whatever its tiles' sizes. Everything else, small images and
-  textures included, runs on the calling thread and makes no call to the executor (the tests check it, on
+  cover, which only a multi-tile image has, whatever its tiles' sizes. Everything else, small tiles
+  included, runs on the calling thread and makes no call to the executor (the tests check it, on
   multi-tile images of small tiles too). The tile threshold and the clear threshold come from probes
   (`doc/bench.md`, stage 5: a fresh 1 MiB plane cleared in 8 bands took as long as on one thread, a 4 MiB
   one half as long); inside a large tile, wavelet levels below 2^18 samples and output regions below 2^16
@@ -358,6 +356,16 @@ NJ2K_BOOL nj2k_decoder_set_executor(nj2k_codec_t *codec, const nj2k_executor_t *
   apply inside a tile already split). The one-thread decodes run the operations they ran before; what
   their times do is in `doc/bench.md` (stage 5: within what moving `main`'s own code by a few bytes does,
   the one-thread Tier-1 walker has no counters: the parts' walker is a function of its own).
+- **Busy or idle is the host's decision** (owner, 2026-11-20, superseding the image-level guard of the first
+  stage-5 round, which kept images up to 2,048 x 2,048 on one thread whatever the host did). Lend the
+  executor only when the host has idle cores, for example when its decode queue holds fewer jobs than it has
+  workers; lend nothing when the queue is backed up. Never lend it to every decode on a saturated pool:
+  splitting a decode there buys nothing and costs CPU (the saturated-host table in `doc/bench.md`). The
+  library keeps no count of what else runs, so it cannot tell; with an executor lent it threads every tile
+  of 2^18 samples or more, a 1,024 x 1,024 RGB texture included, and with none it never threads.
+  A host that lends a high-concurrency executor may want to raise `nj2k_decoder_set_retained_bytes`: the
+  default 8 MiB trim of what a decoder keeps may make it re-allocate its scratch on every decode of a
+  512 x 512 texture at concurrency 64 (a performance effect only).
 - What runs through it: Tier-1 (the code-blocks, listed in OpenJPEG's order on the calling thread and cut
   into contiguous runs of about equal estimated cost before anything is decoded), the
   inverse wavelet's large levels (the horizontal lifting in bands of rows, the vertical lifting in
