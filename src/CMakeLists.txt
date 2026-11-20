@@ -26,6 +26,7 @@ set(NJ2K_SOURCES
   t1.cpp
   dwt.cpp
   mct.cpp
+  output.cpp
 )
 # The decoder limit profiles are modules (owner decision D10): Second Life's is built in, OpenSim's
 # is its own source file, left out with NJ2K_PROFILE_OPENSIM=OFF.

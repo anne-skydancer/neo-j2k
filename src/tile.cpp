@@ -505,45 +505,28 @@ nj2k_status_t Tile::decode_samples(T1& t1, void* dwt_scratch, const std::uint32_
                 msg.emit(Messages::Error, "Tiles don't all have the same dimension. Skip the MCT step.\n");
                 return NJ2K_E_DATA;
             }
-            if (in->params[0].style->qmfbid == 1) {
-                mct_decode_rct(comps[0].data, comps[1].data, comps[2].data, l_samples);
-            } else {
-                mct_decode_ict(comps[0].data, comps[1].data, comps[2].data, l_samples);
-            }
+            mct = in->params[0].style->qmfbid == 1 ? Mct::kRct : Mct::kIct;
         } else {
             msg.emit(Messages::Error, "Number of components (%u) is inconsistent with a MCT. Skip the MCT step.\n",
                      numcomps);
         }
     }
-
-    // the DC level shift (opj_tcd_dc_level_shift_decode)
-    for (std::uint32_t compno = 0; compno < numcomps; ++compno) {
-        if (in->selected && !in->selected[compno]) {
-            continue;
-        }
-        TileComp& tc = comps[compno];
-        const SizComponent& sc = in->mh->comps[compno];
-        const Resolution& res = tc.res[resno_decoded[compno]];
-        const std::uint32_t w = static_cast<std::uint32_t>(res.x1 - res.x0);
-        const std::uint32_t h = static_cast<std::uint32_t>(res.y1 - res.y0);
-        std::int32_t lo, hi;
-        if (sc.sgnd) {
-            lo = -static_cast<std::int32_t>(1u << (sc.prec - 1));
-            hi = static_cast<std::int32_t>((1u << (sc.prec - 1)) - 1);
-        } else {
-            lo = 0;
-            hi = static_cast<std::int32_t>((1u << sc.prec) - 1);
-        }
-        if (w == 0 || h == 0) {
-            continue;
-        }
-        if (tc.params.style->qmfbid == 1) {
-            dc_shift_53(tc.data, w, h, tc.data_w, tc.dc_shift, lo, hi);
-        } else {
-            dc_shift_97(tc.data, w, h, tc.data_w, tc.dc_shift, lo, hi);
-        }
-    }
     return NJ2K_OK;
+}
+
+Finish Tile::finish_of(std::uint32_t compno) const noexcept
+{
+    const SizComponent& sc = in->mh->comps[compno];
+    const TileComp& tc = comps[compno];
+    Finish f{tc.dc_shift, 0, 0, tc.params.style->qmfbid == 1};
+    if (sc.sgnd) {
+        f.lo = -static_cast<std::int32_t>(1u << (sc.prec - 1));
+        f.hi = static_cast<std::int32_t>((1u << (sc.prec - 1)) - 1);
+    } else {
+        f.lo = 0;
+        f.hi = static_cast<std::int32_t>((1u << sc.prec) - 1);
+    }
+    return f;
 }
 
 }  // namespace nj2k::detail

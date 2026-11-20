@@ -17,6 +17,7 @@
 #include "dwt.h"
 #include "header.h"
 #include "messages.h"
+#include "output.h"
 #include "t1.h"
 #include "work_arena.h"
 
@@ -137,10 +138,14 @@ public:
     nj2k_status_t read_packets(WorkArena& arena, const Messages& msg, std::uint32_t* resno_decoded) noexcept;
 
     // Tier-1 into each component's buffer (TileComp::data: the decoded resolution's samples, which
-    // the caller attaches, samples_bytes() each), the inverse wavelet up to resno_decoded, the
-    // colour transform and the DC shift (opj_tcd_decode_tile after Tier-2).
+    // the caller attaches, samples_bytes() each), the inverse wavelet up to resno_decoded, and the
+    // colour transform's checks (opj_tcd_decode_tile after Tier-2): mct says which transform the
+    // samples still need. The transform and the DC shift (finish_of) are the output pass's
+    // (output.h), in place or on the way into the image.
     nj2k_status_t decode_samples(T1& t1, void* dwt_scratch, const std::uint32_t* resno_decoded,
                                  const Messages& msg) noexcept;
+    // Component compno's DC shift (opj_tcd_dc_level_shift_decode's parameters).
+    Finish finish_of(std::uint32_t compno) const noexcept;
 
     // Bytes of the decoded resolution's samples of component c (0 when not decoded), and the
     // scratch the wavelet needs for any component.
@@ -154,6 +159,7 @@ public:
     TileComp* comps = nullptr;
     const TileInput* in = nullptr;
     PackedCursor ppt{nullptr, 0};  // the PPT headers being consumed
+    Mct mct = Mct::kNone;          // the colour transform decode_samples left to the output pass
 };
 
 }  // namespace nj2k::detail

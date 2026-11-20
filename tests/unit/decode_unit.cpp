@@ -37,6 +37,7 @@
 #include "../../src/dwt.h"
 #include "../../src/header.h"
 #include "../../src/mct.h"
+#include "../../src/output.h"
 #include "../../src/t1.h"
 
 using namespace nj2k::test;
@@ -741,7 +742,6 @@ void test_dp2()
 
 // ---- the kernels: scalar references against AVX2 ------------------------------------------------
 
-#if defined(__AVX2__)
 std::mt19937_64 g_rng(0x6e656f6a326bull);
 
 std::int32_t random_sample(bool wide)
@@ -775,6 +775,120 @@ std::int32_t random_float_sample()
     return static_cast<std::int32_t>(float_bits(f));
 }
 
+// Stage 2's fused output pass against the unfused steps it replaces (mct.h's transforms in place
+// over the whole buffers, the DC shift per row, then the copy of the low bits), in both builds:
+// every layout of the planes (the viewer's interleaved bottom-up raw image of 1 to 4 components,
+// planar, interleaved with a gap; 8, 16 and 32 bits), the colour transforms, random and edge
+// samples, odd widths; guard bytes around the planes stay untouched (the packed 3-byte store
+// overlaps).
+void test_output_fused()
+{
+    using nj2k::detail::CopyComp;
+    using nj2k::detail::Finish;
+    using nj2k::detail::Mct;
+    std::size_t cases = 0, bad = 0, guard_bad = 0;
+    const std::uint32_t widths[] = {1, 2, 7, 8, 9, 10, 11, 17, 255, 256, 257, 300, 513};
+    for (int round = 0; round < 600; ++round) {
+        const std::uint32_t w = widths[g_rng() % std::size(widths)];
+        const std::uint32_t h = 1 + static_cast<std::uint32_t>(g_rng() % 5);
+        const std::uint32_t k = 1 + static_cast<std::uint32_t>(g_rng() % 4);
+        Mct mct = Mct::kNone;
+        if (k >= 3 && (g_rng() & 1)) {
+            mct = (g_rng() & 1) ? Mct::kRct : Mct::kIct;
+        }
+        const std::uint32_t types[] = {NJ2K_SAMPLE_U8, NJ2K_SAMPLE_U8, NJ2K_SAMPLE_U16, NJ2K_SAMPLE_I32};
+        const std::uint32_t type = types[g_rng() % 4];
+        const std::size_t ss = type == NJ2K_SAMPLE_U8 ? 1 : type == NJ2K_SAMPLE_U16 ? 2 : 4;
+        const int layout = static_cast<int>(g_rng() % 3);  // 0 interleaved, 1 planar, 2 interleaved with a gap
+        const bool bottom_up = (g_rng() & 1) != 0;
+        const std::size_t src_stride = w + g_rng() % 5;
+        std::vector<std::vector<std::int32_t>> src(k), ref(k);
+        Finish f[4];
+        for (std::uint32_t c = 0; c < k; ++c) {
+            bool reversible = (g_rng() & 1) != 0;
+            if (mct == Mct::kRct) {
+                reversible = true;
+            } else if (mct == Mct::kIct) {
+                reversible = false;
+            }
+            const std::uint32_t prec = 1 + static_cast<std::uint32_t>(g_rng() % 31);
+            const bool sgnd = (g_rng() & 3) == 0;
+            f[c].reversible = reversible;
+            f[c].shift = sgnd ? 0 : static_cast<std::int32_t>(1u << (prec - 1));
+            f[c].lo = sgnd ? -static_cast<std::int32_t>(1u << (prec - 1)) : 0;
+            f[c].hi = sgnd ? static_cast<std::int32_t>((1u << (prec - 1)) - 1) : static_cast<std::int32_t>((1u << prec) - 1);
+            src[c].resize(src_stride * h);
+            for (auto& v : src[c]) {
+                v = reversible ? random_sample((g_rng() & 3) == 0) : random_float_sample();
+            }
+            ref[c] = src[c];
+        }
+        // the unfused reference: the transform over the whole buffers, then the shift per row
+        if (mct == Mct::kRct) {
+            nj2k::detail::kernels::rct_scalar(ref[0].data(), ref[1].data(), ref[2].data(), ref[0].size());
+        } else if (mct == Mct::kIct) {
+            nj2k::detail::kernels::ict_scalar(ref[0].data(), ref[1].data(), ref[2].data(), ref[0].size());
+        }
+        for (std::uint32_t c = 0; c < k; ++c) {
+            if (f[c].reversible) {
+                nj2k::detail::dc_shift_53(ref[c].data(), w, h, src_stride, f[c].shift, f[c].lo, f[c].hi);
+            } else {
+                for (std::uint32_t j = 0; j < h; ++j) {
+                    nj2k::detail::kernels::dc_shift_97_scalar(ref[c].data() + std::size_t(j) * src_stride, w, f[c].shift,
+                                                              f[c].lo, f[c].hi);
+                }
+            }
+        }
+        // the planes, with 64 guard bytes before and after
+        const std::uint32_t pixel = layout == 1 ? 1 : (layout == 2 ? k + 1 : k);
+        const std::size_t row = std::size_t(w) * pixel * ss + (layout == 1 ? 3 : 0);
+        const std::size_t plane_bytes = row * h * (layout == 1 ? k : 1);
+        std::vector<std::uint8_t> buf(plane_bytes + 128, 0xA5);
+        std::vector<nj2k_plane_t> planes(k);
+        for (std::uint32_t c = 0; c < k; ++c) {
+            std::uint8_t* base = buf.data() + 64 + (layout == 1 ? c * row * h : c * ss);
+            std::int64_t rs = static_cast<std::int64_t>(row);
+            if (bottom_up) {
+                base += (h - 1) * row;
+                rs = -rs;
+            }
+            planes[c] = nj2k_plane_t{base, rs, static_cast<NJ2K_UINT32>(pixel * ss), c};
+        }
+        auto expect = buf;
+        for (std::uint32_t c = 0; c < k; ++c) {
+            const std::ptrdiff_t off = static_cast<std::uint8_t*>(planes[c].data) - buf.data();
+            for (std::uint32_t j = 0; j < h; ++j) {
+                for (std::uint32_t i = 0; i < w; ++i) {
+                    const std::int32_t v = ref[c][std::size_t(j) * src_stride + i];
+                    std::uint8_t* at = expect.data() + off + std::int64_t(j) * planes[c].row_stride +
+                                       std::size_t(i) * planes[c].sample_stride;
+                    if (ss == 1) {
+                        *at = static_cast<std::uint8_t>(v);
+                    } else if (ss == 2) {
+                        const std::uint16_t u = static_cast<std::uint16_t>(v);
+                        std::memcpy(at, &u, 2);
+                    } else {
+                        std::memcpy(at, &v, 4);
+                    }
+                }
+            }
+        }
+        CopyComp cc[4];
+        for (std::uint32_t c = 0; c < k; ++c) {
+            cc[c] = CopyComp{src[c].data(), src_stride, 0, 0, w, h, f[c], c, true};
+        }
+        nj2k::detail::write_group(cc, k, mct, type, planes.data(), k);
+        ++cases;
+        bad += std::memcmp(buf.data() + 64, expect.data() + 64, plane_bytes) != 0;
+        guard_bad += std::memcmp(buf.data(), expect.data(), 64) != 0 ||
+                     std::memcmp(buf.data() + 64 + plane_bytes, expect.data() + 64 + plane_bytes, 64) != 0;
+    }
+    CHECK_MSG(bad == 0, "fused output: %zu of %zu cases differ from the unfused steps", bad, cases);
+    CHECK_MSG(guard_bad == 0, "fused output: %zu of %zu cases wrote outside their planes", guard_bad, cases);
+    std::printf("fused output: %zu cases against the unfused steps\n", cases);
+}
+
+#if defined(__AVX2__)
 void test_kernels_colour()
 {
     constexpr std::size_t n = (std::size_t(1) << 20) + 5;  // an odd tail after the 8-wide steps
@@ -819,6 +933,59 @@ void test_kernels_colour()
         nj2k::detail::kernels::dc_shift_97_avx2(b0.data(), n, r.shift, r.lo, r.hi);
         CHECK_MSG(a0 == b0, "dc_shift_97 shift %d [%d, %d]", r.shift, r.lo, r.hi);
     }
+}
+
+// The fused pass's row kernels, scalar against AVX2
+void test_kernels_output()
+{
+    using nj2k::detail::Finish;
+    using nj2k::detail::Mct;
+    namespace kn = nj2k::detail::kernels;
+    std::size_t bad = 0, samples = 0;
+    const std::size_t lens[] = {0, 1, 7, 8, 9, 10, 15, 16, 17, 31, 255, 256, 1000, 4099};
+    for (int round = 0; round < 400; ++round) {
+        const std::size_t n = lens[g_rng() % std::size(lens)];
+        const bool fl = (g_rng() & 1) != 0;
+        std::vector<std::int32_t> a(n), b(n), c(n);
+        for (std::size_t i = 0; i < n; ++i) {
+            a[i] = fl ? random_float_sample() : random_sample((g_rng() & 3) == 0);
+            b[i] = fl ? random_float_sample() : random_sample((g_rng() & 3) == 0);
+            c[i] = fl ? random_float_sample() : random_sample((g_rng() & 3) == 0);
+        }
+        const Mct m = fl ? Mct::kIct : Mct::kRct;
+        std::vector<std::int32_t> s0(n), s1(n), s2(n), v0(n), v1(n), v2(n);
+        kn::mct_rows_scalar(m, a.data(), b.data(), c.data(), s0.data(), s1.data(), s2.data(), n);
+        kn::mct_rows_avx2(m, a.data(), b.data(), c.data(), v0.data(), v1.data(), v2.data(), n);
+        bad += s0 != v0 || s1 != v1 || s2 != v2;
+        const std::uint32_t prec = 1 + static_cast<std::uint32_t>(g_rng() % 31);
+        const bool sgnd = (g_rng() & 3) == 0;
+        Finish f{};
+        f.shift = sgnd ? 0 : static_cast<std::int32_t>(1u << (prec - 1));
+        f.lo = sgnd ? -static_cast<std::int32_t>(1u << (prec - 1)) : 0;
+        f.hi = sgnd ? static_cast<std::int32_t>((1u << (prec - 1)) - 1) : static_cast<std::int32_t>((1u << prec) - 1);
+        f.reversible = !fl;
+        kn::finish_row_scalar(s0.data(), n, f);
+        kn::finish_row_avx2(v0.data(), n, f);
+        bad += s0 != v0;
+        const std::uint32_t types[] = {NJ2K_SAMPLE_U8, NJ2K_SAMPLE_U16, NJ2K_SAMPLE_I32};
+        const std::uint32_t type = types[g_rng() % 3];
+        const std::uint32_t ss =
+            (type == NJ2K_SAMPLE_U8 ? 1u : type == NJ2K_SAMPLE_U16 ? 2u : 4u) * (1 + static_cast<std::uint32_t>(g_rng() % 2));
+        std::vector<std::uint8_t> o1(n * ss + 32, 0x5A), o2 = o1;
+        kn::store_scalar(s0.data(), n, type, o1.data(), ss);
+        kn::store_avx2(s0.data(), n, type, o2.data(), ss);
+        bad += o1 != o2;
+        for (std::uint32_t kk = 1; kk <= 4; ++kk) {
+            const std::int32_t* rows[4] = {s0.data(), s1.data(), s2.data(), v1.data()};
+            std::vector<std::uint8_t> p1(n * kk + 32, 0x5A), p2 = p1;
+            kn::store_u8_packed_scalar(rows, kk, n, p1.data());
+            kn::store_u8_packed_avx2(rows, kk, n, p2.data());
+            bad += p1 != p2;
+        }
+        samples += n;
+    }
+    CHECK_MSG(bad == 0, "output kernels: %zu rows differ between scalar and AVX2", bad);
+    std::printf("kernels: output rows %zu samples\n", samples);
 }
 
 // n int32 at a 64-byte boundary in buf, as the decoder's wavelet scratch is (the AVX2 5/3 kernels
@@ -1676,9 +1843,11 @@ int main(int argc, char** argv)
     test_kernels_colour();
     test_kernels_store();
     test_kernels_wavelet();
+    test_kernels_output();
 #else
     std::printf("kernels: scalar build, no AVX2 versions to compare\n");
 #endif
+    test_output_fused();
     test_dp12();
     test_dp13();
     test_dp15();

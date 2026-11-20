@@ -61,6 +61,7 @@
 #include <cstring>
 
 #include "codec.h"
+#include "output.h"
 #include "tile.h"
 
 namespace nj2k::detail {
@@ -119,6 +120,7 @@ struct Walk {
     std::uint32_t page_count = 0;
     PackedCursor ppm{nullptr, 0};
     std::uint64_t image_need = UINT64_MAX;  // image_working_memory, once a tile needs it
+    bool direct_tile = false;                // the tile decodes into the caller's planes (direct_output)
 
     Walk(Decoder& dec, const CodestreamBytes& bytes, OutComp* c, const OutSink& s) noexcept
         : d(dec), mh(*dec.header), b(bytes), comps(c), sink(s), msg(dec.messages)
@@ -816,11 +818,22 @@ struct Walk {
         return NJ2K_OK;
     }
 
-    // opj_j2k_update_image_data for one component: the tile's decoded region into the image
-    nj2k_status_t update_component(std::uint32_t compno, const TileComp& tc, std::uint32_t resno_decoded) noexcept
+    // opj_j2k_update_image_data for one component, up to the copy: the tile's decoded region that
+    // goes into the image (cc, its source and its place there), the image plane made (nj2k_decode);
+    // skip when nothing of the component is copied, clear when the caller's planes of it are to be
+    // cleared first (its first tile, which does not cover it)
+    struct Prepared {
+        CopyComp cc;
+        bool skip, clear;
+    };
+    nj2k_status_t prepare_component(std::uint32_t compno, const Tile& t, std::uint32_t resno_decoded,
+                                    Prepared& out) noexcept
     {
+        const TileComp& tc = t.comps[compno];
         OutComp& dst = comps[compno];
         dst.resno_decoded = resno_decoded;
+        out.skip = true;
+        out.clear = false;
         if (d.selected_mask && !d.selected_mask[compno]) {
             return NJ2K_OK;  // partial component decoding
         }
@@ -905,24 +918,200 @@ struct Walk {
                     std::memset(dst.data, 0, w * h * sizeof(std::int32_t));
                 }
             }
-            std::int32_t* out = dst.data + l_start_x_dest + std::size_t(l_start_y_dest) * dst.w;
-            for (std::uint32_t j = 0; j < l_height_dest; ++j) {
-                std::memcpy(out, src, l_width_dest * sizeof(std::int32_t));
-                out += dst.w;
-                src += src_data_stride;
-            }
-        } else {
-            write_planes(compno, dst, src, src_data_stride, l_start_x_dest, l_start_y_dest, l_width_dest, l_height_dest,
-                         !dst.written && !covers);
         }
-        dst.written = true;
+        out.cc = CopyComp{src, src_data_stride, l_start_x_dest, l_start_y_dest, l_width_dest, l_height_dest,
+                          t.finish_of(compno), compno, true};
+        out.skip = false;
+        out.clear = !sink.image_planes && !dst.written && !covers;
         return NJ2K_OK;
     }
 
-    // the caller's planes of component compno: the region (x, y, w, h), the whole plane cleared
-    // first when this is its first tile and it does not cover the plane
-    void write_planes(std::uint32_t compno, const OutComp& dst, const std::int32_t* src, std::size_t src_stride,
-                      std::uint32_t x, std::uint32_t y, std::uint32_t w, std::uint32_t h, bool clear) noexcept
+    // the image plane of component c (nj2k_decode's output) as a plane of the caller's
+    nj2k_plane_t image_plane(std::uint32_t c) const noexcept
+    {
+        return nj2k_plane_t{comps[c].data, static_cast<std::int64_t>(comps[c].w) * 4, 4, c};
+    }
+
+    // Writes k prepared components (one group of output.h's write_group: the same region, the colour
+    // transformed three first when mct is set) finished into the image or the caller's planes.
+    void write_prepared(const Prepared* p, std::uint32_t k, Mct mct) noexcept
+    {
+        CopyComp cc[4];
+        nj2k_plane_t own[4];
+        for (std::uint32_t i = 0; i < k; ++i) {
+            cc[i] = p[i].cc;
+            if (sink.image_planes) {
+                own[i] = image_plane(p[i].cc.component);
+            } else if (p[i].clear) {
+                clear_planes(p[i].cc.component);
+            }
+        }
+        if (sink.image_planes) {
+            write_group(cc, k, mct, NJ2K_SAMPLE_I32, own, k);
+        } else {
+            write_group(cc, k, mct, sink.output->sample_type, sink.output->planes, sink.output->numplanes);
+        }
+        for (std::uint32_t i = 0; i < k; ++i) {
+            comps[p[i].cc.component].written = true;
+        }
+    }
+
+    // Two prepared components that one pass can write together (output.h's write_group): the same
+    // region of the image; for the colour transform, the same source layout too, so the samples it
+    // pairs are those of the same place in the three buffers (OpenJPEG's flat l_samples)
+    static bool same_region(const CopyComp& a, const CopyComp& b, bool layout) noexcept
+    {
+        if (a.x != b.x || a.y != b.y || a.w != b.w || a.h != b.h) {
+            return false;
+        }
+        return !layout || a.src_stride == b.src_stride;
+    }
+
+    // opj_j2k_update_image_data for every component of a tile that is not the image: finished on
+    // the way (the colour transform, the DC shift) into the image or the caller's planes, up to
+    // four components of the same region together. When the transform's three do not pair their
+    // samples by place, the tile is finished in place first, as OpenJPEG does, and copied.
+    nj2k_status_t write_tile(Tile& t, const std::uint32_t* resno) noexcept
+    {
+        Prepared p[4];
+        std::uint32_t n = 0;  // prepared, not written yet
+        Mct mct = Mct::kNone;
+        std::uint32_t c = 0;
+        if (t.mct != Mct::kNone) {
+            nj2k_status_t st = NJ2K_OK;
+            for (; c < 3; ++c) {
+                st = prepare_component(c, t, resno[c], p[c]);
+                if (st != NJ2K_OK || p[c].skip) {
+                    break;
+                }
+            }
+            const bool paired = c == 3 && same_region(p[0].cc, p[1].cc, true) && same_region(p[0].cc, p[2].cc, true) &&
+                                p[1].cc.src - t.comps[1].data == p[0].cc.src - t.comps[0].data &&
+                                p[2].cc.src - t.comps[2].data == p[0].cc.src - t.comps[0].data;
+            if (!paired) {
+                finish_tile_in_place(t, resno);
+                for (std::uint32_t k = 0; k < c; ++k) {
+                    if (!p[k].skip) {
+                        p[k].cc.finish = false;
+                        write_prepared(&p[k], 1, Mct::kNone);
+                    }
+                }
+                if (st != NJ2K_OK) {
+                    return st;
+                }
+                return copy_tile(t, resno, c);
+            }
+            n = 3;
+            mct = t.mct;
+        }
+        for (; c < mh.numcomps; ++c) {
+            Prepared q;
+            const nj2k_status_t st = prepare_component(c, t, resno[c], q);
+            if (st != NJ2K_OK) {
+                if (n) {
+                    write_prepared(p, n, mct);
+                }
+                return st;
+            }
+            if (q.skip) {
+                continue;
+            }
+            if (n == 4 || (n && !same_region(p[0].cc, q.cc, false))) {
+                write_prepared(p, n, mct);
+                n = 0;
+                mct = Mct::kNone;
+            }
+            p[n++] = q;
+        }
+        if (n) {
+            write_prepared(p, n, mct);
+        }
+        return NJ2K_OK;
+    }
+
+    // The components from 'from' on, copied as they are (finished in place already)
+    nj2k_status_t copy_tile(Tile& t, const std::uint32_t* resno, std::uint32_t from) noexcept
+    {
+        for (std::uint32_t c = from; c < mh.numcomps; ++c) {
+            Prepared q;
+            if (const nj2k_status_t st = prepare_component(c, t, resno[c], q); st != NJ2K_OK) {
+                return st;
+            }
+            if (!q.skip) {
+                q.cc.finish = false;
+                write_prepared(&q, 1, Mct::kNone);
+            }
+        }
+        return NJ2K_OK;
+    }
+
+    // The tile's samples finished where they are, as OpenJPEG does it: the colour transform over
+    // the three whole buffers, then each component's DC shift over its decoded region
+    void finish_tile_in_place(Tile& t, const std::uint32_t* resno) noexcept
+    {
+        auto view = [&](std::uint32_t c) {
+            const TileComp& tc = t.comps[c];
+            const Resolution& r = tc.res[resno[c]];
+            const bool active = !(d.selected_mask && !d.selected_mask[c]) && tc.data;
+            return InPlaceComp{tc.data, tc.data_w, tc.data_h, static_cast<std::uint32_t>(r.x1 - r.x0),
+                               static_cast<std::uint32_t>(r.y1 - r.y0), t.finish_of(c), active};
+        };
+        std::uint32_t c = 0;
+        if (t.mct != Mct::kNone) {
+            InPlaceComp three[3] = {view(0), view(1), view(2)};
+            finish_in_place_mct(three, t.mct);
+            c = 3;
+        }
+        for (; c < mh.numcomps; ++c) {
+            const InPlaceComp one = view(c);
+            if (one.active) {
+                finish_in_place_one(one);
+            }
+        }
+        t.mct = Mct::kNone;
+    }
+
+    // the caller's planes of component compno cleared (its first tile does not cover it)
+    void clear_planes(std::uint32_t compno) noexcept
+    {
+        const nj2k_output_t& o = *sink.output;
+        const OutComp& dst = comps[compno];
+        for (std::uint32_t k = 0; k < o.numplanes; ++k) {
+            const nj2k_plane_t& pl = o.planes[k];
+            if (pl.component != compno) {
+                continue;
+            }
+            auto* base = static_cast<std::uint8_t*>(pl.data);
+            // a row at once when its samples are packed, else each sample with a store of its
+            // own size (a memset call per sample took a second for a 16,384-pixel image)
+            const std::size_t ss = o.sample_type == NJ2K_SAMPLE_U8 ? 1 : o.sample_type == NJ2K_SAMPLE_U16 ? 2 : 4;
+            for (std::uint32_t j = 0; j < dst.h; ++j) {
+                std::uint8_t* row = base + static_cast<std::int64_t>(j) * pl.row_stride;
+                if (pl.sample_stride == ss) {
+                    std::memset(row, 0, std::size_t(dst.w) * ss);
+                } else if (ss == 1) {
+                    for (std::uint32_t i = 0; i < dst.w; ++i) {
+                        row[std::size_t(i) * pl.sample_stride] = 0;
+                    }
+                } else if (ss == 2) {
+                    const std::uint16_t zero = 0;
+                    for (std::uint32_t i = 0; i < dst.w; ++i) {
+                        std::memcpy(row + std::size_t(i) * pl.sample_stride, &zero, sizeof zero);
+                    }
+                } else {
+                    const std::uint32_t zero = 0;
+                    for (std::uint32_t i = 0; i < dst.w; ++i) {
+                        std::memcpy(row + std::size_t(i) * pl.sample_stride, &zero, sizeof zero);
+                    }
+                }
+            }
+        }
+    }
+
+    // the caller's planes of component compno but the one the tile decoded into (direct_output):
+    // the whole component, copied from that plane
+    void write_planes(std::uint32_t compno, const std::int32_t* src, std::size_t src_stride,
+                      std::uint32_t x, std::uint32_t y, std::uint32_t w, std::uint32_t h) noexcept
     {
         const nj2k_output_t& o = *sink.output;
         for (std::uint32_t k = 0; k < o.numplanes; ++k) {
@@ -931,31 +1120,6 @@ struct Walk {
                 continue;  // not this component's, or the plane the tile decoded into (direct_output)
             }
             auto* base = static_cast<std::uint8_t*>(pl.data);
-            if (clear) {
-                // a row at once when its samples are packed, else each sample with a store of its
-                // own size (a memset call per sample took a second for a 16,384-pixel image)
-                const std::size_t ss = o.sample_type == NJ2K_SAMPLE_U8 ? 1 : o.sample_type == NJ2K_SAMPLE_U16 ? 2 : 4;
-                for (std::uint32_t j = 0; j < dst.h; ++j) {
-                    std::uint8_t* row = base + static_cast<std::int64_t>(j) * pl.row_stride;
-                    if (pl.sample_stride == ss) {
-                        std::memset(row, 0, std::size_t(dst.w) * ss);
-                    } else if (ss == 1) {
-                        for (std::uint32_t i = 0; i < dst.w; ++i) {
-                            row[std::size_t(i) * pl.sample_stride] = 0;
-                        }
-                    } else if (ss == 2) {
-                        const std::uint16_t zero = 0;
-                        for (std::uint32_t i = 0; i < dst.w; ++i) {
-                            std::memcpy(row + std::size_t(i) * pl.sample_stride, &zero, sizeof zero);
-                        }
-                    } else {
-                        const std::uint32_t zero = 0;
-                        for (std::uint32_t i = 0; i < dst.w; ++i) {
-                            std::memcpy(row + std::size_t(i) * pl.sample_stride, &zero, sizeof zero);
-                        }
-                    }
-                }
-            }
             for (std::uint32_t j = 0; j < h; ++j) {
                 const std::int32_t* s = src + std::size_t(j) * src_stride;
                 std::uint8_t* row = base + static_cast<std::int64_t>(y + j) * pl.row_stride + std::size_t(x) * pl.sample_stride;
@@ -1079,6 +1243,11 @@ struct Walk {
         if (st == NJ2K_OK) {
             st = t.decode_samples(d.t1, d.dwt.p, resno, msg);
         }
+        // a tile that is the image's planes is finished where it is; any other goes into the image
+        // finished on the way (write_tile)
+        if (st == NJ2K_OK && whole_image && (sink.image_planes || direct_tile)) {
+            finish_tile_in_place(t, resno);
+        }
         if (st != NJ2K_OK) {
             state |= kErr;
             msg.emit(Messages::Error, "Failed to decode.\n");
@@ -1116,14 +1285,8 @@ struct Walk {
             }
         }
         // the image
-        if (whole_image) {
-            hand_over_whole(t, resno);
-        } else {
-            for (std::uint32_t c = 0; c < mh.numcomps; ++c) {
-                if (const nj2k_status_t u = update_component(c, t.comps[c], resno[c]); u != NJ2K_OK) {
-                    return u;
-                }
-            }
+        if (const nj2k_status_t u = whole_image ? hand_over_whole(t, resno) : write_tile(t, resno); u != NJ2K_OK) {
+            return u;
         }
         // opj_j2k_tcp_data_destroy (a 1 x 1 grid keeps it, but is not decoded again)
         tw->seen = false;
@@ -1187,6 +1350,7 @@ struct Walk {
 
     nj2k_status_t attach_samples(Tile& t, bool& whole_image) noexcept
     {
+        direct_tile = false;
         if (whole_image && !whole_fits(t)) {
             // the tile's decoded level is not the image's components, sample for sample (OpenJPEG
             // would hand over a buffer of another size): it is copied as any tile is, clipped to
@@ -1194,6 +1358,7 @@ struct Walk {
             whole_image = false;
         }
         if (whole_image && !sink.image_planes && direct_output(t)) {
+            direct_tile = true;
             return NJ2K_OK;
         }
         if (whole_image && sink.image_planes) {
@@ -1262,9 +1427,28 @@ struct Walk {
         }
     }
 
-    // "Transfer TCD data to output image data" (the single-tile path)
-    void hand_over_whole(Tile& t, const std::uint32_t* resno) noexcept
+    // "Transfer TCD data to output image data" (the single-tile path). The image's planes and the
+    // caller's direct planes hold the tile finished in place (decode_tile); from the decoder's own
+    // buffer, the tile is finished on the way when every decoded region is its whole buffer, as
+    // write_tile copies it, else finished in place first and the whole buffer copied, as OpenJPEG
+    // hands it over
+    nj2k_status_t hand_over_whole(Tile& t, const std::uint32_t* resno) noexcept
     {
+        if (!sink.image_planes && !direct_tile) {
+            bool whole = true;
+            for (std::uint32_t c = 0; c < mh.numcomps && whole; ++c) {
+                if (d.selected_mask && !d.selected_mask[c]) {
+                    continue;
+                }
+                const TileComp& tc = t.comps[c];
+                const Resolution& r = tc.res[resno[c]];
+                whole = !tc.data || (std::uint32_t(r.x1 - r.x0) == tc.data_w && std::uint32_t(r.y1 - r.y0) == tc.data_h);
+            }
+            if (whole) {
+                return write_tile(t, resno);
+            }
+            finish_tile_in_place(t, resno);
+        }
         for (std::uint32_t c = 0; c < mh.numcomps; ++c) {
             OutComp& dst = comps[c];
             dst.resno_decoded = resno[c];
@@ -1278,10 +1462,11 @@ struct Walk {
                 dst.written = dst.data != nullptr;
             } else if (t.comps[c].data) {
                 // the tile's buffer is the component, sample for sample (attach_samples: whole_fits)
-                write_planes(c, dst, t.comps[c].data, t.comps[c].data_w, 0, 0, dst.w, dst.h, false);
+                write_planes(c, t.comps[c].data, t.comps[c].data_w, 0, 0, dst.w, dst.h);
                 dst.written = true;
             }
         }
+        return NJ2K_OK;
     }
 
     // opj_j2k_decode_tiles
