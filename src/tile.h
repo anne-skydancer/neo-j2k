@@ -108,6 +108,19 @@ struct PackedCursor {
     std::uint32_t len;
 };
 
+struct Jobs;
+
+// What a tile's decode needs to run through the host's executor (stage 5, parallel.h): Tier-1 cut
+// into t1_count parts (each with its own Tier-1 scratch, ready and with room for the tile's largest
+// code-block), the wavelet's large levels into jobs->width parts (the wavelet scratch sized by
+// dwt_scratch_bytes_needed(jobs->width)), and room for its code-blocks' costs (cblk_costs_bytes()).
+struct TileJobs {
+    const Jobs* jobs;
+    T1* t1;
+    std::uint32_t t1_count;
+    void* blocks;
+};
+
 // What a tile's decode needs from the codestream and the codec.
 struct TileInput {
     const MainHeader* mh;
@@ -142,15 +155,22 @@ public:
     // colour transform's checks (opj_tcd_decode_tile after Tier-2): mct says which transform the
     // samples still need. The transform and the DC shift (finish_of) are the output pass's
     // (output.h), in place or on the way into the image.
+    // With tj, Tier-1 and the wavelet's large levels run through the host's executor, with the same
+    // samples, status and messages.
     nj2k_status_t decode_samples(T1& t1, void* dwt_scratch, const std::uint32_t* resno_decoded,
-                                 const Messages& msg) noexcept;
+                                 const Messages& msg, const TileJobs* tj = nullptr) noexcept;
     // Component compno's DC shift (opj_tcd_dc_level_shift_decode's parameters).
     Finish finish_of(std::uint32_t compno) const noexcept;
 
     // Bytes of the decoded resolution's samples of component c (0 when not decoded), and the
     // scratch the wavelet needs for any component.
     std::size_t samples_bytes(std::uint32_t c) const noexcept;
-    std::size_t dwt_scratch_bytes_needed() const noexcept;
+    // parts: the wavelet's threaded levels' parts (0: one thread)
+    std::size_t dwt_scratch_bytes_needed(std::uint32_t parts = 0) const noexcept;
+    // The room a threaded decode's code-block costs need (TileJobs::blocks), and the decoded
+    // samples of the components decoded, which say whether the tile is large enough to split.
+    std::size_t cblk_costs_bytes() const noexcept;
+    std::uint64_t decoded_samples() const noexcept;
     // The largest code-block data of the tile, for t1.reserve().
     std::size_t largest_cblk_bytes() const noexcept;
 

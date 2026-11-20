@@ -9,6 +9,7 @@ nj2k_decode
 nj2k_decode_memory
 nj2k_decode_tile_data
 nj2k_decoder_limits_init
+nj2k_decoder_set_executor
 nj2k_decoder_set_limits
 nj2k_decoder_set_reduce_policy
 nj2k_decoder_set_retained_bytes

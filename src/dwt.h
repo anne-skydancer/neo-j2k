@@ -32,6 +32,16 @@ std::size_t dwt_scratch_bytes(const ResRect* res, std::uint32_t numres, bool rev
 void dwt_decode(std::int32_t* data, std::uint32_t w, const ResRect* res, std::uint32_t numres, bool reversible,
                 void* scratch) noexcept;
 
+// Stage 5: the levels from res[0] to res[numres - 1] (the large ones of a tile, after dwt_decode has
+// done the ones before them on the calling thread), each cut into jobs.width parts for the host's
+// executor (parallel.h), the same samples for any number of parts; and the scratch the two calls of a
+// threaded tile need (64-byte aligned), for parts parts.
+struct Jobs;
+std::size_t dwt_scratch_bytes_jobs(const ResRect* res, std::uint32_t numres, bool reversible,
+                                   std::uint32_t parts) noexcept;
+void dwt_decode_jobs(std::int32_t* data, std::uint32_t w, const ResRect* res, std::uint32_t numres, bool reversible,
+                     void* scratch, const Jobs& jobs) noexcept;
+
 namespace kernels {
 // Stage 1c's transform, OpenJPEG's structure (eight rows or columns at a time, gathered into
 // opj_v8dwt_t), kept as the reference the current one is compared with (tests, the kernel bench),

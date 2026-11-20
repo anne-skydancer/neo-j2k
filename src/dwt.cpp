@@ -53,6 +53,8 @@
 
 #include <cstring>
 
+#include "parallel.h"
+
 #if defined(__AVX2__)
 #include <immintrin.h>
 #endif
@@ -1160,14 +1162,19 @@ void v97_sweep(float* const* L, float* const* H, std::uint32_t cols) noexcept
 // on, so a step that has more to do in that round (an edge target at the end) still does it.
 // Each row first takes the level's horizontal lifting (h97_lift: hsn, hdn, hcas), just before its
 // first vertical step, while it is in the cache.
-template <bool kAvx2>
+// kH false: the rows have had their horizontal lifting already (the threaded level, which lifts
+// the rows in bands first, then the columns in stripes: base and cols are then a stripe's).
+template <bool kAvx2, bool kH = true>
 void v97_lift_rows(float* base, std::size_t stride, std::uint32_t cols, std::int32_t sn, std::int32_t dn,
-                   std::int32_t cas, std::int32_t hsn, std::int32_t hdn, std::int32_t hcas) noexcept
+                   std::int32_t cas, [[maybe_unused]] std::int32_t hsn, [[maybe_unused]] std::int32_t hdn,
+                   [[maybe_unused]] std::int32_t hcas) noexcept
 {
     const bool lift = cas == 0 ? (dn > 0 || sn > 1) : (sn > 0 || dn > 1);
     if (!lift) {
-        for (std::int32_t j = 0; j < sn + dn; ++j) {
-            h97_lift<kAvx2>(base + std::size_t(j) * stride, hsn, hdn, hcas);
+        if constexpr (kH) {
+            for (std::int32_t j = 0; j < sn + dn; ++j) {
+                h97_lift<kAvx2>(base + std::size_t(j) * stride, hsn, hdn, hcas);
+            }
         }
         return;
     }
@@ -1192,11 +1199,13 @@ void v97_lift_rows(float* base, std::size_t stride, std::uint32_t cols, std::int
     std::uint32_t scaled_low = 0, scaled_high = 0;
     const std::uint32_t rows = usn > udn ? usn : udn;
     for (std::uint32_t k = 0; k < rows; ++k) {
-        if (k < usn) {
-            h97_lift<kAvx2>(low(k), hsn, hdn, hcas);
-        }
-        if (k < udn) {
-            h97_lift<kAvx2>(high(k), hsn, hdn, hcas);
+        if constexpr (kH) {
+            if (k < usn) {
+                h97_lift<kAvx2>(low(k), hsn, hdn, hcas);
+            }
+            if (k < udn) {
+                h97_lift<kAvx2>(high(k), hsn, hdn, hcas);
+            }
         }
         // the steady state, where the schedule below would scale rows k and give each step the one
         // interior target v97_sweep takes (its next[] as the sweep leaves it)
@@ -1587,6 +1596,90 @@ void level53_rows(std::int32_t* base, std::uint32_t w, std::uint32_t rw, std::in
                     static_cast<std::uint32_t>(cas), tmp, reinterpret_cast<std::uint8_t*>(tmp + rw));
 }
 
+// The vertical lifting of level53_rows alone, for a column stripe of a threaded level (stage 5):
+// base and rw a stripe's, its rows lifted horizontally already, the columns [0, g) taking the SIMD
+// build's formulas at the ends (those of OpenJPEG's full groups of 16); the rows stay in their buffer
+// order. level53_rows keeps its own copy of these steps, with the horizontal pass between them.
+template <bool kAvx2>
+void level53_vertical(std::int32_t* base, std::uint32_t w, std::uint32_t rw, std::int32_t sn, std::int32_t dn,
+                      std::int32_t cas, std::uint32_t g) noexcept
+{
+    const std::uint32_t usn = static_cast<std::uint32_t>(sn), udn = static_cast<std::uint32_t>(dn);
+    const std::uint32_t len = usn + udn;
+    auto low = [&](std::uint32_t i) { return base + std::size_t(i) * w; };
+    auto high = [&](std::uint32_t i) { return base + std::size_t(usn + i) * w; };
+    if (cas == 0) {
+        if (len > 1) {
+            // L'0 = L0 - E(H0); L'i = Li - ((H(i-1) + Hi + 2) >> 2); an odd length's last L takes
+            // E(H(dn-1)); H'j = Hj + ((L'j + L'(j+1)) >> 1), an even length's last Hj + L'(sn-1)
+            auto predict = [&](std::uint32_t i) {
+                if (i == 0) {
+                    row53_predict_edge<kAvx2>(low(0), high(0), rw, g);
+                } else if (i < udn) {
+                    row53_predict<kAvx2>(low(i), high(i - 1), high(i), rw);
+                } else {
+                    row53_predict_edge<kAvx2>(low(i), high(udn - 1), rw, g);
+                }
+            };
+            auto update = [&](std::uint32_t j) {
+                if (j + 1 < usn) {
+                    row53_update<kAvx2>(high(j), low(j), low(j + 1), rw);
+                } else {
+                    row53_update_edge<kAvx2>(high(j), low(usn - 1), rw);
+                }
+            };
+            for (std::uint32_t k = 0; k < usn; ++k) {
+                predict(k);
+                if (k >= 1) {
+                    update(k - 1);
+                }
+            }
+            for (std::uint32_t j = usn - 1; j < udn; ++j) {
+                update(j);
+            }
+        }
+    } else if (len == 1) {
+        std::int32_t* r = base;
+        for (std::uint32_t c = 0; c < rw; ++c) {
+            r[c] /= 2;
+        }
+    } else if (len == 2) {
+        std::int32_t* l = low(0);
+        std::int32_t* h = high(0);
+        for (std::uint32_t c = 0; c < rw; ++c) {
+            const std::int32_t o1 = sub(l[c], add(h[c], 1) >> 1);
+            l[c] = o1;
+            h[c] = add(h[c], o1);
+        }
+    } else if (len > 2) {
+        // L'i = Li - ((Hi + H(i+1) + 2) >> 2), an even length's last L takes E(H(dn-1));
+        // H'0 = H0 + L'0, H'j = Hj + ((L'j + L'(j-1)) >> 1), an odd length's last Hj + L'(sn-1)
+        auto predict = [&](std::uint32_t i) {
+            if (i + 1 < udn) {
+                row53_predict<kAvx2>(low(i), high(i), high(i + 1), rw);
+            } else {
+                row53_predict_edge<kAvx2>(low(i), high(udn - 1), rw, g);
+            }
+        };
+        auto update = [&](std::uint32_t j) {
+            if (j == 0) {
+                row53_update_edge<kAvx2>(high(0), low(0), rw);
+            } else if (j < usn) {
+                row53_update<kAvx2>(high(j), low(j), low(j - 1), rw);
+            } else {
+                row53_update_edge<kAvx2>(high(j), low(usn - 1), rw);
+            }
+        };
+        for (std::uint32_t k = 0; k < usn; ++k) {
+            predict(k);
+            update(k);
+        }
+        for (std::uint32_t j = usn; j < udn; ++j) {
+            update(j);
+        }
+    }
+}
+
 // opj_dwt_decode_tile, one thread, row-wise
 template <bool kAvx2>
 void decode_53_rows(std::int32_t* data, std::uint32_t w, const ResRect* tr, std::uint32_t numres, std::int32_t* mem,
@@ -1622,6 +1715,238 @@ void decode_97(std::int32_t* data, std::uint32_t w, const ResRect* res, std::uin
 #endif
 }
 
+// ---- stage 5: a level through the host's executor ----------------------------------------------------
+//
+// A large level cut into parts, in three steps, each joined before the next: the horizontal lifting
+// of every row (bands of rows), the vertical lifting (stripes of whole groups of 16 columns: 64-byte
+// multiples, so two parts never write one cache line, and the 5/3's SIMD-formula columns stay
+// OpenJPEG's groups), and the rows put in their interleaved order (the permutation's cycles, found
+// on the calling thread first and shared out by rows). Every sample takes the operations of the
+// one-thread transform in the same order: a row's horizontal lifting before any vertical step reads
+// it (the one-thread row-wise transform lifts a row just before its first vertical step; OpenJPEG
+// lifts every row first), the vertical steps of each column in their order, and each row's
+// interleave from its own source row, so the samples are the same for any number of parts.
+
+// A part's line (rows, row_bytes apart, 64-byte aligned) and the permutation's cycles.
+struct LevelScratch {
+    std::uint8_t* rows;
+    std::size_t row_bytes;
+    std::uint32_t* cycle_start;
+    std::uint32_t* cycle_len;
+    std::uint8_t* visited;
+};
+
+constexpr std::size_t align64(std::size_t n) noexcept
+{
+    return (n + 63) & ~std::size_t(63);
+}
+
+// The scratch of the threaded levels for lines of up to mr samples and up to mr rows.
+std::size_t level_scratch_bytes(std::size_t mr, std::uint32_t parts) noexcept
+{
+    return std::size_t(parts) * align64(mr * sizeof(std::int32_t)) + 2 * align64(mr * sizeof(std::uint32_t)) +
+           align64((mr + 7) / 8);
+}
+
+LevelScratch level_scratch(void* scratch, std::size_t mr, std::uint32_t parts) noexcept
+{
+    auto* p = static_cast<std::uint8_t*>(scratch);
+    LevelScratch s{};
+    s.row_bytes = align64(mr * sizeof(std::int32_t));
+    s.rows = p;
+    p += std::size_t(parts) * s.row_bytes;
+    s.cycle_start = reinterpret_cast<std::uint32_t*>(p);
+    p += align64(mr * sizeof(std::uint32_t));
+    s.cycle_len = reinterpret_cast<std::uint32_t*>(p);
+    p += align64(mr * sizeof(std::uint32_t));
+    s.visited = p;
+    return s;
+}
+
+// The cycles of the permutation that takes buffer row source(q) to row q of the level, in the order
+// of their first row (interleave_level's and interleave_rows' order); their count.
+template <class Source>
+std::uint32_t find_cycles(std::uint32_t len, Source source, const LevelScratch& s) noexcept
+{
+    std::memset(s.visited, 0, (len + 7) / 8);
+    auto mark = [&](std::uint32_t q) {
+        s.visited[q >> 3] = static_cast<std::uint8_t>(s.visited[q >> 3] | (1u << (q & 7)));
+    };
+    std::uint32_t n = 0;
+    for (std::uint32_t start = 0; start < len; ++start) {
+        if (s.visited[start >> 3] & (1u << (start & 7))) {
+            continue;
+        }
+        mark(start);
+        std::uint32_t count = 1;
+        for (std::uint32_t q = source(start); q != start; q = source(q)) {
+            mark(q);
+            ++count;
+        }
+        s.cycle_start[n] = start;
+        s.cycle_len[n] = count;
+        ++n;
+    }
+    return n;
+}
+
+// The cycles of each part: part i takes cycles [bounds[i], bounds[i + 1]), the parts about equal in
+// rows; the number of parts.
+std::uint32_t share_cycles(std::uint32_t ncycles, std::uint32_t rows, const LevelScratch& s, std::uint32_t width,
+                           std::uint32_t* bounds) noexcept
+{
+    const std::uint32_t parts = ncycles < width ? ncycles : width;
+    std::uint32_t c = 0;
+    std::uint64_t done = 0;
+    for (std::uint32_t i = 0; i < parts; ++i) {
+        const std::uint64_t target = part_begin(rows, parts, i);
+        while (c < ncycles && done < target) {
+            done += s.cycle_len[c++];
+        }
+        bounds[i] = c;
+    }
+    bounds[parts] = ncycles;
+    return parts;
+}
+
+// The column stripe [c0, c1) of part i of parts (stripes of whole groups of 16 columns) of a level
+// rw wide.
+inline void stripe(std::uint32_t rw, std::uint32_t groups, std::uint32_t parts, std::uint32_t i, std::uint32_t& c0,
+                   std::uint32_t& c1) noexcept
+{
+    c0 = part_begin(groups, parts, i) * std::uint32_t(kCols53);
+    c1 = part_begin(groups, parts, i + 1) * std::uint32_t(kCols53);
+    c1 = c1 < rw ? c1 : rw;
+}
+
+// One 9/7 level (decode_97_t's row-wise level) through the executor
+template <bool kAvx2>
+void level97_jobs(float* base, std::uint32_t w, std::uint32_t rw, std::uint32_t rh, std::int32_t vsn, std::int32_t vdn,
+                  std::int32_t vcas, std::int32_t hsn, std::int32_t hdn, std::int32_t hcas, const LevelScratch& s,
+                  const Jobs& jobs) noexcept
+{
+    const std::uint32_t parts_h = rh < jobs.width ? rh : jobs.width;
+    auto horizontal = [&](std::uint32_t i) noexcept {
+        for (std::uint32_t r = part_begin(rh, parts_h, i), e = part_begin(rh, parts_h, i + 1); r < e; ++r) {
+            h97_lift<kAvx2>(base + std::size_t(r) * w, hsn, hdn, hcas);
+        }
+    };
+    jobs.run(parts_h, horizontal);
+    const std::uint32_t groups = (rw + std::uint32_t(kCols53) - 1) / std::uint32_t(kCols53);
+    const std::uint32_t parts_v = groups < jobs.width ? groups : jobs.width;
+    auto vertical = [&](std::uint32_t i) noexcept {
+        std::uint32_t c0, c1;
+        stripe(rw, groups, parts_v, i, c0, c1);
+        v97_lift_rows<kAvx2, false>(base + c0, w, c1 - c0, vsn, vdn, vcas, hsn, hdn, hcas);
+    };
+    jobs.run(parts_v, vertical);
+    // the rows in place, each row's columns interleaved on the way (interleave_level)
+    const std::uint32_t usn = static_cast<std::uint32_t>(vsn), ucas = static_cast<std::uint32_t>(vcas);
+    auto source = [&](std::uint32_t q) { return (q & 1) == ucas ? (q - ucas) / 2 : usn + (q + ucas - 1) / 2; };
+    auto row = [&](std::uint32_t q) { return base + std::size_t(q) * w; };
+    const std::uint32_t ncycles = find_cycles(rh, source, s);
+    std::uint32_t bounds[kMaxJobs + 1];
+    const std::uint32_t parts_c = share_cycles(ncycles, rh, s, jobs.width, bounds);
+    const std::size_t row_bytes = std::size_t(rw) * sizeof(float);
+    const std::uint32_t uhsn = static_cast<std::uint32_t>(hsn), uhdn = static_cast<std::uint32_t>(hdn),
+                        uhcas = static_cast<std::uint32_t>(hcas);
+    auto place = [&](std::uint32_t i) noexcept {
+        float* tmp = reinterpret_cast<float*>(s.rows + std::size_t(i) * s.row_bytes);
+        for (std::uint32_t c = bounds[i]; c < bounds[i + 1]; ++c) {
+            const std::uint32_t start = s.cycle_start[c];
+            std::memcpy(tmp, row(start), row_bytes);
+            std::uint32_t cur = start;
+            for (std::uint32_t from = source(start); from != start; from = source(cur)) {
+                interleave_columns<kAvx2>(row(cur), row(from), uhsn, uhdn, uhcas);
+                cur = from;
+            }
+            interleave_columns<kAvx2>(row(cur), tmp, uhsn, uhdn, uhcas);
+        }
+    };
+    jobs.run(parts_c, place);
+}
+
+// One 5/3 level (decode_53_rows' row-wise level) through the executor
+template <bool kAvx2>
+void level53_jobs(std::int32_t* base, std::uint32_t w, std::uint32_t rw, std::uint32_t rh, std::int32_t vsn,
+                  std::int32_t vdn, std::int32_t vcas, std::int32_t hsn, std::int32_t hdn, std::int32_t hcas,
+                  const LevelScratch& s, const Jobs& jobs) noexcept
+{
+    const std::uint32_t parts_h = rh < jobs.width ? rh : jobs.width;
+    auto horizontal = [&](std::uint32_t i) noexcept {
+        auto* tmp = reinterpret_cast<std::int32_t*>(s.rows + std::size_t(i) * s.row_bytes);
+        for (std::uint32_t r = part_begin(rh, parts_h, i), e = part_begin(rh, parts_h, i + 1); r < e; ++r) {
+            h53<kAvx2>(base + std::size_t(r) * w, hsn, hdn, hcas, tmp);
+        }
+    };
+    jobs.run(parts_h, horizontal);
+    const std::uint32_t groups = (rw + std::uint32_t(kCols53) - 1) / std::uint32_t(kCols53);
+    const std::uint32_t parts_v = groups < jobs.width ? groups : jobs.width;
+    const std::uint32_t g = (rw / std::uint32_t(kCols53)) * std::uint32_t(kCols53);
+    auto vertical = [&](std::uint32_t i) noexcept {
+        std::uint32_t c0, c1;
+        stripe(rw, groups, parts_v, i, c0, c1);
+        // the stripe's columns of OpenJPEG's full groups (a stripe starts on a group)
+        const std::uint32_t gl = c1 <= g ? c1 - c0 : (c0 >= g ? 0 : g - c0);
+        level53_vertical<kAvx2>(base + c0, w, c1 - c0, vsn, vdn, vcas, gl);
+    };
+    jobs.run(parts_v, vertical);
+    // the rows in place (interleave_rows)
+    const std::uint32_t usn = static_cast<std::uint32_t>(vsn), ucas = static_cast<std::uint32_t>(vcas);
+    auto source = [&](std::uint32_t q) { return (q & 1) == ucas ? (q - ucas) / 2 : usn + (q + ucas - 1) / 2; };
+    auto row = [&](std::uint32_t q) { return base + std::size_t(q) * w; };
+    const std::uint32_t ncycles = find_cycles(rh, source, s);
+    std::uint32_t bounds[kMaxJobs + 1];
+    const std::uint32_t parts_c = share_cycles(ncycles, rh, s, jobs.width, bounds);
+    const std::size_t row_bytes = std::size_t(rw) * sizeof(std::int32_t);
+    auto place = [&](std::uint32_t i) noexcept {
+        std::uint8_t* tmp = s.rows + std::size_t(i) * s.row_bytes;
+        for (std::uint32_t c = bounds[i]; c < bounds[i + 1]; ++c) {
+            if (s.cycle_len[c] == 1) {
+                continue;  // a row that stays where it is
+            }
+            const std::uint32_t start = s.cycle_start[c];
+            std::memcpy(tmp, row(start), row_bytes);
+            std::uint32_t cur = start;
+            for (std::uint32_t from = source(start); from != start; from = source(cur)) {
+                std::memcpy(row(cur), row(from), row_bytes);
+                cur = from;
+            }
+            std::memcpy(row(cur), tmp, row_bytes);
+        }
+    };
+    jobs.run(parts_c, place);
+}
+
+// Every level of res (from res[0] to res[numres - 1]) through the executor
+template <bool kAvx2>
+void decode_jobs_t(std::int32_t* data, std::uint32_t w, const ResRect* res, std::uint32_t numres, bool reversible,
+                   void* scratch, const Jobs& jobs) noexcept
+{
+    if (numres <= 1 || w == 0) {
+        return;
+    }
+    const LevelScratch s = level_scratch(scratch, max_resolution(res, numres), jobs.width);
+    std::uint32_t rw = static_cast<std::uint32_t>(res->x1 - res->x0);
+    std::uint32_t rh = static_cast<std::uint32_t>(res->y1 - res->y0);
+    while (--numres) {
+        const std::int32_t hsn = static_cast<std::int32_t>(rw);
+        const std::int32_t vsn = static_cast<std::int32_t>(rh);
+        ++res;
+        rw = static_cast<std::uint32_t>(res->x1 - res->x0);
+        rh = static_cast<std::uint32_t>(res->y1 - res->y0);
+        const std::int32_t hdn = static_cast<std::int32_t>(rw - static_cast<std::uint32_t>(hsn));
+        const std::int32_t hcas = res->x0 % 2;
+        const std::int32_t vdn = static_cast<std::int32_t>(rh - static_cast<std::uint32_t>(vsn));
+        const std::int32_t vcas = res->y0 % 2;
+        if (reversible) {
+            level53_jobs<kAvx2>(data, w, rw, rh, vsn, vdn, vcas, hsn, hdn, hcas, s, jobs);
+        } else {
+            level97_jobs<kAvx2>(reinterpret_cast<float*>(data), w, rw, rh, vsn, vdn, vcas, hsn, hdn, hcas, s, jobs);
+        }
+    }
+}
+
 }  // namespace
 
 std::size_t dwt_scratch_bytes(const ResRect* res, std::uint32_t numres, bool reversible) noexcept
@@ -1648,6 +1973,29 @@ void dwt_decode(std::int32_t* data, std::uint32_t w, const ResRect* res, std::ui
     } else {
         decode_97(data, w, res, numres, static_cast<float*>(scratch));
     }
+}
+
+std::size_t dwt_scratch_bytes_jobs(const ResRect* res, std::uint32_t numres, bool reversible,
+                                  std::uint32_t parts) noexcept
+{
+    if (numres <= 1) {
+        return 0;
+    }
+    // the levels on this thread use the one-thread scratch, the threaded ones their parts' lines and
+    // the cycles: one region, used by one level at a time
+    const std::size_t serial = dwt_scratch_bytes(res, numres, reversible);
+    const std::size_t threaded = level_scratch_bytes(max_resolution(res, numres), parts);
+    return serial > threaded ? serial : threaded;
+}
+
+void dwt_decode_jobs(std::int32_t* data, std::uint32_t w, const ResRect* res, std::uint32_t numres, bool reversible,
+                     void* scratch, const Jobs& jobs) noexcept
+{
+#if defined(__AVX2__)
+    decode_jobs_t<true>(data, w, res, numres, reversible, scratch, jobs);
+#else
+    decode_jobs_t<false>(data, w, res, numres, reversible, scratch, jobs);
+#endif
 }
 
 namespace kernels {

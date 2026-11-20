@@ -56,6 +56,8 @@
 #include <cmath>
 #include <cstring>
 
+#include "parallel.h"
+
 namespace nj2k::detail {
 
 namespace {
@@ -358,7 +360,7 @@ std::size_t Tile::samples_bytes(std::uint32_t c) const noexcept
     return std::size_t(tc.data_w) * tc.data_h * sizeof(std::int32_t);
 }
 
-std::size_t Tile::dwt_scratch_bytes_needed() const noexcept
+std::size_t Tile::dwt_scratch_bytes_needed(std::uint32_t parts) const noexcept
 {
     std::size_t most = 0;
     for (std::uint32_t c = 0; c < numcomps; ++c) {
@@ -370,10 +372,23 @@ std::size_t Tile::dwt_scratch_bytes_needed() const noexcept
         for (std::uint32_t r = 0; r < tc.minimum_num_resolutions; ++r) {
             rects[r] = ResRect{tc.res[r].x0, tc.res[r].y0, tc.res[r].x1, tc.res[r].y1};
         }
-        const std::size_t n = dwt_scratch_bytes(rects, tc.minimum_num_resolutions, tc.params.style->qmfbid == 1);
+        const bool reversible = tc.params.style->qmfbid == 1;
+        const std::size_t n = parts ? dwt_scratch_bytes_jobs(rects, tc.minimum_num_resolutions, reversible, parts)
+                                    : dwt_scratch_bytes(rects, tc.minimum_num_resolutions, reversible);
         most = n > most ? n : most;
     }
     return most;
+}
+
+std::uint64_t Tile::decoded_samples() const noexcept
+{
+    std::uint64_t n = 0;
+    for (std::uint32_t c = 0; c < numcomps; ++c) {
+        if (!in->selected || in->selected[c]) {
+            n += std::uint64_t(comps[c].data_w) * comps[c].data_h;
+        }
+    }
+    return n;
 }
 
 std::size_t Tile::largest_cblk_bytes() const noexcept
@@ -404,15 +419,20 @@ std::size_t Tile::largest_cblk_bytes() const noexcept
     return most;
 }
 
-nj2k_status_t Tile::decode_samples(T1& t1, void* dwt_scratch, const std::uint32_t* resno_decoded,
-                                   const Messages& msg) noexcept
+namespace {
+
+// Every code-block Tier-1 decodes, in OpenJPEG's order (opj_t1_decode_cblks for a whole tile,
+// component by component): f(b, dst, stride, reversible, stepsize) with the block, where its samples
+// go in the component's buffer (rows of stride samples) and its band's dequantisation; f returns
+// false to stop the walk, which then returns false.
+template <class F>
+bool for_each_cblk(Tile& t, F&& f) noexcept
 {
-    // Tier-1 (opj_t1_decode_cblks, whole tile), component by component
-    for (std::uint32_t compno = 0; compno < numcomps; ++compno) {
-        if (in->selected && !in->selected[compno]) {
+    for (std::uint32_t compno = 0; compno < t.numcomps; ++compno) {
+        if (t.in->selected && !t.in->selected[compno]) {
             continue;
         }
-        TileComp& tc = comps[compno];
+        TileComp& tc = t.comps[compno];
         const CodingStyle& style = *tc.params.style;
         const std::uint32_t tile_w = tc.data_w;
         const bool reversible = style.qmfbid == 1;
@@ -461,21 +481,156 @@ nj2k_status_t Tile::decode_samples(T1& t1, void* dwt_scratch, const std::uint32_
                             y += pres.y1 - pres.y0;
                         }
                         std::int32_t* dst = tc.data + static_cast<std::size_t>(y) * tile_w + static_cast<std::size_t>(x);
-                        if (cb.nchunks == 0) {
-                            if (!t1_empty_cblk_ok(b, msg)) {
-                                return NJ2K_E_DATA;
-                            }
-                            t1_store(nullptr, b.w, b.h, 0, reversible, band.stepsize, dst, tile_w);
-                            continue;
+                        if (!f(b, dst, tile_w, reversible, band.stepsize)) {
+                            return false;
                         }
-                        if (!t1_decode_cblk(t1, b, msg)) {
-                            return NJ2K_E_DATA;
-                        }
-                        t1_store(t1.data, b.w, b.h, b.roishift, reversible, band.stepsize, dst, tile_w);
                     }
                 }
             }
         }
+    }
+    return true;
+}
+
+// One code-block decoded (zeros without data: Tier-1 gives them) and stored into its component's
+// buffer; false where OpenJPEG refuses it, after its warning
+inline bool decode_store(T1& t1, const T1Block& b, std::int32_t* dst, std::uint32_t stride, bool reversible,
+                         float stepsize, const Messages& msg) noexcept
+{
+    if (b.nchunks == 0) {
+        if (!t1_empty_cblk_ok(b, msg)) {
+            return false;
+        }
+        t1_store(nullptr, b.w, b.h, 0, reversible, stepsize, dst, stride);
+        return true;
+    }
+    if (!t1_decode_cblk(t1, b, msg)) {
+        return false;
+    }
+    t1_store(t1.data, b.w, b.h, b.roishift, reversible, stepsize, dst, stride);
+    return true;
+}
+
+#if defined(_MSC_VER)
+#define NJ2K_NOINLINE __declspec(noinline)
+#else
+#define NJ2K_NOINLINE __attribute__((noinline))
+#endif
+
+// Tier-1 of the code-blocks [first, last) of the walk, in its order; false at a block OpenJPEG
+// refuses (after the warning), as opj_t1_decode_cblks stops there. One thread decodes [0, all) here,
+// and each part of a threaded tile its own run, so Tier-1 has this one caller whoever runs it. The
+// shared library is built with link-time code generation, which compiles a function by where it is
+// called from: with Tier-1 called from two places (one thread's loop and the parts'), whole decodes
+// of 1024 x 1024 textures came out about 1 % slower on one thread (measured); with this one caller,
+// kept out of line, they did not (doc/bench.md, stage 5).
+NJ2K_NOINLINE bool decode_blocks(Tile& t, T1& t1, const Messages& msg, std::uint32_t first,
+                                 std::uint32_t last) noexcept
+{
+    std::uint32_t i = 0;
+    bool refused = false;
+    for_each_cblk(t, [&](const T1Block& b, std::int32_t* dst, std::uint32_t stride, bool reversible,
+                         float stepsize) noexcept {
+        if (i >= last) {
+            return false;
+        }
+        if (i++ < first) {
+            return true;
+        }
+        refused = !decode_store(t1, b, dst, stride, reversible, stepsize, msg);
+        return !refused;
+    });
+    return !refused;
+}
+
+#undef NJ2K_NOINLINE
+
+// Tier-1 through the executor. The code-blocks are walked in OpenJPEG's order on this thread first,
+// up to the first one OpenJPEG refuses (bit-planes plus ROI shift at or above 31, the only refusal of
+// opj_t1_decode_cblk, decided by the packet headers alone), each with its estimated cost (about
+// 0.1 us a coded byte, and its samples); the walk is cut into runs of about equal cost, and each part
+// decodes its run with its own scratch, every block into its own place in the buffers. The blocks
+// before a refused one are decoded, as one thread decodes them before it stops, and the refusal's
+// warning comes after them, the only message Tier-1 gives: the same samples, status and messages.
+nj2k_status_t t1_jobs(Tile& t, const TileJobs& tj, const Messages& msg) noexcept
+{
+    auto* cost = static_cast<std::uint64_t*>(tj.blocks);
+    std::uint32_t n = 0;
+    std::uint64_t total = 0;
+    const Messages quiet;
+    T1Block refused{};
+    const bool all = for_each_cblk(t, [&](const T1Block& b, std::int32_t*, std::uint32_t, bool, float) noexcept {
+        if (!t1_empty_cblk_ok(b, quiet)) {
+            refused = b;
+            return false;
+        }
+        std::uint64_t bytes = 0;
+        for (std::uint32_t i = 0; i < b.nchunks; ++i) {
+            bytes += b.chunks[i].len;
+        }
+        cost[n] = bytes * 100 + std::uint64_t(b.w) * b.h;
+        total += cost[n++];
+        return true;
+    });
+    const std::uint32_t parts = n < tj.t1_count ? n : tj.t1_count;
+    std::uint32_t bounds[2 * kMaxJobs + 1];
+    std::uint64_t done = 0;
+    std::uint32_t k = 0;
+    for (std::uint32_t p = 0; p < parts; ++p) {
+        // total * p / parts without overflow
+        const std::uint64_t target = total / parts * p + total % parts * p / parts;
+        while (k < n && done < target) {
+            done += cost[k++];
+        }
+        bounds[p] = k;
+    }
+    bounds[parts] = n;
+    auto part = [&](std::uint32_t p) noexcept {
+        // none of the run is refused (checked above), so nothing is said here
+        (void)decode_blocks(t, tj.t1[p], quiet, bounds[p], bounds[p + 1]);
+    };
+    tj.jobs->run(parts, part);
+    if (!all) {
+        (void)t1_empty_cblk_ok(refused, msg);  // OpenJPEG's warning
+        return NJ2K_E_DATA;
+    }
+    return NJ2K_OK;
+}
+
+}  // namespace
+
+std::size_t Tile::cblk_costs_bytes() const noexcept
+{
+    std::size_t n = 0;
+    for (std::uint32_t c = 0; c < numcomps; ++c) {
+        if (in->selected && !in->selected[c]) {
+            continue;
+        }
+        const TileComp& tc = comps[c];
+        for (std::uint32_t r = 0; r < tc.minimum_num_resolutions; ++r) {
+            const Resolution& res = tc.res[r];
+            for (std::uint32_t b = 0; b < res.numbands; ++b) {
+                const Band& band = res.bands[b];
+                const std::uint32_t np = res.pw * res.ph;
+                for (std::uint32_t pn = 0; band.precincts && pn < np; ++pn) {
+                    n += std::size_t(band.precincts[pn].cw) * band.precincts[pn].ch;
+                }
+            }
+        }
+    }
+    return n * sizeof(std::uint64_t);
+}
+
+nj2k_status_t Tile::decode_samples(T1& t1, void* dwt_scratch, const std::uint32_t* resno_decoded,
+                                   const Messages& msg, const TileJobs* tj) noexcept
+{
+    // Tier-1 (opj_t1_decode_cblks, whole tile), component by component
+    if (tj) {
+        if (const nj2k_status_t st = t1_jobs(*this, *tj, msg); st != NJ2K_OK) {
+            return st;
+        }
+    } else if (!decode_blocks(*this, t1, msg, 0, UINT32_MAX)) {
+        return NJ2K_E_DATA;
     }
 
     // the inverse wavelet up to the resolution decoded (opj_tcd_dwt_decode)
@@ -489,7 +644,26 @@ nj2k_status_t Tile::decode_samples(T1& t1, void* dwt_scratch, const std::uint32_
         for (std::uint32_t r = 0; r < numres && r < tc.numresolutions; ++r) {
             rects[r] = ResRect{tc.res[r].x0, tc.res[r].y0, tc.res[r].x1, tc.res[r].y1};
         }
-        dwt_decode(tc.data, tc.data_w, rects, numres, tc.params.style->qmfbid == 1, dwt_scratch);
+        // a threaded tile's levels from the first of jobs.level_area samples on run through the
+        // executor; the ones before them (the smallest, the levels grow) here, through one thread's
+        // own call (link-time code generation compiled the small levels' transform differently with
+        // a second caller: 16 x 16 decodes of 64 and 128 pixel textures were 3-8 % slower)
+        std::uint32_t here = numres;
+        if (tj) {
+            for (std::uint32_t r = 1; r < numres; ++r) {
+                const std::uint64_t area =
+                    std::uint64_t(std::uint32_t(rects[r].x1 - rects[r].x0)) * std::uint32_t(rects[r].y1 - rects[r].y0);
+                if (area >= tj->jobs->level_area) {
+                    here = r;
+                    break;
+                }
+            }
+        }
+        dwt_decode(tc.data, tc.data_w, rects, here, tc.params.style->qmfbid == 1, dwt_scratch);
+        if (here < numres) {
+            dwt_decode_jobs(tc.data, tc.data_w, rects + (here - 1), numres - here + 1, tc.params.style->qmfbid == 1,
+                            dwt_scratch, *tj->jobs);
+        }
     }
 
     // the colour transform (opj_tcd_mct_decode)
