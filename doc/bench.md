@@ -547,3 +547,123 @@ highest peak commit; load 33 % mean, 100 % max, sampled every 4 s); every decode
 Peak memory is unchanged by these commits (the wavelet's scratch and the stack buffer as before); the stream
 API's higher peak on multi-tile images is stage 1c's (238 and 3,131 MB against 209 and 3,096: the
 low-memory stream belongs to the j2k-tile module).
+
+## Stage 5: threads in one image (2026-11-20)
+
+The host's executor (`nj2k_decoder_set_executor`, `doc/api.md`): here the tests' pool
+(`tests/common/thread_pool.h`), N - 1 workers started before the decode and the calling thread the N-th.
+OpenJPEG gets `opj_codec_set_threads(N)` (its pool starts inside the timed call, as a host that uses it
+pays). The Ryzen 9 9950X3D, with 8 logical CPUs visible to this Windows session, so N = 8 is every core;
+MSVC 14.51, RelWithDebInfo.
+
+### Large images: time and peak memory against OpenJPEG at N threads (the gate)
+
+The images and method of stage 1c (a process a decode, the peak its peak commit; three rounds, two for
+16,384², the thread counts and decoders taking turns in each round, the order rotating; medians, and the
+highest peak). One thread is pinned to core 7 as before; at 4 and 8 threads nothing is pinned. The total CPU
+load, sampled every 5 s, includes the decoders' own threads (23 % mean, 53 % max). Every decode at every
+count is identical to OpenJPEG's one-thread decode (the hash column of the run).
+
+From memory (the viewer's way: OpenJPEG through a memory stream, neo-j2k through `nj2k_decode_memory` into
+int32 planes):
+
+| Image | N | OpenJPEG ms / MB | neo-j2k ms / MB | neo-j2k / OpenJPEG |
+|---|---|---|---|---|
+| 4,096², one tile, 9/7 | 1 | 378 / 205 | 233 / 200 | 0.62 |
+| | 4 | 180 / 206 | 74 / 201 | 0.41 |
+| | 8 | 135 / 207 | **46 / 201** | 0.34 |
+| 4,096², 16 tiles, 5/3 | 1 | 3,147 / 248 | 2,934 / 244 | 0.93 |
+| | 4 | 858 / 248 | 766 / 245 | 0.89 |
+| | 8 | 474 / 249 | **416 / 245** | 0.88 |
+| 8,192², one tile, 9/7 | 1 | 1,579 / 813 | 961 / 792 | 0.61 |
+| | 4 | 776 / 815 | 346 / 793 | 0.45 |
+| | 8 | 596 / 816 | **238 / 793** | 0.40 |
+| 16,384², 256 tiles, 9/7 | 1 | 5,463 / 3,134 | 3,392 / 3,131 | 0.62 |
+| | 4 | 2,729 / 3,135 | 1,154 / 3,131 | 0.42 |
+| | 8 | 2,000 / 3,135 | **754 / 3,131** | 0.38 |
+
+neo-j2k is faster at every count, and needs no more memory: the threaded tile's own memory (a Tier-1 scratch
+and a wavelet line per part, 8 bytes a code-block) is about a megabyte. At 8 threads it decodes 4.0-7.1x
+faster than on one (OpenJPEG 2.6-6.6x). What stays on the calling thread: the walk over the tile-parts and
+the packets (Tier-2, serial in OpenJPEG too), each tile's layout and the wavelet levels below 2^18 samples;
+tiles are not decoded in parallel (`doc/stages.md`).
+
+Through the stream API (two rounds): 4,096² one tile 133 / 47 ms at 8 threads (OpenJPEG / neo-j2k), 16
+tiles 479 / 439, 8,192² 582 / 240, 16,384² 2,023 / 694; the peaks as from memory but for the multi-tile
+images, 238 and 3,131 MB against OpenJPEG's 210 and 3,097 at every count: stage 1c's stream input, which
+holds the codestream (the low-memory stream belongs to the j2k-tile module, owner 2026-11-20), unchanged by
+threads.
+
+### Identity (the gate)
+
+`decode_threads` in CI (both builds, every platform; `doc/testing.md`), and locally with `--files` on the
+private bench corpus (212 files: 13,568 threaded decodes, at the library's thresholds at reduce 0-2 and with
+every stage forced at reduce 0, into int32 planes with guard bytes and the viewer's 8-bit image, each codec
+decoding twice) and the four large images (112 decodes), in the AVX2 and the scalar build: every decode at
+2, 4, 8 and 16 threads gives one thread's samples, status and messages, in order.
+
+### Where threads start
+
+A tile is split from 2^18 decoded samples over its components on (a 512 x 512 grey or a 296 x 296 RGB
+tile). One codec decoding the same texture from memory again and again, one thread against N with every
+stage forced (median of 60 each, taking turns, quiet machine):
+
+| Texture | 1 thread | 2 | 4 | 8 | CPU efficiency at 8 |
+|---|---|---|---|---|---|
+| 128² RGB | 567 µs | 0.61 | 0.41 | 0.50 | 25 % |
+| 256² RGB | 2,334 µs | 0.55 | 0.37 | 0.29 | 43 % |
+| 512² RGB | 9,009 µs | 0.54 | 0.30 | 0.20 | 63 % |
+| 1024² RGB | 36,116 µs | 0.52 | 0.28 | 0.15 | 83 % |
+
+Threads shorten even a 128² decode, but at a high price in CPU time: below the threshold the cores do more
+for a host that decodes many images at once (the viewer's case) as one image a thread, owner decision D8.
+
+### Small images: no executor, as the viewer decodes
+
+The viewer's request on neo-j2k's own path through `main`'s and this stage's shared library. The
+interleaved bench with both libraries twice in one process cannot resolve these classes: with four similar
+libraries running in turn, a library's time in the reduced classes moved by up to 15 % from one copy to
+another (the same bytes under another file name), and two copies of `main` agreed with each other while
+both differed from a third. So each library ran in a process of its own, `main` and stage 5 in turn, three
+times each (20 s a run for the 32-256 px files, 34 s for 512 and 1024 px; load from other processes under
+6 %). The spread of a library's own three runs is the noise (at most 1.5 % in a class, mostly under
+0.6 %). Every decode is identical in both.
+
+| Request (median per file, then over the class) | Files | main µs | stage 5 µs | stage 5 / main |
+|---|---|---|---|---|
+| 32² whole | 28 | 7.37 | 7.35 | 1.00 |
+| 32² at reduce 1-5 | 28 | 2.91-5.32 | 2.94-5.39 | 1.009-1.016 |
+| 64² whole | 32 | 264 | 266 | 1.008 |
+| 64² at reduce 1, 2, 3 | 32 | 34.9, 17.6, 10.7 | 35.9, 18.1, 10.9 | 1.029, 1.032, 1.021 |
+| 128² whole | 32 | 416 | 419 | 1.008 |
+| 128² at reduce 2, 3, 4 | 32 | 31.5, 15.0, 8.83 | 32.2, 15.5, 9.03 | 1.025, 1.032, 1.023 |
+| 256² whole | 40 | 1,717 | 1,725 | 1.004 |
+| 256² at reduce 1-5 | 40 | | | 1.002-1.012 |
+| 512² whole | 40 | 8,657 | 8,706 | 1.006 |
+| 512² at reduce 1-5 | 40 | | | 1.001-1.009 |
+| 1024² whole | 40 | 24,930 | 25,020 | 1.004 |
+| 1024² at reduce 1-5 | 40 | | | 0.995-1.005 |
+| the viewer's budgets, 64-1024² | 14-37 | | | 0.971-1.041 (64² at reduce 2: 1.041, 128² at reduce 3: 1.035) |
+| first 600 bytes, 32-1024² | 2-38 | | | 1.000-1.012 |
+
+**The gate is not met everywhere:** whole decodes are within 0.4-0.8 % of `main`, but reduced decodes of 64
+and 128 px textures, where Tier-1 handles many small code-blocks, are 2-4 % slower (0.3-1 µs a request), above
+the 1.5 % noise. What it comes from was narrowed down to code generation, not to work the decode does: the
+shared library is built with link-time code generation, which compiles Tier-1's and the wavelet's functions by
+where they are called from, and the threaded path calls them from new places. These arrangements were measured
+(the interleaved bench, so their small-class figures are the uncertain ones):
+- the parts calling Tier-1's entry points from a second place: whole 1024² decodes 1.0-1.5 % slower (stable in
+  every run), small reduced decodes no slower;
+- Tier-1 called from one function for one thread and the parts (`decode_blocks`, the committed arrangement):
+  whole decodes as `main`'s, reduced small ones as above;
+- the small wavelet levels of a threaded tile run through the threaded path's own loop: the small levels'
+  transform compiled differently for one thread too (machine code compared function by function against
+  `main`'s), so they now go through one thread's own call;
+- Tier-1's entry points kept out of line, or compiled twice from one source for the two callers: whole 1024²
+  decodes 1.4 % slower again.
+Neither the source of the one-thread path's kernels nor their operations changed; their machine code did.
+
+### Not measured
+
+- The encoder (stage 6b uses the same executor).
+- A Linux build's large-image times (CI runs the identity gate and ThreadSanitizer there).
