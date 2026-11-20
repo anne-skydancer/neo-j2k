@@ -10,3 +10,21 @@ nj2k_program_exceptions(nj2k_bench)
 if(TARGET nj2k_oracle_counting)
   add_dependencies(nj2k_bench nj2k_oracle_counting)
 endif()
+
+# The stage gates' kernel timings (the library's internals, from the static library)
+add_executable(nj2k_kernels nj2k_kernels.cpp)
+target_link_libraries(nj2k_kernels PRIVATE nj2k_test_common)
+nj2k_fp_strict(nj2k_kernels)
+nj2k_simd(nj2k_kernels)
+nj2k_program_exceptions(nj2k_kernels)
+
+# The lane-per-code-block MQ prototype (stage 4): MQ segments traced from real decodes, decoded
+# again by the scalar MQ decoder and by eight AVX2 lanes, one code-block a lane
+if(NJ2K_SIMD STREQUAL "AVX2")
+  add_executable(nj2k_mq_lanes nj2k_mq_lanes.cpp)
+  target_link_libraries(nj2k_mq_lanes PRIVATE nj2k_t1_trace)
+  target_include_directories(nj2k_mq_lanes PRIVATE "${PROJECT_SOURCE_DIR}/include")
+  nj2k_fp_strict(nj2k_mq_lanes)
+  nj2k_simd(nj2k_mq_lanes)
+  nj2k_program_exceptions(nj2k_mq_lanes)
+endif()

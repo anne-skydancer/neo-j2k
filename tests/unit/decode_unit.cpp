@@ -37,6 +37,7 @@
 #include "../../src/dwt.h"
 #include "../../src/header.h"
 #include "../../src/mct.h"
+#include "../../src/output.h"
 #include "../../src/t1.h"
 
 using namespace nj2k::test;
@@ -741,7 +742,6 @@ void test_dp2()
 
 // ---- the kernels: scalar references against AVX2 ------------------------------------------------
 
-#if defined(__AVX2__)
 std::mt19937_64 g_rng(0x6e656f6a326bull);
 
 std::int32_t random_sample(bool wide)
@@ -775,6 +775,270 @@ std::int32_t random_float_sample()
     return static_cast<std::int32_t>(float_bits(f));
 }
 
+// Stage 2's fused output pass against the unfused steps it replaces (mct.h's transforms in place
+// over the whole buffers, the DC shift per row, then the copy of the low bits), in both builds:
+// every layout of the planes (the viewer's interleaved bottom-up raw image of 1 to 4 components,
+// planar, interleaved with a gap; 8, 16 and 32 bits), the colour transforms, random and edge
+// samples, odd widths; guard bytes around the planes stay untouched (the packed 3-byte store
+// overlaps). The second set aims at the viewer's 8-bit image: components of 1 to 8 unsigned bits
+// (the fused 8-bit pass, sixteen pixels a step), every component 5/3 or every one 9/7 or mixed,
+// widths around sixteen, tiny regions (a pixel at a time up to four pixels) and small contiguous
+// ones (finished as one run), rows padded or not.
+struct OutputCase {
+    std::uint32_t w, h, k;
+    nj2k::detail::Mct mct;
+    std::uint32_t type;
+    int layout;  // 0 interleaved, 1 planar, 2 interleaved with a gap
+    bool bottom_up;
+    std::size_t src_stride;
+    nj2k::detail::Finish f[4];
+};
+
+// the case's planes written by write_group against the unfused steps; bad: the planes differ,
+// guard: a byte outside them was written
+void output_case(const OutputCase& oc, bool& bad, bool& guard)
+{
+    using nj2k::detail::CopyComp;
+    using nj2k::detail::Mct;
+    const std::uint32_t w = oc.w, h = oc.h, k = oc.k;
+    const std::size_t ss = oc.type == NJ2K_SAMPLE_U8 ? 1 : oc.type == NJ2K_SAMPLE_U16 ? 2 : 4;
+    std::vector<std::vector<std::int32_t>> src(k), ref(k);
+    for (std::uint32_t c = 0; c < k; ++c) {
+        src[c].resize(oc.src_stride * h);
+        for (auto& v : src[c]) {
+            v = oc.f[c].reversible ? random_sample((g_rng() & 3) == 0) : random_float_sample();
+        }
+        ref[c] = src[c];
+    }
+    // the unfused reference: the transform over the whole buffers, then the shift per row
+    if (oc.mct == Mct::kRct) {
+        nj2k::detail::kernels::rct_scalar(ref[0].data(), ref[1].data(), ref[2].data(), ref[0].data(), ref[1].data(),
+                                          ref[2].data(), ref[0].size());
+    } else if (oc.mct == Mct::kIct) {
+        nj2k::detail::kernels::ict_scalar(ref[0].data(), ref[1].data(), ref[2].data(), ref[0].data(), ref[1].data(),
+                                          ref[2].data(), ref[0].size());
+    }
+    for (std::uint32_t c = 0; c < k; ++c) {
+        if (oc.f[c].reversible) {
+            nj2k::detail::dc_shift_53(ref[c].data(), w, h, oc.src_stride, oc.f[c].shift, oc.f[c].lo, oc.f[c].hi);
+        } else {
+            for (std::uint32_t j = 0; j < h; ++j) {
+                nj2k::detail::kernels::dc_shift_97_scalar(ref[c].data() + std::size_t(j) * oc.src_stride, w, oc.f[c].shift,
+                                                          oc.f[c].lo, oc.f[c].hi);
+            }
+        }
+    }
+    // the planes, with 64 guard bytes before and after
+    const std::uint32_t pixel = oc.layout == 1 ? 1 : (oc.layout == 2 ? k + 1 : k);
+    const std::size_t row = std::size_t(w) * pixel * ss + (oc.layout == 1 ? 3 : 0);
+    const std::size_t plane_bytes = row * h * (oc.layout == 1 ? k : 1);
+    std::vector<std::uint8_t> buf(plane_bytes + 128, 0xA5);
+    std::vector<nj2k_plane_t> planes(k);
+    for (std::uint32_t c = 0; c < k; ++c) {
+        std::uint8_t* base = buf.data() + 64 + (oc.layout == 1 ? c * row * h : c * ss);
+        std::int64_t rs = static_cast<std::int64_t>(row);
+        if (oc.bottom_up) {
+            base += (h - 1) * row;
+            rs = -rs;
+        }
+        planes[c] = nj2k_plane_t{base, rs, static_cast<NJ2K_UINT32>(pixel * ss), c};
+    }
+    auto expect = buf;
+    for (std::uint32_t c = 0; c < k; ++c) {
+        const std::ptrdiff_t off = static_cast<std::uint8_t*>(planes[c].data) - buf.data();
+        for (std::uint32_t j = 0; j < h; ++j) {
+            for (std::uint32_t i = 0; i < w; ++i) {
+                const std::int32_t v = ref[c][std::size_t(j) * oc.src_stride + i];
+                std::uint8_t* at =
+                    expect.data() + off + std::int64_t(j) * planes[c].row_stride + std::size_t(i) * planes[c].sample_stride;
+                if (ss == 1) {
+                    *at = static_cast<std::uint8_t>(v);
+                } else if (ss == 2) {
+                    const std::uint16_t u = static_cast<std::uint16_t>(v);
+                    std::memcpy(at, &u, 2);
+                } else {
+                    std::memcpy(at, &v, 4);
+                }
+            }
+        }
+    }
+    CopyComp cc[4];
+    for (std::uint32_t c = 0; c < k; ++c) {
+        cc[c] = CopyComp{src[c].data(), oc.src_stride, 0, 0, w, h, oc.f[c], c, true};
+    }
+    nj2k::detail::write_group(cc, k, oc.mct, oc.type, planes.data(), k);
+    bad = std::memcmp(buf.data() + 64, expect.data() + 64, plane_bytes) != 0;
+    guard = std::memcmp(buf.data(), expect.data(), 64) != 0 ||
+            std::memcmp(buf.data() + 64 + plane_bytes, expect.data() + 64 + plane_bytes, 64) != 0;
+}
+
+void test_output_fused()
+{
+    using nj2k::detail::Mct;
+    std::size_t cases = 0, bad = 0, guard_bad = 0;
+    auto run = [&](const OutputCase& oc) {
+        bool b = false, g = false;
+        output_case(oc, b, g);
+        ++cases;
+        bad += b;
+        guard_bad += g;
+    };
+    // any layout, type and precision
+    const std::uint32_t widths[] = {1, 2, 7, 8, 9, 10, 11, 17, 255, 256, 257, 300, 513};
+    for (int round = 0; round < 600; ++round) {
+        OutputCase oc{};
+        oc.w = widths[g_rng() % std::size(widths)];
+        oc.h = 1 + static_cast<std::uint32_t>(g_rng() % 5);
+        oc.k = 1 + static_cast<std::uint32_t>(g_rng() % 4);
+        oc.mct = Mct::kNone;
+        if (oc.k >= 3 && (g_rng() & 1)) {
+            oc.mct = (g_rng() & 1) ? Mct::kRct : Mct::kIct;
+        }
+        const std::uint32_t types[] = {NJ2K_SAMPLE_U8, NJ2K_SAMPLE_U8, NJ2K_SAMPLE_U16, NJ2K_SAMPLE_I32};
+        oc.type = types[g_rng() % 4];
+        oc.layout = static_cast<int>(g_rng() % 3);
+        oc.bottom_up = (g_rng() & 1) != 0;
+        oc.src_stride = oc.w + g_rng() % 5;
+        for (std::uint32_t c = 0; c < oc.k; ++c) {
+            bool reversible = (g_rng() & 1) != 0;
+            if (oc.mct == Mct::kRct) {
+                reversible = true;
+            } else if (oc.mct == Mct::kIct) {
+                reversible = false;
+            }
+            const std::uint32_t prec = 1 + static_cast<std::uint32_t>(g_rng() % 31);
+            const bool sgnd = (g_rng() & 3) == 0;
+            oc.f[c].reversible = reversible;
+            oc.f[c].shift = sgnd ? 0 : static_cast<std::int32_t>(1u << (prec - 1));
+            oc.f[c].lo = sgnd ? -static_cast<std::int32_t>(1u << (prec - 1)) : 0;
+            oc.f[c].hi = sgnd ? static_cast<std::int32_t>((1u << (prec - 1)) - 1) : static_cast<std::int32_t>((1u << prec) - 1);
+        }
+        run(oc);
+    }
+    const std::size_t general = cases;
+    // the viewer's 8-bit image: unsigned components of up to 8 bits, interleaved (now and then
+    // planar or with a gap), tiny, small and wide regions
+    const std::uint32_t u8_widths[] = {1, 2, 3, 4, 5, 15, 16, 17, 31, 32, 33, 47, 48, 64, 100, 1000};
+    for (int round = 0; round < 1500; ++round) {
+        OutputCase oc{};
+        oc.w = u8_widths[g_rng() % std::size(u8_widths)];
+        oc.h = 1 + static_cast<std::uint32_t>(g_rng() % (oc.w <= 5 ? 6 : 4));
+        oc.k = 1 + static_cast<std::uint32_t>(g_rng() % 4);
+        oc.mct = Mct::kNone;
+        if (oc.k >= 3 && (g_rng() % 4) != 0) {
+            oc.mct = (g_rng() & 1) ? Mct::kRct : Mct::kIct;
+        }
+        oc.type = NJ2K_SAMPLE_U8;
+        oc.layout = (g_rng() % 8) == 0 ? static_cast<int>(1 + g_rng() % 2) : 0;
+        oc.bottom_up = (g_rng() % 4) != 0;
+        oc.src_stride = (g_rng() & 1) ? oc.w : oc.w + 1 + g_rng() % 4;
+        // every component 5/3, every one 9/7 (each with its transform), or mixed now and then
+        const int kind = static_cast<int>(g_rng() % 8);
+        // no ICT with mixed components: a 5/3 component's integers taken as floats by the ICT can
+        // be NaN, and a NaN's payload depends on the compiler's operand order (doc/departures.md)
+        if (kind == 0 && oc.mct == Mct::kIct) {
+            oc.mct = Mct::kNone;
+        }
+        const bool all_rev = oc.mct == Mct::kRct || (oc.mct == Mct::kNone && (g_rng() & 1));
+        for (std::uint32_t c = 0; c < oc.k; ++c) {
+            const bool reversible = kind == 0 ? (g_rng() & 1) != 0 : all_rev;
+            const std::uint32_t prec = kind == 1 ? 9 + static_cast<std::uint32_t>(g_rng() % 4)
+                                                 : 1 + static_cast<std::uint32_t>(g_rng() % 8);
+            oc.f[c].reversible = reversible;
+            oc.f[c].shift = static_cast<std::int32_t>(1u << (prec - 1));
+            oc.f[c].lo = 0;
+            oc.f[c].hi = static_cast<std::int32_t>((1u << prec) - 1);
+        }
+        run(oc);
+    }
+    CHECK_MSG(bad == 0, "fused output: %zu of %zu cases differ from the unfused steps", bad, cases);
+    CHECK_MSG(guard_bad == 0, "fused output: %zu of %zu cases wrote outside their planes", guard_bad, cases);
+    std::printf("fused output: %zu cases against the unfused steps (%zu of them 8-bit images)\n", cases, cases - general);
+}
+
+// n int32 at a 64-byte boundary in buf, as the decoder's wavelet scratch is (the AVX2 5/3 kernels
+// load and store it aligned, as OpenJPEG's do)
+std::int32_t* aligned_ints(std::vector<std::int32_t>& buf, std::size_t n)
+{
+    buf.assign(n + 16, 0);
+    return reinterpret_cast<std::int32_t*>((reinterpret_cast<std::uintptr_t>(buf.data()) + 63) & ~std::uintptr_t(63));
+}
+
+// Stage 3's inverse wavelet against stage 1c's (OpenJPEG's structure), whole tile-components of
+// random geometry: 1 to 7 resolutions, odd and even origins and sizes, 1 to 300 samples a side,
+// random and special samples (9/7: extremes, NaN, infinities; 5/3: int32 wrap-around), in both
+// builds: the transform as decodes take it, its scalar kernels, and its row-wise path on every level
+// (decodes take it on large levels only). Some buffers have rows longer than the level (a padded
+// stride) and some decode fewer levels than the buffer holds (a cut stream, or a reduce factor
+// below the tile's own); the whole buffer is compared, so a write outside the decoded region shows.
+void test_dwt_whole()
+{
+    namespace dk = nj2k::detail;
+    std::size_t cases = 0, bad = 0, samples = 0, padded = 0, cut = 0;
+    for (int round = 0; round < 1500; ++round) {
+        const bool reversible = (round & 1) != 0;
+        const std::uint32_t numres_buf = 1 + static_cast<std::uint32_t>(g_rng() % 7);
+        const std::uint32_t numres = (g_rng() % 4) == 0 ? 1 + static_cast<std::uint32_t>(g_rng() % numres_buf) : numres_buf;
+        const std::int32_t x0 = static_cast<std::int32_t>(g_rng() % 9), y0 = static_cast<std::int32_t>(g_rng() % 9);
+        const std::int32_t big = (g_rng() % 8) == 0 ? 300 : 70;
+        const std::int32_t x1 = x0 + 1 + static_cast<std::int32_t>(g_rng() % big);
+        const std::int32_t y1 = y0 + 1 + static_cast<std::int32_t>(g_rng() % big);
+        dk::ResRect res[8];
+        for (std::uint32_t r = 0; r < numres_buf; ++r) {
+            const std::int32_t l = static_cast<std::int32_t>(numres_buf - 1 - r);
+            auto cdp = [l](std::int32_t v) { return static_cast<std::int32_t>((std::int64_t(v) + (std::int64_t(1) << l) - 1) >> l); };
+            res[r] = dk::ResRect{cdp(x0), cdp(y0), cdp(x1), cdp(y1)};
+        }
+        // the buffer: the tile's full level, its rows padded now and then
+        const std::uint32_t pad = (g_rng() % 4) == 0 ? 1 + static_cast<std::uint32_t>(g_rng() % 37) : 0;
+        const std::uint32_t w = static_cast<std::uint32_t>(res[numres_buf - 1].x1 - res[numres_buf - 1].x0) + pad;
+        const std::uint32_t h = static_cast<std::uint32_t>(res[numres_buf - 1].y1 - res[numres_buf - 1].y0);
+        padded += pad != 0;
+        cut += numres != numres_buf;
+        std::vector<std::int32_t> src(std::size_t(w) * h);
+        const bool wide = (g_rng() & 3) == 0;
+        for (auto& v : src) {
+            v = reversible ? random_sample(wide) : random_float_sample();
+        }
+        const std::size_t sa = dk::kernels::dwt_scratch_bytes_reference(res, numres, reversible);
+        const std::size_t sb = dk::dwt_scratch_bytes(res, numres, reversible);
+        std::vector<std::int32_t> buf_a, buf_b;
+        void* scratch_a = aligned_ints(buf_a, sa / 4 + 16);
+        void* scratch_b = aligned_ints(buf_b, sb / 4 + 16);
+        auto a = src, b = src;
+        dk::kernels::dwt_decode_reference(a.data(), w, res, numres, reversible, scratch_a);
+        dk::dwt_decode(b.data(), w, res, numres, reversible, scratch_b);
+        std::size_t diff = 0;
+        for (std::size_t i = 0; i < a.size(); ++i) {
+            diff += reversible ? a[i] != b[i] : !same_float_bits(a[i], b[i]);
+        }
+        // the scalar kernels, and the row-wise transform on every level (scalar and the build's)
+        for (int variant = 0; variant < 3; ++variant) {
+            auto c = src;
+            if (variant == 0) {
+                dk::kernels::dwt_decode_scalar(c.data(), w, res, numres, reversible, scratch_b);
+            } else {
+                dk::kernels::dwt_decode_row_wise(c.data(), w, res, numres, reversible, variant == 1, scratch_b);
+            }
+            for (std::size_t i = 0; i < a.size(); ++i) {
+                diff += reversible ? a[i] != c[i] : !same_float_bits(a[i], c[i]);
+            }
+        }
+        bad += diff != 0;
+        if (diff && bad <= 5) {
+            std::printf("dwt %s: %u resolutions, (%d, %d)-(%d, %d): %zu samples differ\n", reversible ? "5/3" : "9/7",
+                        numres, x0, y0, x1, y1, diff);
+        }
+        ++cases;
+        samples += src.size();
+    }
+    CHECK_MSG(bad == 0, "inverse wavelet: %zu of %zu tile-components differ from stage 1c's transform", bad, cases);
+    CHECK_MSG(padded > 100 && cut > 100, "inverse wavelet: too few padded (%zu) or cut (%zu) cases", padded, cut);
+    std::printf("inverse wavelet: %zu tile-components (%zu padded, %zu cut), %zu samples, against stage 1c's transform\n",
+                cases, padded, cut, samples);
+}
+
+#if defined(__AVX2__)
 void test_kernels_colour()
 {
     constexpr std::size_t n = (std::size_t(1) << 20) + 5;  // an odd tail after the 8-wide steps
@@ -786,8 +1050,8 @@ void test_kernels_colour()
             a2[i] = random_sample(wide);
         }
         auto b0 = a0, b1 = a1, b2 = a2;
-        nj2k::detail::kernels::rct_scalar(a0.data(), a1.data(), a2.data(), n);
-        nj2k::detail::kernels::rct_avx2(b0.data(), b1.data(), b2.data(), n);
+        nj2k::detail::kernels::rct_scalar(a0.data(), a1.data(), a2.data(), a0.data(), a1.data(), a2.data(), n);
+        nj2k::detail::kernels::rct_avx2(b0.data(), b1.data(), b2.data(), b0.data(), b1.data(), b2.data(), n);
         CHECK(a0 == b0 && a1 == b1 && a2 == b2);
     }
     for (std::size_t i = 0; i < n; ++i) {
@@ -797,8 +1061,8 @@ void test_kernels_colour()
     }
     {
         auto b0 = a0, b1 = a1, b2 = a2;
-        nj2k::detail::kernels::ict_scalar(a0.data(), a1.data(), a2.data(), n);
-        nj2k::detail::kernels::ict_avx2(b0.data(), b1.data(), b2.data(), n);
+        nj2k::detail::kernels::ict_scalar(a0.data(), a1.data(), a2.data(), a0.data(), a1.data(), a2.data(), n);
+        nj2k::detail::kernels::ict_avx2(b0.data(), b1.data(), b2.data(), b0.data(), b1.data(), b2.data(), n);
         std::size_t bad = 0;
         for (std::size_t i = 0; i < n; ++i) {
             bad += !same_float_bits(a0[i], b0[i]) || !same_float_bits(a1[i], b1[i]) || !same_float_bits(a2[i], b2[i]);
@@ -821,12 +1085,57 @@ void test_kernels_colour()
     }
 }
 
-// n int32 at a 64-byte boundary in buf, as the decoder's wavelet scratch is (the AVX2 5/3 kernels
-// load and store it aligned, as OpenJPEG's do)
-std::int32_t* aligned_ints(std::vector<std::int32_t>& buf, std::size_t n)
+// The fused pass's row kernels, scalar against AVX2
+void test_kernels_output()
 {
-    buf.assign(n + 16, 0);
-    return reinterpret_cast<std::int32_t*>((reinterpret_cast<std::uintptr_t>(buf.data()) + 63) & ~std::uintptr_t(63));
+    using nj2k::detail::Finish;
+    using nj2k::detail::Mct;
+    namespace kn = nj2k::detail::kernels;
+    std::size_t bad = 0, samples = 0;
+    const std::size_t lens[] = {0, 1, 7, 8, 9, 10, 15, 16, 17, 31, 255, 256, 1000, 4099};
+    for (int round = 0; round < 400; ++round) {
+        const std::size_t n = lens[g_rng() % std::size(lens)];
+        const bool fl = (g_rng() & 1) != 0;
+        std::vector<std::int32_t> a(n), b(n), c(n);
+        for (std::size_t i = 0; i < n; ++i) {
+            a[i] = fl ? random_float_sample() : random_sample((g_rng() & 3) == 0);
+            b[i] = fl ? random_float_sample() : random_sample((g_rng() & 3) == 0);
+            c[i] = fl ? random_float_sample() : random_sample((g_rng() & 3) == 0);
+        }
+        const Mct m = fl ? Mct::kIct : Mct::kRct;
+        std::vector<std::int32_t> s0(n), s1(n), s2(n), v0(n), v1(n), v2(n);
+        kn::mct_rows_scalar(m, a.data(), b.data(), c.data(), s0.data(), s1.data(), s2.data(), n);
+        kn::mct_rows_avx2(m, a.data(), b.data(), c.data(), v0.data(), v1.data(), v2.data(), n);
+        bad += s0 != v0 || s1 != v1 || s2 != v2;
+        const std::uint32_t prec = 1 + static_cast<std::uint32_t>(g_rng() % 31);
+        const bool sgnd = (g_rng() & 3) == 0;
+        Finish f{};
+        f.shift = sgnd ? 0 : static_cast<std::int32_t>(1u << (prec - 1));
+        f.lo = sgnd ? -static_cast<std::int32_t>(1u << (prec - 1)) : 0;
+        f.hi = sgnd ? static_cast<std::int32_t>((1u << (prec - 1)) - 1) : static_cast<std::int32_t>((1u << prec) - 1);
+        f.reversible = !fl;
+        kn::finish_row_scalar(s0.data(), n, f);
+        kn::finish_row_avx2(v0.data(), n, f);
+        bad += s0 != v0;
+        const std::uint32_t types[] = {NJ2K_SAMPLE_U8, NJ2K_SAMPLE_U16, NJ2K_SAMPLE_I32};
+        const std::uint32_t type = types[g_rng() % 3];
+        const std::uint32_t ss =
+            (type == NJ2K_SAMPLE_U8 ? 1u : type == NJ2K_SAMPLE_U16 ? 2u : 4u) * (1 + static_cast<std::uint32_t>(g_rng() % 2));
+        std::vector<std::uint8_t> o1(n * ss + 32, 0x5A), o2 = o1;
+        kn::store_scalar(s0.data(), n, type, o1.data(), ss);
+        kn::store_avx2(s0.data(), n, type, o2.data(), ss);
+        bad += o1 != o2;
+        for (std::uint32_t kk = 1; kk <= 4; ++kk) {
+            const std::int32_t* rows[4] = {s0.data(), s1.data(), s2.data(), v1.data()};
+            std::vector<std::uint8_t> p1(n * kk + 32, 0x5A), p2 = p1;
+            kn::store_u8_packed_scalar(rows, kk, n, p1.data());
+            kn::store_u8_packed_avx2(rows, kk, n, p2.data());
+            bad += p1 != p2;
+        }
+        samples += n;
+    }
+    CHECK_MSG(bad == 0, "output kernels: %zu rows differ between scalar and AVX2", bad);
+    std::printf("kernels: output rows %zu samples\n", samples);
 }
 
 // sn and dn of a line of len samples whose first sample has parity cas (OpenJPEG's rw_prev)
@@ -1001,19 +1310,268 @@ void test_memory_decode()
                 rq.size = n;
                 rq.capture = true;
                 const Outcome o = oracle->decode(rq);
-                const MemoryImage m = memory_decode(codec, *data, n, NJ2K_SAMPLE_I32, Layout::Planar);
-                std::string why;
-                CHECK_MSG(equal_to_oracle(m, o, NJ2K_SAMPLE_I32, why), "%s cut at %zu: %s", name.c_str(), n,
-                          why.c_str());
-                // a prefix of a valid file is never damaged: it decodes what arrived, or needs more
-                CHECK_MSG(m.ok ? m.status == NJ2K_TRUNCATED : m.status == NJ2K_E_NEED_DATA, "%s cut at %zu: status %s",
-                          name.c_str(), n, nj2k_status_string(m.status));
-                ++cut_decodes;
+                // int32 planes (a single tile decodes into them in place) and the viewer's 8-bit
+                // image (a single tile is finished on the way, or in place first when the stream
+                // ends before its last resolution and the decoded region is smaller than its buffer)
+                for (const std::uint32_t type : {NJ2K_SAMPLE_I32, NJ2K_SAMPLE_U8}) {
+                    const Layout layout = type == NJ2K_SAMPLE_I32 ? Layout::Planar : Layout::BottomUpInterleaved;
+                    const MemoryImage m = memory_decode(codec, *data, n, type, layout);
+                    std::string why;
+                    CHECK_MSG(equal_to_oracle(m, o, type, why), "%s cut at %zu type %u: %s", name.c_str(), n, type,
+                              why.c_str());
+                    // a prefix of a valid file is never damaged: it decodes what arrived, or needs more
+                    CHECK_MSG(m.ok ? m.status == NJ2K_TRUNCATED : m.status == NJ2K_E_NEED_DATA,
+                              "%s cut at %zu: status %s", name.c_str(), n, nj2k_status_string(m.status));
+                    ++cut_decodes;
+                }
             }
             nj2k_destroy_codec(codec);
         }
     }
     std::printf("memory decode: %zu whole-file and %zu prefix decodes equal to the oracle's\n", decodes, cut_decodes);
+}
+
+// Large single-tile images, made by the oracle's encoder (the viewer's upload: one tile, RLCP, 5/3
+// lossless or 9/7 lossy), whose levels reach the row-wise wavelet (5/3 from 512 x 512 samples a level,
+// 9/7 from 128 x 128; the corpus's 5/3 files stay below it), square and not: neo-j2k's memory decode
+// in every layout and its compatibility API's decode, each against the oracle's at reduce 0-2, and
+// cuts of each (the first resolutions only) into the viewer's 8-bit image and 16-bit planes.
+void test_large_generated()
+{
+    auto oracle = make_oracle_backend();
+    auto compat = make_neoj2k_backend();
+    const struct {
+        int w, h, comps;
+        bool reversible;
+    } images[] = {{1024, 1024, 3, true}, {2048, 600, 4, true}, {600, 2048, 1, true}, {2048, 600, 3, false}};
+    std::size_t decodes = 0;
+    for (const auto& im : images) {
+        // a texture: gradients, a few edges and noise, 8-bit interleaved, bottom-up as the viewer's
+        std::vector<std::uint8_t> raw(std::size_t(im.w) * im.h * im.comps);
+        for (int y = 0; y < im.h; ++y) {
+            for (int x = 0; x < im.w; ++x) {
+                for (int c = 0; c < im.comps; ++c) {
+                    const int edge = ((x / 97 + y / 61 + c) & 1) * 60;
+                    const int v = (x * (c + 1) / 9 + y / (c + 2) + edge + static_cast<int>(g_rng() % 23)) & 0xFF;
+                    raw[(std::size_t(y) * im.w + x) * im.comps + c] = static_cast<std::uint8_t>(v);
+                }
+            }
+        }
+        Bytes data;
+        CHECK_MSG(oracle->encode_upload(raw.data(), im.w, im.h, im.comps, im.reversible, data),
+                  "the oracle's encoder refused %dx%d", im.w, im.h);
+        for (int r = 0; r <= 2 && !data.empty(); ++r) {
+            Request rq;
+            rq.data = data.data();
+            rq.size = data.size();
+            rq.reduce = r;
+            rq.capture = true;
+            const Outcome o = oracle->decode(rq);
+            const Outcome n = compat->decode(rq);
+            CHECK_MSG(o.ok && n.ok && o.hash == n.hash, "%dx%d %s reduce %d: the compatibility API's decode differs",
+                      im.w, im.h, im.reversible ? "5/3" : "9/7", r);
+            nj2k_codec_t* codec = memory_codec(r);
+            CHECK(codec != nullptr);
+            if (!codec) {
+                return;
+            }
+            const struct {
+                std::uint32_t type;
+                Layout layout;
+            } variants[] = {{NJ2K_SAMPLE_I32, Layout::Planar},
+                            {NJ2K_SAMPLE_U8, Layout::BottomUpInterleaved},
+                            {NJ2K_SAMPLE_U16, Layout::PaddedRows},
+                            {NJ2K_SAMPLE_I32, Layout::Guarded}};
+            for (const auto& v : variants) {
+                const MemoryImage m = memory_decode(codec, data, data.size(), v.type, v.layout);
+                std::string why;
+                CHECK_MSG(equal_to_oracle(m, o, v.type, why) && m.guards_ok, "%dx%d %s reduce %d type %u layout %d: %s",
+                          im.w, im.h, im.reversible ? "5/3" : "9/7", r, v.type, int(v.layout), why.c_str());
+                ++decodes;
+            }
+            nj2k_destroy_codec(codec);
+        }
+        // cuts (RLCP: the first resolutions only, a decoded region smaller than the tile's buffer),
+        // the viewer's first request among them
+        nj2k_codec_t* codec = memory_codec(0);
+        CHECK(codec != nullptr);
+        for (const std::size_t n : {std::size_t(600), std::size_t(2000), data.size() / 20, data.size() / 3}) {
+            if (!codec || n >= data.size()) {
+                continue;
+            }
+            Request rq;
+            rq.data = data.data();
+            rq.size = n;
+            rq.capture = true;
+            const Outcome o = oracle->decode(rq);
+            for (const std::uint32_t type : {NJ2K_SAMPLE_U8, NJ2K_SAMPLE_U16}) {
+                const Layout layout = type == NJ2K_SAMPLE_U8 ? Layout::BottomUpInterleaved : Layout::PaddedRows;
+                const MemoryImage m = memory_decode(codec, data, n, type, layout);
+                std::string why;
+                CHECK_MSG(equal_to_oracle(m, o, type, why), "%dx%d %s cut at %zu type %u: %s", im.w, im.h,
+                          im.reversible ? "5/3" : "9/7", n, type, why.c_str());
+                ++decodes;
+            }
+        }
+        if (codec) {
+            nj2k_destroy_codec(codec);
+        }
+    }
+    std::printf("large generated images: %zu memory decodes and the compatibility API's equal to the oracle's\n",
+                decodes);
+}
+
+// The colour transform over three components whose decoded regions differ in shape but not in
+// size (component 0 subsampled across, 1 down, 2 across, so OpenJPEG's sample-count check passes):
+// OpenJPEG pairs the samples of the three buffers as flat arrays, so the fused pass cannot pair them
+// by place, and write_tile finishes the tile in place first and copies it. OpenJPEG's encoder keeps
+// the transform off for such components; the test sets it in the COD. One tile and a grid of tiles
+// (clipped at the image's edge), 5/3 and 9/7, reduce 0-3 (at 3 the counts differ and both refuse),
+// the memory decode in every layout and the compatibility API's, against the oracle.
+void test_mct_unpaired()
+{
+    auto oracle = make_oracle_backend();
+    auto compat = make_neoj2k_backend();
+    std::size_t decodes = 0;
+    for (int variant = 0; variant < 4; ++variant) {
+        EncodeSpec e;
+        e.width = 232;
+        e.height = 136;
+        e.dx = {2, 1, 2};
+        e.dy = {1, 2, 1};
+        e.tile = (variant & 1) ? 64 : 0;
+        e.reversible = (variant & 2) == 0;
+        e.numres = 4;
+        for (std::size_t c = 0; c < 3; ++c) {
+            const std::uint32_t w = (e.width + e.dx[c] - 1) / e.dx[c], h = (e.height + e.dy[c] - 1) / e.dy[c];
+            std::vector<std::uint8_t> plane(std::size_t(w) * h);
+            for (std::uint32_t y = 0; y < h; ++y) {
+                for (std::uint32_t x = 0; x < w; ++x) {
+                    plane[std::size_t(y) * w + x] =
+                        static_cast<std::uint8_t>(x * (c + 2) + y * (3 - c) + ((x / 13 + y / 7) & 1) * 90 + g_rng() % 17);
+                }
+            }
+            e.planes.push_back(std::move(plane));
+        }
+        Bytes data;
+        CHECK_MSG(oracle_encode(e, data), "the oracle's encoder refused variant %d", variant);
+        // the COD's multiple component transform byte (Lcod, Scod, progression, layers, then MCT)
+        std::size_t cod = 0;
+        for (std::size_t i = 2; i + 9 < data.size(); ++i) {
+            if (data[i] == 0xFF && data[i + 1] == 0x52) {
+                cod = i;
+                break;
+            }
+        }
+        CHECK_MSG(cod && data[cod + 8] == 0, "variant %d: no COD with the transform off", variant);
+        if (!cod) {
+            continue;
+        }
+        data[cod + 8] = 1;
+        for (int r = 0; r <= 3; ++r) {
+            Request rq;
+            rq.data = data.data();
+            rq.size = data.size();
+            rq.reduce = r;
+            rq.capture = true;
+            const Outcome o = oracle->decode(rq);
+            // at reduce 3 the three regions' sample counts differ (rounding), and both refuse the tile
+            CHECK_MSG(o.ok == (r < 3), "variant %d reduce %d: the oracle's outcome is not the expected one", variant, r);
+            const Outcome n = compat->decode(rq);
+            CHECK_MSG(n.ok == o.ok && (!o.ok || o.hash == n.hash),
+                      "variant %d reduce %d: the compatibility API's decode differs", variant, r);
+            nj2k_codec_t* codec = memory_codec(r);
+            CHECK(codec != nullptr);
+            if (!codec) {
+                return;
+            }
+            for (const Layout layout : {Layout::Planar, Layout::PaddedRows, Layout::Guarded}) {
+                for (const std::uint32_t type : {NJ2K_SAMPLE_I32, NJ2K_SAMPLE_U8, NJ2K_SAMPLE_U16}) {
+                    const MemoryImage m = memory_decode(codec, data, data.size(), type, layout);
+                    std::string why;
+                    CHECK_MSG(equal_to_oracle(m, o, type, why) && m.guards_ok, "variant %d reduce %d type %u layout %d: %s",
+                              variant, r, type, int(layout), why.c_str());
+                    ++decodes;
+                }
+            }
+            nj2k_destroy_codec(codec);
+        }
+    }
+    std::printf("colour transform over unpaired regions: %zu memory decodes and the compatibility API's equal to "
+                "the oracle's\n", decodes);
+}
+
+// A single tile whose last resolutions are never decoded: the viewer's upload (RLCP, one tile) with
+// a POC after the COD that ends the progression at resolution k, so the decoded region is the
+// level k - 1 of a buffer of the full level. OpenJPEG finishes the tile in place and hands the whole
+// buffer over; neo-j2k does the same (hand_over_whole). Every k, 5/3 and 9/7, three components and
+// four, into the viewer's 8-bit image, 16-bit planes, int32 planes (decoded into in place) and
+// through the compatibility API, against the oracle.
+void test_poc_fewer_resolutions()
+{
+    auto oracle = make_oracle_backend();
+    auto compat = make_neoj2k_backend();
+    std::size_t decodes = 0;
+    for (int variant = 0; variant < 4; ++variant) {
+        const int w = 160, h = 96, comps = (variant & 1) ? 4 : 3;
+        const bool reversible = (variant & 2) == 0;
+        std::vector<std::uint8_t> raw(std::size_t(w) * h * comps);
+        for (std::size_t i = 0; i < raw.size(); ++i) {
+            raw[i] = static_cast<std::uint8_t>((i * 7 / 5 + (i / 977) * 31 + g_rng() % 29) & 0xFF);
+        }
+        Bytes data;
+        CHECK_MSG(oracle->encode_upload(raw.data(), w, h, comps, reversible, data), "the oracle's encoder refused");
+        std::size_t sot = 0;
+        for (std::size_t i = 2; i + 1 < data.size(); ++i) {
+            if (data[i] == 0xFF && data[i + 1] == 0x90) {
+                sot = i;
+                break;
+            }
+        }
+        CHECK_MSG(sot != 0, "variant %d: no SOT", variant);
+        if (!sot) {
+            continue;
+        }
+        for (std::uint8_t k = 1; k <= 5; ++k) {
+            // POC: RSpoc 0, CSpoc 0, LYEpoc 65535, REpoc k, CEpoc comps, RLCP
+            const std::uint8_t poc[] = {0xFF, 0x5F, 0x00, 0x09, 0x00, 0x00, 0xFF, 0xFF, k, std::uint8_t(comps), 0x01};
+            Bytes file(data);
+            file.insert(file.begin() + std::ptrdiff_t(sot), std::begin(poc), std::end(poc));
+            for (int r = 0; r <= 1; ++r) {
+                Request rq;
+                rq.data = file.data();
+                rq.size = file.size();
+                rq.reduce = r;
+                rq.capture = true;
+                const Outcome o = oracle->decode(rq);
+                const Outcome n = compat->decode(rq);
+                CHECK_MSG(n.ok == o.ok && (!o.ok || o.hash == n.hash),
+                          "variant %d POC to resolution %u reduce %d: the compatibility API's decode differs", variant,
+                          unsigned(k), r);
+                nj2k_codec_t* codec = memory_codec(r);
+                CHECK(codec != nullptr);
+                if (!codec) {
+                    return;
+                }
+                const struct {
+                    std::uint32_t type;
+                    Layout layout;
+                } variants[] = {{NJ2K_SAMPLE_U8, Layout::BottomUpInterleaved},
+                                {NJ2K_SAMPLE_U16, Layout::PaddedRows},
+                                {NJ2K_SAMPLE_I32, Layout::Planar}};
+                for (const auto& v : variants) {
+                    const MemoryImage m = memory_decode(codec, file, file.size(), v.type, v.layout);
+                    std::string why;
+                    CHECK_MSG(equal_to_oracle(m, o, v.type, why), "variant %d POC to resolution %u reduce %d type %u: %s",
+                              variant, unsigned(k), r, v.type, why.c_str());
+                    ++decodes;
+                }
+                nj2k_destroy_codec(codec);
+            }
+        }
+    }
+    std::printf("a single tile's last resolutions not decoded (POC): %zu memory decodes and the compatibility "
+                "API's equal to the oracle's\n", decodes);
 }
 
 // ---- DP-12 ------------------------------------------------------------------------------------------
@@ -1577,7 +2135,7 @@ void test_zero_heap()
     for (const auto& path : expand_inputs(g_corpus)) {
         auto data = read_file(path);
         const auto mh = data ? parse_main_header(*data) : std::nullopt;
-        if (mh && mh->width() <= 256 && mh->height() <= 256 && base_name(path) != "edge_ppt_empty_tiles_97.j2k") {
+        if (mh && mh->width() <= 256 && mh->height() <= 256) {
             files.emplace_back(base_name(path), std::move(*data));
         }
     }
@@ -1658,17 +2216,99 @@ void test_zero_heap()
     }
 }
 
+// The zero-heap gate per request, as the bench counts it: the viewer's request (neo-j2k's own path,
+// one codec kept across every request, the Second Life limits, the header at reduce 0 then at the
+// viewer's factor, the decode into its 8-bit bottom-up image), every file whose sides are at most
+// max_side, at every reduce level and as the viewer cuts it (the bytes it asks for at that level,
+// the first 600 bytes), each request taken once and then again: the repeat asks the allocator for
+// nothing and calls no operator new, whatever was decoded before it. Without the end-of-decode
+// merge of the tile-part arena (Decoder::trim_after_decode), the repeat of a request whose tile-part
+// headers held more markers than any request before it made one allocation and two frees.
+void test_zero_heap_requests(const std::string& inputs, std::uint32_t max_side, const char* what)
+{
+    auto backend = make_neoj2k_memory_backend();
+    std::size_t files = 0, requests = 0, decoded = 0, failures = 0;
+    for (const auto& path : expand_inputs(inputs)) {
+        const auto data = read_file(path);
+        const auto mh = data ? parse_main_header(*data) : std::nullopt;
+        if (!mh || mh->width() > max_side || mh->height() > max_side) {
+            continue;
+        }
+        ++files;
+        const int grid_w = viewer::grid_side(mh->tiles_x(), mh->xtsiz), grid_h = viewer::grid_side(mh->tiles_y(), mh->ytsiz);
+        for (int r = 0; r <= 5; ++r) {
+            std::size_t sizes[3] = {data->size(), 0, 0};
+            if (r > 0) {
+                const auto b = viewer::data_size_j2c(grid_w, grid_h, r);
+                sizes[1] = b > 0 && std::uint64_t(b) < data->size() ? std::size_t(b) : 0;
+            }
+            if (r == 5 && data->size() > viewer::kFirstRequestBytes) {
+                sizes[2] = viewer::kFirstRequestBytes;
+            }
+            for (const std::size_t size : sizes) {
+                if (size == 0) {
+                    continue;
+                }
+                Request rq;
+                rq.data = data->data();
+                rq.size = size;
+                rq.reduce = r;
+                rq.mode = Mode::Viewer;
+                rq.inspect = false;
+                const Outcome first = backend->decode(rq);
+                const bool first_ok = first.ok;
+                // the whole file decodes at every level (the viewer's codec clamps the reduce
+                // factor), so the gate cannot pass on requests that were all refused; the viewer
+                // takes no image whose components differ in size (sub_420.j2k), refused before the decode
+                CHECK_MSG(first_ok || size != data->size() || first.stage == "geometry",
+                          "%s %s reduce %d: the whole file was refused (%s)", what, base_name(path).c_str(), r,
+                          first.stage.c_str());
+                backend->alloc_reset();
+                g_news = 0;
+                g_count_new = true;
+                const bool ok = backend->decode(rq).ok;
+                g_count_new = false;
+                std::uint64_t counts[4] = {};
+                backend->alloc_counts(counts);
+                ++requests;
+                decoded += ok;
+                CHECK_MSG(ok == first_ok, "%s %s reduce %d, %zu bytes: the repeat's outcome differs", what,
+                          base_name(path).c_str(), r, size);
+                CHECK_MSG(counts[0] == 0 && counts[2] == 0, "%s %s reduce %d, %zu bytes: %llu allocations, %llu frees on the repeat",
+                          what, base_name(path).c_str(), r, size, static_cast<unsigned long long>(counts[0]),
+                          static_cast<unsigned long long>(counts[2]));
+#if NJ2K_TEST_COUNT_NEW
+                CHECK_MSG(g_news == 0, "%s %s reduce %d, %zu bytes: %zu operator new on the repeat", what,
+                          base_name(path).c_str(), r, size, g_news.load());
+#endif
+                failures += (counts[0] + counts[2]) != 0;
+            }
+        }
+    }
+    CHECK_MSG(files > 0, "%s: no file up to %u x %u", what, max_side, max_side);
+    CHECK_MSG(decoded > 0, "%s: no request decoded", what);
+    std::printf("zero heap per request, %s: %zu files up to %u x %u, %zu requests repeated (%zu decoded), %zu with heap "
+                "calls\n",
+                what, files, max_side, max_side, requests, decoded, failures);
+}
+
 }  // namespace
 
 int main(int argc, char** argv)
 {
     console_reports();
     std::setvbuf(stdout, nullptr, _IONBF, 0);  // every line out before a crash
-    if (argc < 2) {
-        std::fprintf(stderr, "usage: nj2k_decode_unit <corpus folder>\n");
+    if (argc != 2 && !(argc == 4 && std::strcmp(argv[2], "--heap-files") == 0)) {
+        std::fprintf(stderr, "usage: nj2k_decode_unit <corpus folder> [--heap-files <list or folder>]\n");
         return 2;
     }
     g_corpus = argv[1];
+    if (argc == 4) {
+        // the zero-heap gate alone, on other files (the private bench corpus, locally)
+        test_zero_heap_requests(argv[3], 512, "files");
+        std::printf("%d checks, %d failures\n", g_checks, g_failures);
+        return g_failures ? 1 : 0;
+    }
     test_dp3();
     test_two_invk();
     test_dp2();
@@ -1676,13 +2316,19 @@ int main(int argc, char** argv)
     test_kernels_colour();
     test_kernels_store();
     test_kernels_wavelet();
+    test_kernels_output();
 #else
     std::printf("kernels: scalar build, no AVX2 versions to compare\n");
 #endif
+    test_output_fused();
+    test_dwt_whole();
     test_dp12();
     test_dp13();
     test_dp15();
     test_memory_decode();
+    test_large_generated();
+    test_mct_unpaired();
+    test_poc_fewer_resolutions();
     test_memory_states();
     test_memory_bound();
     test_clamp_tile_styles();
@@ -1692,6 +2338,7 @@ int main(int argc, char** argv)
     test_tile_memory_limit();
     test_viewer_path();
     test_zero_heap();
+    test_zero_heap_requests(g_corpus, 512, "corpus");
     std::printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures ? 1 : 0;
 }

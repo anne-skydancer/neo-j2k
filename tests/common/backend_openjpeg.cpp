@@ -138,6 +138,11 @@ private:
 
 }  // namespace
 
+bool oracle_encode(const EncodeSpec& spec, std::vector<std::uint8_t>& out)
+{
+    return REPLAY_NS::replay_encode(REPLAY_NS::linked_api(), spec, out);
+}
+
 std::unique_ptr<Backend> make_oracle_backend()
 {
     (void)single_thread_openjpeg();
@@ -165,8 +170,9 @@ std::unique_ptr<Backend> make_backend(const std::string& spec, std::string* erro
     if (spec == "neoj2k-memory") {
         return make_neoj2k_memory_backend();
     }
-    if (spec.rfind("lib:", 0) == 0) {
-        std::string path = spec.substr(4), name;
+    if (spec.rfind("lib:", 0) == 0 || spec.rfind("neolib:", 0) == 0) {
+        const bool neo = spec[0] == 'n';
+        std::string path = spec.substr(neo ? 7 : 4), name;
         const auto eq = path.rfind('=');
         if (eq != std::string::npos && eq > 2) {
             name = path.substr(eq + 1);
@@ -174,10 +180,10 @@ std::unique_ptr<Backend> make_backend(const std::string& spec, std::string* erro
         } else {
             name = base_name(path);
         }
-        return make_library_backend(path, name, error);
+        return neo ? make_neoj2k_library_backend(path, name, error) : make_library_backend(path, name, error);
     }
     if (error) {
-        *error = "unknown backend '" + spec + "' (oracle, neoj2k, neoj2k-memory, lib:<path>[=<name>])";
+        *error = "unknown backend '" + spec + "' (oracle, neoj2k, neoj2k-memory, lib:<path>[=<name>], neolib:<path>[=<name>])";
     }
     return nullptr;
 }

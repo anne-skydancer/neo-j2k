@@ -1,0 +1,605 @@
+// SPDX-License-Identifier: BSD-2-Clause
+// Copyright (c) 2026, Anne Skydancer (neo-j2k)
+//
+// The fused end of a tile's decode (output.h): the colour transform, the DC shift and the copy into
+// the image in one pass. The per-sample operations are mct.cpp's row kernels (OpenJPEG's, with its
+// notice there), called in OpenJPEG's order; this file adds the row loop and the stores.
+#include "output.h"
+
+#include <cstring>
+
+#include <neoj2k/neoj2k.h>
+
+#include "mct.h"
+
+#if defined(__AVX2__)
+#include <immintrin.h>
+#endif
+
+namespace nj2k::detail {
+
+namespace {
+
+// a row is finished and stored this many samples at a time (stack buffers of 4 x 512 bytes)
+constexpr std::size_t kChunk = 128;
+
+}  // namespace
+
+namespace kernels {
+
+// mct.cpp's row kernels (the one copy of OpenJPEG's per-sample operations), chosen per call
+void mct_rows_scalar(Mct mct, const std::int32_t* a, const std::int32_t* b, const std::int32_t* c, std::int32_t* oa,
+                     std::int32_t* ob, std::int32_t* oc, std::size_t n) noexcept
+{
+    if (mct == Mct::kRct) {
+        rct_scalar(a, b, c, oa, ob, oc, n);
+    } else {
+        ict_scalar(a, b, c, oa, ob, oc, n);
+    }
+}
+
+void finish_row_scalar(std::int32_t* p, std::size_t n, const Finish& f) noexcept
+{
+    if (f.reversible) {
+        dc_shift_53_scalar(p, n, f.shift, f.lo, f.hi);
+    } else {
+        dc_shift_97_scalar(p, n, f.shift, f.lo, f.hi);
+    }
+}
+
+// The low bits of each sample (opj_j2k_update_image_data's copy, then the caller's conversion)
+void store_scalar(const std::int32_t* row, std::size_t n, std::uint32_t sample_type, std::uint8_t* dst,
+                  std::uint32_t sample_stride) noexcept
+{
+    switch (sample_type) {
+    case NJ2K_SAMPLE_U8:
+        for (std::size_t i = 0; i < n; ++i) {
+            dst[i * sample_stride] = static_cast<std::uint8_t>(row[i]);
+        }
+        break;
+    case NJ2K_SAMPLE_U16:
+        for (std::size_t i = 0; i < n; ++i) {
+            const std::uint16_t v = static_cast<std::uint16_t>(row[i]);
+            std::memcpy(dst + i * sample_stride, &v, sizeof v);
+        }
+        break;
+    default:
+        if (sample_stride == sizeof(std::int32_t)) {
+            if (n) {  // an empty row may come with null pointers, which memcpy may not take
+                std::memcpy(dst, row, n * sizeof(std::int32_t));
+            }
+        } else {
+            for (std::size_t i = 0; i < n; ++i) {
+                std::memcpy(dst + i * sample_stride, row + i, sizeof(std::int32_t));
+            }
+        }
+        break;
+    }
+}
+
+// k rows interleaved into 8-bit pixels of k bytes
+void store_u8_packed_scalar(const std::int32_t* const* rows, std::uint32_t k, std::size_t n, std::uint8_t* dst) noexcept
+{
+    for (std::size_t i = 0; i < n; ++i) {
+        for (std::uint32_t c = 0; c < k; ++c) {
+            dst[i * k + c] = static_cast<std::uint8_t>(rows[c][i]);
+        }
+    }
+}
+
+#if defined(__AVX2__)
+void mct_rows_avx2(Mct mct, const std::int32_t* a, const std::int32_t* b, const std::int32_t* c, std::int32_t* oa,
+                   std::int32_t* ob, std::int32_t* oc, std::size_t n) noexcept
+{
+    if (mct == Mct::kRct) {
+        rct_avx2(a, b, c, oa, ob, oc, n);
+    } else {
+        ict_avx2(a, b, c, oa, ob, oc, n);
+    }
+}
+
+void finish_row_avx2(std::int32_t* p, std::size_t n, const Finish& f) noexcept
+{
+    if (f.reversible) {
+        dc_shift_53_avx2(p, n, f.shift, f.lo, f.hi);
+    } else {
+        dc_shift_97_avx2(p, n, f.shift, f.lo, f.hi);
+    }
+}
+
+void store_avx2(const std::int32_t* row, std::size_t n, std::uint32_t sample_type, std::uint8_t* dst,
+                std::uint32_t sample_stride) noexcept
+{
+    std::size_t i = 0;
+    if (sample_type == NJ2K_SAMPLE_U8 && sample_stride == 1) {
+        // the low byte of each lane, gathered into the low 8 bytes
+        const __m256i pick = _mm256_setr_epi8(0, 4, 8, 12, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 0, 4, 8, 12,
+                                              -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1);
+        const __m256i join = _mm256_setr_epi32(0, 4, 0, 0, 0, 0, 0, 0);
+        for (; i + 8 <= n; i += 8) {
+            __m256i v = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(row + i));
+            v = _mm256_permutevar8x32_epi32(_mm256_shuffle_epi8(v, pick), join);
+            _mm_storel_epi64(reinterpret_cast<__m128i*>(dst + i), _mm256_castsi256_si128(v));
+        }
+        store_scalar(row + i, n - i, sample_type, dst + i, 1);
+        return;
+    }
+    if (sample_type == NJ2K_SAMPLE_U16 && sample_stride == 2) {
+        const __m256i pick = _mm256_setr_epi8(0, 1, 4, 5, 8, 9, 12, 13, -1, -1, -1, -1, -1, -1, -1, -1, 0, 1, 4, 5, 8,
+                                              9, 12, 13, -1, -1, -1, -1, -1, -1, -1, -1);
+        for (; i + 8 <= n; i += 8) {
+            __m256i v = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(row + i));
+            v = _mm256_permute4x64_epi64(_mm256_shuffle_epi8(v, pick), 0x08);
+            _mm_storeu_si128(reinterpret_cast<__m128i*>(dst + i * 2), _mm256_castsi256_si128(v));
+        }
+        store_scalar(row + i, n - i, sample_type, dst + i * 2, 2);
+        return;
+    }
+    store_scalar(row, n, sample_type, dst, sample_stride);
+}
+
+void store_u8_packed_avx2(const std::int32_t* const* rows, std::uint32_t k, std::size_t n, std::uint8_t* dst) noexcept
+{
+    const __m256i ff = _mm256_set1_epi32(0xFF);
+    std::size_t i = 0;
+    switch (k) {
+    case 1:
+        store_avx2(rows[0], n, NJ2K_SAMPLE_U8, dst, 1);
+        return;
+    case 2: {
+        const __m256i pick = _mm256_setr_epi8(0, 1, 4, 5, 8, 9, 12, 13, -1, -1, -1, -1, -1, -1, -1, -1, 0, 1, 4, 5, 8,
+                                              9, 12, 13, -1, -1, -1, -1, -1, -1, -1, -1);
+        for (; i + 8 <= n; i += 8) {
+            const __m256i a = _mm256_and_si256(_mm256_loadu_si256(reinterpret_cast<const __m256i*>(rows[0] + i)), ff);
+            const __m256i b = _mm256_slli_epi32(_mm256_loadu_si256(reinterpret_cast<const __m256i*>(rows[1] + i)), 8);
+            __m256i w = _mm256_or_si256(a, b);
+            w = _mm256_permute4x64_epi64(_mm256_shuffle_epi8(w, pick), 0x08);
+            _mm_storeu_si128(reinterpret_cast<__m128i*>(dst + i * 2), _mm256_castsi256_si128(w));
+        }
+        break;
+    }
+    case 3: {
+        // each lane's four 3-byte pixels gathered into its low 12 bytes; the two 16-byte stores
+        // overlap, and the second writes 4 bytes into the next two pixels, which the next
+        // iteration (or the tail) writes again: the loop keeps two pixels beyond its eight
+        const __m256i pick = _mm256_setr_epi8(0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14, -1, -1, -1, -1, 0, 1, 2, 4, 5, 6,
+                                              8, 9, 10, 12, 13, 14, -1, -1, -1, -1);
+        const __m256i ffff = _mm256_set1_epi32(0xFFFF);
+        for (; i + 10 <= n; i += 8) {
+            const __m256i a = _mm256_and_si256(_mm256_loadu_si256(reinterpret_cast<const __m256i*>(rows[0] + i)), ff);
+            const __m256i b = _mm256_and_si256(
+                _mm256_slli_epi32(_mm256_loadu_si256(reinterpret_cast<const __m256i*>(rows[1] + i)), 8), ffff);
+            const __m256i c = _mm256_slli_epi32(_mm256_loadu_si256(reinterpret_cast<const __m256i*>(rows[2] + i)), 16);
+            __m256i w = _mm256_or_si256(_mm256_or_si256(a, b), c);
+            w = _mm256_shuffle_epi8(w, pick);
+            _mm_storeu_si128(reinterpret_cast<__m128i*>(dst + i * 3), _mm256_castsi256_si128(w));
+            _mm_storeu_si128(reinterpret_cast<__m128i*>(dst + i * 3 + 12), _mm256_extracti128_si256(w, 1));
+        }
+        break;
+    }
+    default: {
+        const __m256i ffff = _mm256_set1_epi32(0xFFFF);
+        const __m256i ffffff = _mm256_set1_epi32(0xFFFFFF);
+        for (; i + 8 <= n; i += 8) {
+            const __m256i a = _mm256_and_si256(_mm256_loadu_si256(reinterpret_cast<const __m256i*>(rows[0] + i)), ff);
+            const __m256i b = _mm256_and_si256(
+                _mm256_slli_epi32(_mm256_loadu_si256(reinterpret_cast<const __m256i*>(rows[1] + i)), 8), ffff);
+            const __m256i c = _mm256_and_si256(
+                _mm256_slli_epi32(_mm256_loadu_si256(reinterpret_cast<const __m256i*>(rows[2] + i)), 16), ffffff);
+            const __m256i d = _mm256_slli_epi32(_mm256_loadu_si256(reinterpret_cast<const __m256i*>(rows[3] + i)), 24);
+            const __m256i w = _mm256_or_si256(_mm256_or_si256(a, b), _mm256_or_si256(c, d));
+            _mm256_storeu_si256(reinterpret_cast<__m256i*>(dst + i * 4), w);
+        }
+        break;
+    }
+    }
+    const std::int32_t* rest[4] = {rows[0] + i, rows[1] + i, k > 2 ? rows[2] + i : nullptr, k > 3 ? rows[3] + i : nullptr};
+    store_u8_packed_scalar(rest, k, n - i, dst + i * k);
+}
+
+bool u8_fusable(const Finish& f) noexcept
+{
+    return f.lo >= 0 && f.hi <= 255 && f.lo <= f.hi && f.shift >= 0 && f.shift <= 32767;
+}
+
+namespace {
+
+// Two components' bytes as the packs below put them: in each 128-bit lane eight of the first,
+// then eight of the second
+inline __m256i bytes_of_two(std::int32_t a, std::int32_t b) noexcept
+{
+    const auto spread = [](std::int32_t v) { return static_cast<long long>(0x0101010101010101ull * std::uint8_t(v)); };
+    return _mm256_set_epi64x(spread(b), spread(a), spread(b), spread(a));
+}
+
+// K components, the colour transform M on the first three, every component reversible (5/3) or
+// none (9/7), C: some component's range narrower than [0, 255]: fused_u8_function picks the instance
+template <std::uint32_t K, Mct M, bool R, bool C>
+std::size_t fused_u8(const std::int32_t* const* src, const std::size_t* src_stride, const Finish* f, std::size_t n,
+                     std::uint32_t h, std::uint8_t* dst, std::int64_t dst_stride) noexcept
+{
+    const __m256 vrv = _mm256_set1_ps(1.402f), vgu = _mm256_set1_ps(0.34413f), vgv = _mm256_set1_ps(0.71414f),
+                 vbu = _mm256_set1_ps(1.772f);
+    const __m256 cap = _mm256_set1_ps(1073741824.0f);
+    __m256i shift[K];
+    for (std::uint32_t c = 0; c < K; ++c) {
+        shift[c] = _mm256_set1_epi16(static_cast<std::int16_t>(f[c].shift));
+    }
+    // the byte registers' ranges: x holds components 0 and 2 (0 alone for K = 1, 0 and 1 for K = 2),
+    // y components 1 and 3 (1 twice for K = 3)
+    const std::uint32_t xb = K == 2 ? 1 : (K == 1 ? 0 : 2), yb = K == 4 ? 3 : (K >= 2 ? 1 : 0), ya = K >= 2 ? 1 : 0;
+    const __m256i xlo = bytes_of_two(f[0].lo, f[xb].lo), xhi = bytes_of_two(f[0].hi, f[xb].hi);
+    [[maybe_unused]] const __m256i ylo = bytes_of_two(f[ya].lo, f[yb].lo), yhi = bytes_of_two(f[ya].hi, f[yb].hi);
+    // to bytes: the saturating pack to [0, 255], then, when a range is narrower, the clamp to it
+    auto to_bytes = [&](__m256i p, __m256i q, __m256i lo, __m256i hi) {
+        const __m256i v = _mm256_packus_epi16(p, q);
+        if constexpr (C) {
+            return _mm256_min_epu8(_mm256_max_epu8(v, lo), hi);
+        } else {
+            (void)lo;
+            (void)hi;
+            return v;
+        }
+    };
+    // the rows in locals: the byte stores could alias src[], which would reload it every step
+    const std::int32_t* rows[K];
+    for (std::uint32_t c = 0; c < K; ++c) {
+        rows[c] = src[c];
+    }
+    auto load = [&](std::uint32_t c, std::size_t at) {
+        return _mm256_loadu_si256(reinterpret_cast<const __m256i*>(rows[c] + at));
+    };
+    // the eight samples of every component at column at, as the DC shift takes them: int32, the 9/7
+    // ones rounded
+    auto eight = [&](std::size_t at, __m256i* v) {
+        std::uint32_t c = 0;
+        if constexpr (M == Mct::kIct) {
+            const __m256 y = _mm256_castsi256_ps(load(0, at)), u = _mm256_castsi256_ps(load(1, at)),
+                         w = _mm256_castsi256_ps(load(2, at));
+            v[0] = _mm256_castps_si256(_mm256_add_ps(y, _mm256_mul_ps(w, vrv)));
+            v[1] = _mm256_castps_si256(_mm256_sub_ps(_mm256_sub_ps(y, _mm256_mul_ps(u, vgu)), _mm256_mul_ps(w, vgv)));
+            v[2] = _mm256_castps_si256(_mm256_add_ps(y, _mm256_mul_ps(u, vbu)));
+            c = 3;
+        } else if constexpr (M == Mct::kRct) {
+            const __m256i y = load(0, at), u = load(1, at), w = load(2, at);
+            const __m256i g = _mm256_sub_epi32(y, _mm256_srai_epi32(_mm256_add_epi32(u, w), 2));
+            v[0] = _mm256_add_epi32(w, g);
+            v[1] = g;
+            v[2] = _mm256_add_epi32(u, g);
+            c = 3;
+        }
+        for (; c < K; ++c) {
+            v[c] = load(c, at);
+        }
+        if constexpr (!R) {
+            for (c = 0; c < K; ++c) {
+                v[c] = _mm256_cvtps_epi32(_mm256_min_ps(cap, _mm256_castsi256_ps(v[c])));
+            }
+        }
+    };
+    const std::size_t end = n & ~std::size_t(15);
+    std::uint8_t* out = dst;
+    for (std::uint32_t j = 0; j < h; ++j) {
+        if (j > 0) {  // the next row; never a pointer beyond the last
+            out += dst_stride;
+            for (std::uint32_t c = 0; c < K; ++c) {
+                rows[c] += src_stride[c];
+            }
+        }
+        for (std::size_t i = 0; i < end; i += 16) {
+            __m256i a[K], b[K], s[K];
+            eight(i, a);
+            eight(i + 8, b);
+            // int16, DC-shifted, in the pack's order: pixels 0-3, 8-11 | 4-7, 12-15
+            for (std::uint32_t c = 0; c < K; ++c) {
+                s[c] = _mm256_adds_epi16(_mm256_packs_epi32(a[c], b[c]), shift[c]);
+            }
+            std::uint8_t* d = out + i * K;
+            if constexpr (K == 1) {
+                // the pack's dwords: pixels 0-3, 8-11 (twice) | 4-7, 12-15 (twice)
+                const __m256i p = _mm256_permutevar8x32_epi32(to_bytes(s[0], s[0], xlo, xhi),
+                                                              _mm256_setr_epi32(0, 4, 1, 5, 0, 0, 0, 0));
+                _mm_storeu_si128(reinterpret_cast<__m128i*>(d), _mm256_castsi256_si128(p));
+            } else if constexpr (K == 2) {
+                // a lane's eight pixels of component 0, then of 1, into pairs: pixels 0-3, 8-11 | 4-7, 12-15
+                const __m256i pair = _mm256_setr_epi8(0, 8, 1, 9, 2, 10, 3, 11, 4, 12, 5, 13, 6, 14, 7, 15, 0, 8, 1, 9, 2, 10,
+                                                      3, 11, 4, 12, 5, 13, 6, 14, 7, 15);
+                const __m256i rg = _mm256_shuffle_epi8(to_bytes(s[0], s[1], xlo, xhi), pair);
+                _mm256_storeu_si256(reinterpret_cast<__m256i*>(d), _mm256_permute4x64_epi64(rg, 0xD8));
+            } else if constexpr (K == 3) {
+                const __m256i x = to_bytes(s[0], s[2], xlo, xhi), y = to_bytes(s[1], s[1], ylo, yhi);
+                const __m256i rg = _mm256_unpacklo_epi8(x, y), bg = _mm256_unpackhi_epi8(x, y);
+                const __m256i lo32 = _mm256_unpacklo_epi16(rg, bg);  // pixels 0-3 | 4-7: R, G, B, G
+                const __m256i hi32 = _mm256_unpackhi_epi16(rg, bg);  // pixels 8-11 | 12-15
+                const __m256i pick = _mm256_setr_epi8(0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14, -1, -1, -1, -1, 0, 1, 2, 4, 5,
+                                                      6, 8, 9, 10, 12, 13, 14, -1, -1, -1, -1);
+                const __m256i p = _mm256_shuffle_epi8(lo32, pick), q = _mm256_shuffle_epi8(hi32, pick);
+                // 12 bytes each; the first three stores write 4 bytes beyond theirs, which the next one
+                // writes again; the last writes its 12 alone
+                _mm_storeu_si128(reinterpret_cast<__m128i*>(d), _mm256_castsi256_si128(p));
+                _mm_storeu_si128(reinterpret_cast<__m128i*>(d + 12), _mm256_extracti128_si256(p, 1));
+                _mm_storeu_si128(reinterpret_cast<__m128i*>(d + 24), _mm256_castsi256_si128(q));
+                const __m128i last = _mm256_extracti128_si256(q, 1);
+                _mm_storel_epi64(reinterpret_cast<__m128i*>(d + 36), last);
+                const std::int32_t tail = _mm_extract_epi32(last, 2);
+                std::memcpy(d + 44, &tail, sizeof tail);
+            } else {
+                const __m256i x = to_bytes(s[0], s[2], xlo, xhi), y = to_bytes(s[1], s[3], ylo, yhi);
+                const __m256i rg = _mm256_unpacklo_epi8(x, y), ba = _mm256_unpackhi_epi8(x, y);
+                _mm256_storeu_si256(reinterpret_cast<__m256i*>(d), _mm256_unpacklo_epi16(rg, ba));       // pixels 0-7
+                _mm256_storeu_si256(reinterpret_cast<__m256i*>(d + 32), _mm256_unpackhi_epi16(rg, ba));  // 8-15
+            }
+        }
+    }
+    return end;
+}
+
+template <Mct M, bool R, bool C>
+FusedU8Fn fused_for(std::uint32_t k) noexcept
+{
+    if constexpr (M == Mct::kNone) {
+        switch (k) {
+        case 1:
+            return fused_u8<1, M, R, C>;
+        case 2:
+            return fused_u8<2, M, R, C>;
+        default:
+            break;
+        }
+    }
+    return k == 3 ? fused_u8<3, M, R, C> : k == 4 ? fused_u8<4, M, R, C> : nullptr;
+}
+
+template <bool C>
+FusedU8Fn fused_pick(Mct mct, bool r, std::uint32_t k) noexcept
+{
+    if (mct == Mct::kNone) {
+        return r ? fused_for<Mct::kNone, true, C>(k) : fused_for<Mct::kNone, false, C>(k);
+    }
+    return r ? fused_for<Mct::kRct, true, C>(k) : fused_for<Mct::kIct, false, C>(k);
+}
+
+}  // namespace
+
+// Sixteen pixels at a time, each sample in registers from its source to its byte: the colour
+// transform as mct_rows does it, then the DC shift in 16-bit lanes: for a component whose result
+// lies in [0, 255] (u8_fusable: 0 <= lo <= hi <= 255, 0 <= shift < 2^15) the 64-bit add and clamp
+// of dc_shift_53 / dc_shift_97 equal a saturating pack to int16, a saturating add of the shift, a
+// saturating pack to [0, 255] and, when [lo, hi] is narrower, a clamp to it (a sample beyond int16
+// saturates to the same side of the range as its true sum).
+// The 9/7 rounding is cvtps (ties to even, as finish_row's); min(2^30, v) first sends 2^31 and above
+// to hi, as dc_shift_97's blend does (2^30 is above every hi - shift), and keeps NaN, which cvtps
+// turns into INT_MIN, then lo. The bytes are the samples themselves, which is the low byte the
+// other stores keep. Every component 5/3 or every one 9/7, the colour transform the one that goes
+// with them (the RCT with the 5/3, the ICT with the 9/7); else there is no instance (nullptr).
+FusedU8Fn fused_u8_function(Mct mct, const Finish* f, std::uint32_t k) noexcept
+{
+    if (k < 1 || k > 4 || (mct != Mct::kNone && k < 3)) {
+        return nullptr;
+    }
+    const bool r = f[0].reversible;
+    bool narrow = false;
+    for (std::uint32_t c = 0; c < k; ++c) {
+        if (f[c].reversible != r || !u8_fusable(f[c])) {
+            return nullptr;
+        }
+        narrow = narrow || f[c].lo != 0 || f[c].hi != 255;
+    }
+    if (mct != Mct::kNone && (mct == Mct::kRct) != r) {
+        return nullptr;
+    }
+    return narrow ? fused_pick<true>(mct, r, k) : fused_pick<false>(mct, r, k);
+}
+#endif
+
+}  // namespace kernels
+
+namespace {
+
+#if defined(__AVX2__)
+#define NJ2K_K(name) kernels::name##_avx2
+#else
+#define NJ2K_K(name) kernels::name##_scalar
+#endif
+
+inline void mct_rows(Mct mct, const std::int32_t* a, const std::int32_t* b, const std::int32_t* c, std::int32_t* oa,
+                     std::int32_t* ob, std::int32_t* oc, std::size_t n) noexcept
+{
+    NJ2K_K(mct_rows)(mct, a, b, c, oa, ob, oc, n);
+}
+inline void finish_row(std::int32_t* p, std::size_t n, const Finish& f) noexcept
+{
+    NJ2K_K(finish_row)(p, n, f);
+}
+inline void store(const std::int32_t* row, std::size_t n, std::uint32_t type, std::uint8_t* dst, std::uint32_t ss) noexcept
+{
+    NJ2K_K(store)(row, n, type, dst, ss);
+}
+inline void store_packed(const std::int32_t* const* rows, std::uint32_t k, std::size_t n, std::uint8_t* dst) noexcept
+{
+    NJ2K_K(store_u8_packed)(rows, k, n, dst);
+}
+
+#undef NJ2K_K
+
+// Regions of at most this many pixels (the 1 x 1 floor of a reduced decode, 2 x 2) go a pixel at a
+// time, every operation inline (mct.h's sample functions, the ones the scalar kernels loop over):
+// the row kernels would run their scalar tails behind a call per component. From 3 x 3 on, the run
+// below (one call per kernel over the region's samples, full vectors) is faster.
+constexpr std::size_t kTinyPixels = 4;
+
+void write_tiny_packed(const CopyComp* comps, std::uint32_t k, Mct mct, std::uint8_t* dst, std::int64_t row_stride) noexcept
+{
+    const CopyComp& c0 = comps[0];
+    for (std::uint32_t j = 0; j < c0.h; ++j) {
+        const std::int32_t* src[4];
+        for (std::uint32_t c = 0; c < k; ++c) {
+            src[c] = comps[c].src + std::size_t(j) * comps[c].src_stride;
+        }
+        std::uint8_t* d = dst + static_cast<std::int64_t>(j) * row_stride;
+        for (std::uint32_t i = 0; i < c0.w; ++i) {
+            std::int32_t s[4];
+            for (std::uint32_t c = 0; c < k; ++c) {
+                s[c] = src[c][i];
+            }
+            if (mct == Mct::kRct) {
+                sample::rct(s[0], s[1], s[2]);
+            } else if (mct == Mct::kIct) {
+                sample::ict(s[0], s[1], s[2]);
+            }
+            for (std::uint32_t c = 0; c < k; ++c) {
+                const CopyComp& cc = comps[c];
+                std::int32_t v = s[c];
+                if (cc.finish) {
+                    v = cc.f.reversible ? sample::shift_53(v, cc.f.shift, cc.f.lo, cc.f.hi)
+                                        : sample::shift_97(v, cc.f.shift, cc.f.lo, cc.f.hi);
+                }
+                d[std::size_t(i) * k + c] = static_cast<std::uint8_t>(v);
+            }
+        }
+    }
+}
+
+}  // namespace
+
+void write_group(const CopyComp* comps, std::uint32_t k, Mct mct, std::uint32_t type, const nj2k_plane_t* planes,
+                 std::uint32_t numplanes) noexcept
+{
+    const CopyComp& c0 = comps[0];
+    if (c0.w == 0 || c0.h == 0) {
+        return;
+    }
+    // packed: one 8-bit plane each, the k components a pixel's consecutive bytes
+    const nj2k_plane_t* only[4] = {};
+    bool packed = type == NJ2K_SAMPLE_U8;
+    for (std::uint32_t c = 0; c < k && packed; ++c) {
+        std::uint32_t count = 0;
+        for (std::uint32_t d = 0; d < numplanes; ++d) {
+            if (planes[d].component == comps[c].component) {
+                only[c] = &planes[d];
+                ++count;
+            }
+        }
+        packed = count == 1 && only[c]->sample_stride == k &&
+                 static_cast<const std::uint8_t*>(only[c]->data) == static_cast<const std::uint8_t*>(only[0]->data) + c &&
+                 only[c]->row_stride == only[0]->row_stride;
+    }
+    std::uint8_t* packed_base =
+        packed ? static_cast<std::uint8_t*>(only[0]->data) + static_cast<std::int64_t>(c0.y) * only[0]->row_stride +
+                     std::size_t(c0.x) * k
+               : nullptr;
+    if (packed && std::size_t(c0.w) * c0.h <= kTinyPixels) {
+        write_tiny_packed(comps, k, mct, packed_base, only[0]->row_stride);
+        return;
+    }
+    std::uint32_t x_from = 0;  // the columns the fused 8-bit pass leaves to the chunks below
+#if defined(__AVX2__)
+    bool finished = packed && c0.w >= 16;
+    Finish f[4];
+    for (std::uint32_t c = 0; c < k && finished; ++c) {
+        finished = comps[c].finish;
+        f[c] = comps[c].f;
+    }
+    if (const kernels::FusedU8Fn fused = finished ? kernels::fused_u8_function(mct, f, k) : nullptr) {
+        const std::int32_t* src[4];
+        std::size_t stride[4];
+        for (std::uint32_t c = 0; c < k; ++c) {
+            src[c] = comps[c].src;
+            stride[c] = comps[c].src_stride;
+        }
+        x_from = static_cast<std::uint32_t>(fused(src, stride, f, c0.w, c0.h, packed_base, only[0]->row_stride));
+        if (x_from == c0.w) {
+            return;
+        }
+    }
+#endif
+    // A region of at most kChunk samples whose rows follow one another in every source (a small
+    // tile's whole buffer) is finished as one run, so the row kernels see full vectors and are called
+    // once, not once a row; its rows are then stored one by one.
+    std::uint32_t run_rows = 1;
+    if (x_from == 0 && c0.h > 1 && std::size_t(c0.w) * c0.h <= kChunk) {
+        bool contiguous = true;
+        for (std::uint32_t c = 0; c < k; ++c) {
+            contiguous = contiguous && comps[c].src_stride == c0.w;
+        }
+        run_rows = contiguous ? c0.h : 1;
+    }
+    alignas(32) std::int32_t tmp[4][kChunk];
+    for (std::uint32_t j = 0; j < c0.h; j += run_rows) {
+        for (std::uint32_t x = x_from; x < c0.w; x += static_cast<std::uint32_t>(kChunk)) {
+            const std::size_t row_n = c0.w - x < kChunk ? c0.w - x : kChunk;
+            const std::size_t n = row_n * run_rows;
+            std::uint32_t c = 0;
+            if (mct != Mct::kNone) {
+                mct_rows(mct, comps[0].src + std::size_t(j) * comps[0].src_stride + x,
+                         comps[1].src + std::size_t(j) * comps[1].src_stride + x,
+                         comps[2].src + std::size_t(j) * comps[2].src_stride + x, tmp[0], tmp[1], tmp[2], n);
+                c = 3;
+            }
+            for (; c < k; ++c) {
+                std::memcpy(tmp[c], comps[c].src + std::size_t(j) * comps[c].src_stride + x, n * sizeof(std::int32_t));
+            }
+            for (c = 0; c < k; ++c) {
+                if (comps[c].finish) {
+                    finish_row(tmp[c], n, comps[c].f);
+                }
+            }
+            const std::size_t xs = std::size_t(c0.x) + x;
+            for (std::uint32_t r = 0; r < run_rows; ++r) {
+                const std::size_t at = std::size_t(r) * row_n;
+                if (packed) {
+                    const std::int32_t* rows[4] = {tmp[0] + at, tmp[1] + at, tmp[2] + at, tmp[3] + at};
+                    store_packed(rows, k, row_n,
+                                 packed_base + static_cast<std::int64_t>(j + r) * only[0]->row_stride + std::size_t(x) * k);
+                    continue;
+                }
+                const std::int64_t y = static_cast<std::int64_t>(c0.y) + j + r;
+                for (c = 0; c < k; ++c) {
+                    for (std::uint32_t d = 0; d < numplanes; ++d) {
+                        const nj2k_plane_t& pl = planes[d];
+                        if (pl.component == comps[c].component) {
+                            store(tmp[c] + at, row_n, type,
+                                  static_cast<std::uint8_t*>(pl.data) + y * pl.row_stride + xs * pl.sample_stride,
+                                  pl.sample_stride);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+void finish_in_place_mct(const InPlaceComp* p, Mct mct) noexcept
+{
+    // every sample of the three buffers takes the transform (the buffers as flat arrays), then each
+    // component its DC shift; when the three have rows of the same width, a row at a time, each
+    // row's shift while it is in the cache
+    const std::uint32_t bw = p[0].buf_w;
+    const bool rows = p[1].buf_w == bw && p[2].buf_w == bw;
+    for (std::uint32_t j = 0; j < p[0].buf_h; ++j) {
+        const std::size_t at = std::size_t(j) * bw;
+        mct_rows(mct, p[0].data + at, p[1].data + at, p[2].data + at, p[0].data + at, p[1].data + at, p[2].data + at, bw);
+        for (std::uint32_t k = 0; rows && k < 3; ++k) {
+            if (p[k].active && j < p[k].h && p[k].w) {
+                finish_row(p[k].data + at, p[k].w, p[k].f);
+            }
+        }
+    }
+    for (std::uint32_t k = 0; !rows && k < 3; ++k) {
+        if (p[k].active) {
+            finish_in_place_one(p[k]);
+        }
+    }
+}
+
+void finish_in_place_one(const InPlaceComp& p) noexcept
+{
+    if (p.w == 0) {
+        return;
+    }
+    for (std::uint32_t j = 0; j < p.h; ++j) {
+        finish_row(p.data + std::size_t(j) * p.buf_w, p.w, p.f);
+    }
+}
+
+}  // namespace nj2k::detail

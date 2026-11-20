@@ -26,6 +26,7 @@ set(NJ2K_SOURCES
   t1.cpp
   dwt.cpp
   mct.cpp
+  output.cpp
 )
 # The decoder limit profiles are modules (owner decision D10): Second Life's is built in, OpenSim's
 # is its own source file, left out with NJ2K_PROFILE_OPENSIM=OFF.
@@ -141,6 +142,18 @@ if(NJ2K_BUILD_SHARED)
   set_target_properties(neoj2k_shared PROPERTIES EXPORT_NAME shared)
   add_library(neoj2k::shared ALIAS neoj2k_shared)
   list(APPEND NJ2K_LIBRARY_TARGETS neoj2k_shared)
+endif()
+
+# The lane-per-code-block MQ prototype bench's copy of the library (bench/nj2k_mq_lanes.cpp, stage
+# 4): Tier-1 built with its trace hook, which reports every MQ segment and decision. Never shipped
+# or installed; the library targets above are built without the hook. AVX2 builds only, as its one
+# user (bench/CMakeLists.txt).
+if(NJ2K_BUILD_BENCH AND NJ2K_SIMD STREQUAL "AVX2")
+  nj2k_cpu_check_objects(nj2k_t1_trace_cpu_check "NJ2K_STATIC")
+  add_library(nj2k_t1_trace STATIC $<TARGET_OBJECTS:nj2k_t1_trace_cpu_check>)
+  nj2k_library_common(nj2k_t1_trace)
+  target_compile_definitions(nj2k_t1_trace PUBLIC NJ2K_STATIC NJ2K_T1_TRACE)
+  nj2k_no_ipo(nj2k_t1_trace)
 endif()
 
 if(NJ2K_INSTALL AND NJ2K_LIBRARY_TARGETS)

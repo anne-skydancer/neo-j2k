@@ -8,6 +8,9 @@
 // pass takes OpenJPEG's SIMD formulas for each group of 16 columns and its scalar ones for the
 // rest, and the scalar build here does the same, so both builds give the same samples even where
 // the int32 arithmetic wraps. The 9/7 transform works on floats without contraction (D2).
+// Stage 3: a level of at least 128^2 samples (9/7) or 512^2 (5/3) is transformed row-wise, every
+// access along whole rows, the horizontal pass fused into the vertical one and the rows put in
+// order at the end; smaller levels, which fit in the first caches, keep OpenJPEG's structure.
 #pragma once
 
 #include <cstddef>
@@ -30,6 +33,21 @@ void dwt_decode(std::int32_t* data, std::uint32_t w, const ResRect* res, std::ui
                 void* scratch) noexcept;
 
 namespace kernels {
+// Stage 1c's transform, OpenJPEG's structure (eight rows or columns at a time, gathered into
+// opj_v8dwt_t), kept as the reference the current one is compared with (tests, the kernel bench),
+// and the scratch it needs.
+std::size_t dwt_scratch_bytes_reference(const ResRect* res, std::uint32_t numres, bool reversible) noexcept;
+void dwt_decode_reference(std::int32_t* data, std::uint32_t w, const ResRect* res, std::uint32_t numres,
+                          bool reversible, void* scratch) noexcept;
+// The current transform with the scalar kernels, in every build (the AVX2 build's dwt_decode uses
+// the AVX2 ones)
+void dwt_decode_scalar(std::int32_t* data, std::uint32_t w, const ResRect* res, std::uint32_t numres, bool reversible,
+                       void* scratch) noexcept;
+// The row-wise transform on every level, whatever its size (dwt_decode takes it from an area on),
+// with the scalar kernels or the build's
+void dwt_decode_row_wise(std::int32_t* data, std::uint32_t w, const ResRect* res, std::uint32_t numres,
+                         bool reversible, bool scalar, void* scratch) noexcept;
+
 // The lifting kernels, scalar references and AVX2 versions, for the kernel tests. The 5/3 ones
 // work on one row (h) or on cols columns at once (v); the 9/7 one on 8 rows or columns at once,
 // interleaved as OpenJPEG's opj_v8dwt_t (sn low then dn high, cas the parity of the first sample,

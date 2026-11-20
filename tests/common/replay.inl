@@ -717,4 +717,82 @@ inline bool replay_upload(const Api& A, const std::uint8_t* raw, int width, int 
     return ok;
 }
 
+// EncodeSpec's codestream (decoder.h)
+inline bool replay_encode(const Api& A, const nj2k::test::EncodeSpec& s, std::vector<std::uint8_t>& out)
+{
+    out.clear();
+    const std::size_t comps = s.planes.size();
+    if (comps == 0 || s.dx.size() != comps || s.dy.size() != comps) {
+        return false;
+    }
+    opj_cparameters_t p;
+    std::memset(&p, 0, sizeof(p));
+    A.opj_set_default_encoder_parameters(&p);
+    p.cod_format = OPJ_CODEC_J2K;
+    p.irreversible = s.reversible ? 0 : 1;
+    p.tcp_numlayers = 1;
+    p.tcp_rates[0] = s.reversible ? 0.0f : 8.0f;
+    p.cp_disto_alloc = 1;
+    p.numresolution = s.numres;
+    p.tcp_mct = static_cast<char>(s.mct ? 1 : 0);
+    if (s.tile) {
+        p.tile_size_on = OPJ_TRUE;
+        p.cp_tdx = static_cast<int>(s.tile);
+        p.cp_tdy = static_cast<int>(s.tile);
+    }
+    std::vector<opj_image_cmptparm_t> cp(comps);
+    for (std::size_t c = 0; c < comps; ++c) {
+        std::memset(&cp[c], 0, sizeof(cp[c]));
+        cp[c].prec = 8;
+        cp[c].dx = s.dx[c];
+        cp[c].dy = s.dy[c];
+        cp[c].w = (s.width + s.dx[c] - 1) / s.dx[c];
+        cp[c].h = (s.height + s.dy[c] - 1) / s.dy[c];
+        if (s.planes[c].size() != std::size_t(cp[c].w) * cp[c].h) {
+            return false;
+        }
+    }
+    opj_image_t* image = A.opj_image_create(static_cast<OPJ_UINT32>(comps), cp.data(), OPJ_CLRSPC_SRGB);
+    if (!image) {
+        return false;
+    }
+    image->x1 = s.width;
+    image->y1 = s.height;
+    for (std::size_t c = 0; c < comps; ++c) {
+        for (std::size_t i = 0; i < s.planes[c].size(); ++i) {
+            image->comps[c].data[i] = s.planes[c][i];
+        }
+    }
+    opj_codec_t* enc = A.opj_create_compress(OPJ_CODEC_J2K);
+    bool ok = enc != nullptr;
+    if (ok) {
+        A.opj_set_error_handler(enc, on_info, nullptr);
+        A.opj_set_warning_handler(enc, on_info, nullptr);
+        A.opj_set_info_handler(enc, on_info, nullptr);
+        ok = A.opj_setup_encoder(enc, &p, image) != 0;
+    }
+    opj_stream_t* st = nullptr;
+    Grow sink{&out};
+    if (ok) {
+        st = A.opj_stream_create(1 << 16, OPJ_FALSE);
+        ok = st != nullptr;
+    }
+    if (ok) {
+        A.opj_stream_set_user_data(st, &sink, nullptr);
+        A.opj_stream_set_write_function(st, grow_write);
+        A.opj_stream_set_skip_function(st, grow_skip);
+        A.opj_stream_set_seek_function(st, grow_seek);
+        ok = A.opj_start_compress(enc, image, st) && A.opj_encode(enc, st) && A.opj_end_compress(enc, st);
+    }
+    out.resize(ok ? sink.pos : 0);
+    if (st) {
+        A.opj_stream_destroy(st);
+    }
+    if (enc) {
+        A.opj_destroy_codec(enc);
+    }
+    A.opj_image_destroy(image);
+    return ok;
+}
+
 }  // namespace REPLAY_NS

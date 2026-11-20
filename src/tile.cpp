@@ -4,8 +4,8 @@
 // A tile's layout and its samples, after OpenJPEG 2.5.4's tcd.c: opj_tcd_init_tile for decoding
 // (the geometry of every tile-component, resolution, band, precinct and code-block, the step sizes
 // and the checks that refuse a tile) and opj_tcd_decode_tile after Tier-2 (opj_t1_decode_cblks for
-// a whole tile, opj_tcd_dwt_decode, opj_tcd_mct_decode, opj_tcd_dc_level_shift_decode), on flat
-// arrays in the work arena. Code-blocks without data are not run through Tier-1: their samples
+// a whole tile, opj_tcd_dwt_decode, and opj_tcd_mct_decode's checks; the colour transform and the DC
+// shift themselves are the output pass's, output.h), on flat arrays in the work arena. Code-blocks without data are not run through Tier-1: their samples
 // are written as zeros, which is what Tier-1 gives them, after OpenJPEG's bit-plane check.
 // OpenJPEG's notice:
 //
@@ -51,11 +51,10 @@
  */
 #include "tile.h"
 
+#include <bit>
 #include <climits>
 #include <cmath>
 #include <cstring>
-
-#include "mct.h"
 
 namespace nj2k::detail {
 
@@ -121,6 +120,14 @@ bool make_tree(WorkArena& arena, TagTree& t, std::uint32_t w, std::uint32_t h) n
     }
     t.nodes = arena.raw_array<TagNode>(std::size_t(total));
     return t.nodes != nullptr;
+}
+
+// 2^n as a double, exactly what std::ldexp(1.0, n) gives, for n in the normal range (-1022 to
+// 1023); Rb - expn lies in -30 to 40 here (a precision of 1 to 38 bits plus a gain of up to 2, a
+// step exponent of 0 to 31)
+inline double pow2(std::int32_t n) noexcept
+{
+    return std::bit_cast<double>(static_cast<std::uint64_t>(n + 1023) << 52);
 }
 
 }  // namespace
@@ -282,9 +289,9 @@ nj2k_status_t Tile::init(const TileInput& input, WorkArena& arena, const Message
                     const std::uint32_t step_index = resno == 0 ? 0 : 3 * resno - 2 + bandno;
                     std::uint32_t expn = 0, mant = 0;
                     params.quant->step(step_index, expn, mant);
-                    // Delta_b of equation E-3: pow(2.0, n) is exact, as ldexp is
-                    band.stepsize = static_cast<float>((1.0 + mant / 2048.0) *
-                                                       std::ldexp(1.0, Rb - static_cast<std::int32_t>(expn)));
+                    // Delta_b of equation E-3: pow(2.0, n) is exact, as ldexp is; pow2 builds the same
+                    // double from its exponent bits, without the C runtime's ldexp (a call per band)
+                    band.stepsize = static_cast<float>((1.0 + mant / 2048.0) * pow2(Rb - static_cast<std::int32_t>(expn)));
                     // Mb of equation E-2
                     band.numbps = static_cast<std::int32_t>(expn) + static_cast<std::int32_t>(params.quant->numgbits) - 1;
                 }
@@ -505,45 +512,28 @@ nj2k_status_t Tile::decode_samples(T1& t1, void* dwt_scratch, const std::uint32_
                 msg.emit(Messages::Error, "Tiles don't all have the same dimension. Skip the MCT step.\n");
                 return NJ2K_E_DATA;
             }
-            if (in->params[0].style->qmfbid == 1) {
-                mct_decode_rct(comps[0].data, comps[1].data, comps[2].data, l_samples);
-            } else {
-                mct_decode_ict(comps[0].data, comps[1].data, comps[2].data, l_samples);
-            }
+            mct = in->params[0].style->qmfbid == 1 ? Mct::kRct : Mct::kIct;
         } else {
             msg.emit(Messages::Error, "Number of components (%u) is inconsistent with a MCT. Skip the MCT step.\n",
                      numcomps);
         }
     }
-
-    // the DC level shift (opj_tcd_dc_level_shift_decode)
-    for (std::uint32_t compno = 0; compno < numcomps; ++compno) {
-        if (in->selected && !in->selected[compno]) {
-            continue;
-        }
-        TileComp& tc = comps[compno];
-        const SizComponent& sc = in->mh->comps[compno];
-        const Resolution& res = tc.res[resno_decoded[compno]];
-        const std::uint32_t w = static_cast<std::uint32_t>(res.x1 - res.x0);
-        const std::uint32_t h = static_cast<std::uint32_t>(res.y1 - res.y0);
-        std::int32_t lo, hi;
-        if (sc.sgnd) {
-            lo = -static_cast<std::int32_t>(1u << (sc.prec - 1));
-            hi = static_cast<std::int32_t>((1u << (sc.prec - 1)) - 1);
-        } else {
-            lo = 0;
-            hi = static_cast<std::int32_t>((1u << sc.prec) - 1);
-        }
-        if (w == 0 || h == 0) {
-            continue;
-        }
-        if (tc.params.style->qmfbid == 1) {
-            dc_shift_53(tc.data, w, h, tc.data_w, tc.dc_shift, lo, hi);
-        } else {
-            dc_shift_97(tc.data, w, h, tc.data_w, tc.dc_shift, lo, hi);
-        }
-    }
     return NJ2K_OK;
+}
+
+Finish Tile::finish_of(std::uint32_t compno) const noexcept
+{
+    const SizComponent& sc = in->mh->comps[compno];
+    const TileComp& tc = comps[compno];
+    Finish f{tc.dc_shift, 0, 0, tc.params.style->qmfbid == 1};
+    if (sc.sgnd) {
+        f.lo = -static_cast<std::int32_t>(1u << (sc.prec - 1));
+        f.hi = static_cast<std::int32_t>((1u << (sc.prec - 1)) - 1);
+    } else {
+        f.lo = 0;
+        f.hi = static_cast<std::int32_t>((1u << sc.prec) - 1);
+    }
+    return f;
 }
 
 }  // namespace nj2k::detail
