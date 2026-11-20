@@ -780,114 +780,175 @@ std::int32_t random_float_sample()
 // every layout of the planes (the viewer's interleaved bottom-up raw image of 1 to 4 components,
 // planar, interleaved with a gap; 8, 16 and 32 bits), the colour transforms, random and edge
 // samples, odd widths; guard bytes around the planes stay untouched (the packed 3-byte store
-// overlaps).
-void test_output_fused()
+// overlaps). The second set aims at the viewer's 8-bit image: components of 1 to 8 unsigned bits
+// (the fused 8-bit pass, sixteen pixels a step), every component 5/3 or every one 9/7 or mixed,
+// widths around sixteen, tiny regions (a pixel at a time up to four pixels) and small contiguous
+// ones (finished as one run), rows padded or not.
+struct OutputCase {
+    std::uint32_t w, h, k;
+    nj2k::detail::Mct mct;
+    std::uint32_t type;
+    int layout;  // 0 interleaved, 1 planar, 2 interleaved with a gap
+    bool bottom_up;
+    std::size_t src_stride;
+    nj2k::detail::Finish f[4];
+};
+
+// the case's planes written by write_group against the unfused steps; bad: the planes differ,
+// guard: a byte outside them was written
+void output_case(const OutputCase& oc, bool& bad, bool& guard)
 {
     using nj2k::detail::CopyComp;
-    using nj2k::detail::Finish;
+    using nj2k::detail::Mct;
+    const std::uint32_t w = oc.w, h = oc.h, k = oc.k;
+    const std::size_t ss = oc.type == NJ2K_SAMPLE_U8 ? 1 : oc.type == NJ2K_SAMPLE_U16 ? 2 : 4;
+    std::vector<std::vector<std::int32_t>> src(k), ref(k);
+    for (std::uint32_t c = 0; c < k; ++c) {
+        src[c].resize(oc.src_stride * h);
+        for (auto& v : src[c]) {
+            v = oc.f[c].reversible ? random_sample((g_rng() & 3) == 0) : random_float_sample();
+        }
+        ref[c] = src[c];
+    }
+    // the unfused reference: the transform over the whole buffers, then the shift per row
+    if (oc.mct == Mct::kRct) {
+        nj2k::detail::kernels::rct_scalar(ref[0].data(), ref[1].data(), ref[2].data(), ref[0].data(), ref[1].data(),
+                                          ref[2].data(), ref[0].size());
+    } else if (oc.mct == Mct::kIct) {
+        nj2k::detail::kernels::ict_scalar(ref[0].data(), ref[1].data(), ref[2].data(), ref[0].data(), ref[1].data(),
+                                          ref[2].data(), ref[0].size());
+    }
+    for (std::uint32_t c = 0; c < k; ++c) {
+        if (oc.f[c].reversible) {
+            nj2k::detail::dc_shift_53(ref[c].data(), w, h, oc.src_stride, oc.f[c].shift, oc.f[c].lo, oc.f[c].hi);
+        } else {
+            for (std::uint32_t j = 0; j < h; ++j) {
+                nj2k::detail::kernels::dc_shift_97_scalar(ref[c].data() + std::size_t(j) * oc.src_stride, w, oc.f[c].shift,
+                                                          oc.f[c].lo, oc.f[c].hi);
+            }
+        }
+    }
+    // the planes, with 64 guard bytes before and after
+    const std::uint32_t pixel = oc.layout == 1 ? 1 : (oc.layout == 2 ? k + 1 : k);
+    const std::size_t row = std::size_t(w) * pixel * ss + (oc.layout == 1 ? 3 : 0);
+    const std::size_t plane_bytes = row * h * (oc.layout == 1 ? k : 1);
+    std::vector<std::uint8_t> buf(plane_bytes + 128, 0xA5);
+    std::vector<nj2k_plane_t> planes(k);
+    for (std::uint32_t c = 0; c < k; ++c) {
+        std::uint8_t* base = buf.data() + 64 + (oc.layout == 1 ? c * row * h : c * ss);
+        std::int64_t rs = static_cast<std::int64_t>(row);
+        if (oc.bottom_up) {
+            base += (h - 1) * row;
+            rs = -rs;
+        }
+        planes[c] = nj2k_plane_t{base, rs, static_cast<NJ2K_UINT32>(pixel * ss), c};
+    }
+    auto expect = buf;
+    for (std::uint32_t c = 0; c < k; ++c) {
+        const std::ptrdiff_t off = static_cast<std::uint8_t*>(planes[c].data) - buf.data();
+        for (std::uint32_t j = 0; j < h; ++j) {
+            for (std::uint32_t i = 0; i < w; ++i) {
+                const std::int32_t v = ref[c][std::size_t(j) * oc.src_stride + i];
+                std::uint8_t* at =
+                    expect.data() + off + std::int64_t(j) * planes[c].row_stride + std::size_t(i) * planes[c].sample_stride;
+                if (ss == 1) {
+                    *at = static_cast<std::uint8_t>(v);
+                } else if (ss == 2) {
+                    const std::uint16_t u = static_cast<std::uint16_t>(v);
+                    std::memcpy(at, &u, 2);
+                } else {
+                    std::memcpy(at, &v, 4);
+                }
+            }
+        }
+    }
+    CopyComp cc[4];
+    for (std::uint32_t c = 0; c < k; ++c) {
+        cc[c] = CopyComp{src[c].data(), oc.src_stride, 0, 0, w, h, oc.f[c], c, true};
+    }
+    nj2k::detail::write_group(cc, k, oc.mct, oc.type, planes.data(), k);
+    bad = std::memcmp(buf.data() + 64, expect.data() + 64, plane_bytes) != 0;
+    guard = std::memcmp(buf.data(), expect.data(), 64) != 0 ||
+            std::memcmp(buf.data() + 64 + plane_bytes, expect.data() + 64 + plane_bytes, 64) != 0;
+}
+
+void test_output_fused()
+{
     using nj2k::detail::Mct;
     std::size_t cases = 0, bad = 0, guard_bad = 0;
+    auto run = [&](const OutputCase& oc) {
+        bool b = false, g = false;
+        output_case(oc, b, g);
+        ++cases;
+        bad += b;
+        guard_bad += g;
+    };
+    // any layout, type and precision
     const std::uint32_t widths[] = {1, 2, 7, 8, 9, 10, 11, 17, 255, 256, 257, 300, 513};
     for (int round = 0; round < 600; ++round) {
-        const std::uint32_t w = widths[g_rng() % std::size(widths)];
-        const std::uint32_t h = 1 + static_cast<std::uint32_t>(g_rng() % 5);
-        const std::uint32_t k = 1 + static_cast<std::uint32_t>(g_rng() % 4);
-        Mct mct = Mct::kNone;
-        if (k >= 3 && (g_rng() & 1)) {
-            mct = (g_rng() & 1) ? Mct::kRct : Mct::kIct;
+        OutputCase oc{};
+        oc.w = widths[g_rng() % std::size(widths)];
+        oc.h = 1 + static_cast<std::uint32_t>(g_rng() % 5);
+        oc.k = 1 + static_cast<std::uint32_t>(g_rng() % 4);
+        oc.mct = Mct::kNone;
+        if (oc.k >= 3 && (g_rng() & 1)) {
+            oc.mct = (g_rng() & 1) ? Mct::kRct : Mct::kIct;
         }
         const std::uint32_t types[] = {NJ2K_SAMPLE_U8, NJ2K_SAMPLE_U8, NJ2K_SAMPLE_U16, NJ2K_SAMPLE_I32};
-        const std::uint32_t type = types[g_rng() % 4];
-        const std::size_t ss = type == NJ2K_SAMPLE_U8 ? 1 : type == NJ2K_SAMPLE_U16 ? 2 : 4;
-        const int layout = static_cast<int>(g_rng() % 3);  // 0 interleaved, 1 planar, 2 interleaved with a gap
-        const bool bottom_up = (g_rng() & 1) != 0;
-        const std::size_t src_stride = w + g_rng() % 5;
-        std::vector<std::vector<std::int32_t>> src(k), ref(k);
-        Finish f[4];
-        for (std::uint32_t c = 0; c < k; ++c) {
+        oc.type = types[g_rng() % 4];
+        oc.layout = static_cast<int>(g_rng() % 3);
+        oc.bottom_up = (g_rng() & 1) != 0;
+        oc.src_stride = oc.w + g_rng() % 5;
+        for (std::uint32_t c = 0; c < oc.k; ++c) {
             bool reversible = (g_rng() & 1) != 0;
-            if (mct == Mct::kRct) {
+            if (oc.mct == Mct::kRct) {
                 reversible = true;
-            } else if (mct == Mct::kIct) {
+            } else if (oc.mct == Mct::kIct) {
                 reversible = false;
             }
             const std::uint32_t prec = 1 + static_cast<std::uint32_t>(g_rng() % 31);
             const bool sgnd = (g_rng() & 3) == 0;
-            f[c].reversible = reversible;
-            f[c].shift = sgnd ? 0 : static_cast<std::int32_t>(1u << (prec - 1));
-            f[c].lo = sgnd ? -static_cast<std::int32_t>(1u << (prec - 1)) : 0;
-            f[c].hi = sgnd ? static_cast<std::int32_t>((1u << (prec - 1)) - 1) : static_cast<std::int32_t>((1u << prec) - 1);
-            src[c].resize(src_stride * h);
-            for (auto& v : src[c]) {
-                v = reversible ? random_sample((g_rng() & 3) == 0) : random_float_sample();
-            }
-            ref[c] = src[c];
+            oc.f[c].reversible = reversible;
+            oc.f[c].shift = sgnd ? 0 : static_cast<std::int32_t>(1u << (prec - 1));
+            oc.f[c].lo = sgnd ? -static_cast<std::int32_t>(1u << (prec - 1)) : 0;
+            oc.f[c].hi = sgnd ? static_cast<std::int32_t>((1u << (prec - 1)) - 1) : static_cast<std::int32_t>((1u << prec) - 1);
         }
-        // the unfused reference: the transform over the whole buffers, then the shift per row
-        if (mct == Mct::kRct) {
-            nj2k::detail::kernels::rct_scalar(ref[0].data(), ref[1].data(), ref[2].data(), ref[0].data(),
-                                              ref[1].data(), ref[2].data(), ref[0].size());
-        } else if (mct == Mct::kIct) {
-            nj2k::detail::kernels::ict_scalar(ref[0].data(), ref[1].data(), ref[2].data(), ref[0].data(),
-                                              ref[1].data(), ref[2].data(), ref[0].size());
+        run(oc);
+    }
+    const std::size_t general = cases;
+    // the viewer's 8-bit image: unsigned components of up to 8 bits, interleaved (now and then
+    // planar or with a gap), tiny, small and wide regions
+    const std::uint32_t u8_widths[] = {1, 2, 3, 4, 5, 15, 16, 17, 31, 32, 33, 47, 48, 64, 100, 1000};
+    for (int round = 0; round < 1500; ++round) {
+        OutputCase oc{};
+        oc.w = u8_widths[g_rng() % std::size(u8_widths)];
+        oc.h = 1 + static_cast<std::uint32_t>(g_rng() % (oc.w <= 5 ? 6 : 4));
+        oc.k = 1 + static_cast<std::uint32_t>(g_rng() % 4);
+        oc.mct = Mct::kNone;
+        if (oc.k >= 3 && (g_rng() % 4) != 0) {
+            oc.mct = (g_rng() & 1) ? Mct::kRct : Mct::kIct;
         }
-        for (std::uint32_t c = 0; c < k; ++c) {
-            if (f[c].reversible) {
-                nj2k::detail::dc_shift_53(ref[c].data(), w, h, src_stride, f[c].shift, f[c].lo, f[c].hi);
-            } else {
-                for (std::uint32_t j = 0; j < h; ++j) {
-                    nj2k::detail::kernels::dc_shift_97_scalar(ref[c].data() + std::size_t(j) * src_stride, w, f[c].shift,
-                                                              f[c].lo, f[c].hi);
-                }
-            }
+        oc.type = NJ2K_SAMPLE_U8;
+        oc.layout = (g_rng() % 8) == 0 ? static_cast<int>(1 + g_rng() % 2) : 0;
+        oc.bottom_up = (g_rng() % 4) != 0;
+        oc.src_stride = (g_rng() & 1) ? oc.w : oc.w + 1 + g_rng() % 4;
+        // every component 5/3, every one 9/7 (each with its transform), or mixed now and then
+        const int kind = static_cast<int>(g_rng() % 8);
+        const bool all_rev = oc.mct == Mct::kRct || (oc.mct == Mct::kNone && (g_rng() & 1));
+        for (std::uint32_t c = 0; c < oc.k; ++c) {
+            const bool reversible = kind == 0 ? (g_rng() & 1) != 0 : all_rev;
+            const std::uint32_t prec = kind == 1 ? 9 + static_cast<std::uint32_t>(g_rng() % 4)
+                                                 : 1 + static_cast<std::uint32_t>(g_rng() % 8);
+            oc.f[c].reversible = reversible;
+            oc.f[c].shift = static_cast<std::int32_t>(1u << (prec - 1));
+            oc.f[c].lo = 0;
+            oc.f[c].hi = static_cast<std::int32_t>((1u << prec) - 1);
         }
-        // the planes, with 64 guard bytes before and after
-        const std::uint32_t pixel = layout == 1 ? 1 : (layout == 2 ? k + 1 : k);
-        const std::size_t row = std::size_t(w) * pixel * ss + (layout == 1 ? 3 : 0);
-        const std::size_t plane_bytes = row * h * (layout == 1 ? k : 1);
-        std::vector<std::uint8_t> buf(plane_bytes + 128, 0xA5);
-        std::vector<nj2k_plane_t> planes(k);
-        for (std::uint32_t c = 0; c < k; ++c) {
-            std::uint8_t* base = buf.data() + 64 + (layout == 1 ? c * row * h : c * ss);
-            std::int64_t rs = static_cast<std::int64_t>(row);
-            if (bottom_up) {
-                base += (h - 1) * row;
-                rs = -rs;
-            }
-            planes[c] = nj2k_plane_t{base, rs, static_cast<NJ2K_UINT32>(pixel * ss), c};
-        }
-        auto expect = buf;
-        for (std::uint32_t c = 0; c < k; ++c) {
-            const std::ptrdiff_t off = static_cast<std::uint8_t*>(planes[c].data) - buf.data();
-            for (std::uint32_t j = 0; j < h; ++j) {
-                for (std::uint32_t i = 0; i < w; ++i) {
-                    const std::int32_t v = ref[c][std::size_t(j) * src_stride + i];
-                    std::uint8_t* at = expect.data() + off + std::int64_t(j) * planes[c].row_stride +
-                                       std::size_t(i) * planes[c].sample_stride;
-                    if (ss == 1) {
-                        *at = static_cast<std::uint8_t>(v);
-                    } else if (ss == 2) {
-                        const std::uint16_t u = static_cast<std::uint16_t>(v);
-                        std::memcpy(at, &u, 2);
-                    } else {
-                        std::memcpy(at, &v, 4);
-                    }
-                }
-            }
-        }
-        CopyComp cc[4];
-        for (std::uint32_t c = 0; c < k; ++c) {
-            cc[c] = CopyComp{src[c].data(), src_stride, 0, 0, w, h, f[c], c, true};
-        }
-        nj2k::detail::write_group(cc, k, mct, type, planes.data(), k);
-        ++cases;
-        bad += std::memcmp(buf.data() + 64, expect.data() + 64, plane_bytes) != 0;
-        guard_bad += std::memcmp(buf.data(), expect.data(), 64) != 0 ||
-                     std::memcmp(buf.data() + 64 + plane_bytes, expect.data() + 64 + plane_bytes, 64) != 0;
+        run(oc);
     }
     CHECK_MSG(bad == 0, "fused output: %zu of %zu cases differ from the unfused steps", bad, cases);
     CHECK_MSG(guard_bad == 0, "fused output: %zu of %zu cases wrote outside their planes", guard_bad, cases);
-    std::printf("fused output: %zu cases against the unfused steps\n", cases);
+    std::printf("fused output: %zu cases against the unfused steps (%zu of them 8-bit images)\n", cases, cases - general);
 }
 
 // n int32 at a 64-byte boundary in buf, as the decoder's wavelet scratch is (the AVX2 5/3 kernels

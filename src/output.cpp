@@ -196,6 +196,7 @@ void store_u8_packed_avx2(const std::int32_t* const* rows, std::uint32_t k, std:
     const std::int32_t* rest[4] = {rows[0] + i, rows[1] + i, k > 2 ? rows[2] + i : nullptr, k > 3 ? rows[3] + i : nullptr};
     store_u8_packed_scalar(rest, k, n - i, dst + i * k);
 }
+
 #endif
 
 }  // namespace kernels
@@ -228,6 +229,44 @@ inline void store_packed(const std::int32_t* const* rows, std::uint32_t k, std::
 
 #undef NJ2K_K
 
+// Regions of at most this many pixels (the 1 x 1 floor of a reduced decode, 2 x 2) go a pixel at a
+// time, every operation inline (mct.h's sample functions, the ones the scalar kernels loop over):
+// the row kernels would run their scalar tails behind a call per component. From 3 x 3 on, the run
+// below (one call per kernel over the region's samples, full vectors) is faster.
+constexpr std::size_t kTinyPixels = 4;
+
+void write_tiny_packed(const CopyComp* comps, std::uint32_t k, Mct mct, std::uint8_t* dst, std::int64_t row_stride) noexcept
+{
+    const CopyComp& c0 = comps[0];
+    for (std::uint32_t j = 0; j < c0.h; ++j) {
+        const std::int32_t* src[4];
+        for (std::uint32_t c = 0; c < k; ++c) {
+            src[c] = comps[c].src + std::size_t(j) * comps[c].src_stride;
+        }
+        std::uint8_t* d = dst + static_cast<std::int64_t>(j) * row_stride;
+        for (std::uint32_t i = 0; i < c0.w; ++i) {
+            std::int32_t s[4];
+            for (std::uint32_t c = 0; c < k; ++c) {
+                s[c] = src[c][i];
+            }
+            if (mct == Mct::kRct) {
+                sample::rct(s[0], s[1], s[2]);
+            } else if (mct == Mct::kIct) {
+                sample::ict(s[0], s[1], s[2]);
+            }
+            for (std::uint32_t c = 0; c < k; ++c) {
+                const CopyComp& cc = comps[c];
+                std::int32_t v = s[c];
+                if (cc.finish) {
+                    v = cc.f.reversible ? sample::shift_53(v, cc.f.shift, cc.f.lo, cc.f.hi)
+                                        : sample::shift_97(v, cc.f.shift, cc.f.lo, cc.f.hi);
+                }
+                d[std::size_t(i) * k + c] = static_cast<std::uint8_t>(v);
+            }
+        }
+    }
+}
+
 }  // namespace
 
 void write_group(const CopyComp* comps, std::uint32_t k, Mct mct, std::uint32_t type, const nj2k_plane_t* planes,
@@ -252,11 +291,30 @@ void write_group(const CopyComp* comps, std::uint32_t k, Mct mct, std::uint32_t 
                  static_cast<const std::uint8_t*>(only[c]->data) == static_cast<const std::uint8_t*>(only[0]->data) + c &&
                  only[c]->row_stride == only[0]->row_stride;
     }
+    std::uint8_t* packed_base =
+        packed ? static_cast<std::uint8_t*>(only[0]->data) + static_cast<std::int64_t>(c0.y) * only[0]->row_stride +
+                     std::size_t(c0.x) * k
+               : nullptr;
+    if (packed && std::size_t(c0.w) * c0.h <= kTinyPixels) {
+        write_tiny_packed(comps, k, mct, packed_base, only[0]->row_stride);
+        return;
+    }
+    // A region of at most kChunk samples whose rows follow one another in every source (a small
+    // tile's whole buffer) is finished as one run, so the row kernels see full vectors and are called
+    // once, not once a row; its rows are then stored one by one.
+    std::uint32_t run_rows = 1;
+    if (c0.h > 1 && std::size_t(c0.w) * c0.h <= kChunk) {
+        bool contiguous = true;
+        for (std::uint32_t c = 0; c < k; ++c) {
+            contiguous = contiguous && comps[c].src_stride == c0.w;
+        }
+        run_rows = contiguous ? c0.h : 1;
+    }
     alignas(32) std::int32_t tmp[4][kChunk];
-    const std::int32_t* rows[4] = {tmp[0], tmp[1], tmp[2], tmp[3]};
-    for (std::uint32_t j = 0; j < c0.h; ++j) {
+    for (std::uint32_t j = 0; j < c0.h; j += run_rows) {
         for (std::uint32_t x = 0; x < c0.w; x += static_cast<std::uint32_t>(kChunk)) {
-            const std::size_t n = c0.w - x < kChunk ? c0.w - x : kChunk;
+            const std::size_t row_n = c0.w - x < kChunk ? c0.w - x : kChunk;
+            const std::size_t n = row_n * run_rows;
             std::uint32_t c = 0;
             if (mct != Mct::kNone) {
                 mct_rows(mct, comps[0].src + std::size_t(j) * comps[0].src_stride + x,
@@ -272,18 +330,24 @@ void write_group(const CopyComp* comps, std::uint32_t k, Mct mct, std::uint32_t 
                     finish_row(tmp[c], n, comps[c].f);
                 }
             }
-            const std::int64_t y = static_cast<std::int64_t>(c0.y) + j;
             const std::size_t xs = std::size_t(c0.x) + x;
-            if (packed) {
-                store_packed(rows, k, n, static_cast<std::uint8_t*>(only[0]->data) + y * only[0]->row_stride + xs * k);
-                continue;
-            }
-            for (c = 0; c < k; ++c) {
-                for (std::uint32_t d = 0; d < numplanes; ++d) {
-                    const nj2k_plane_t& pl = planes[d];
-                    if (pl.component == comps[c].component) {
-                        store(tmp[c], n, type, static_cast<std::uint8_t*>(pl.data) + y * pl.row_stride + xs * pl.sample_stride,
-                              pl.sample_stride);
+            for (std::uint32_t r = 0; r < run_rows; ++r) {
+                const std::size_t at = std::size_t(r) * row_n;
+                if (packed) {
+                    const std::int32_t* rows[4] = {tmp[0] + at, tmp[1] + at, tmp[2] + at, tmp[3] + at};
+                    store_packed(rows, k, row_n,
+                                 packed_base + static_cast<std::int64_t>(j + r) * only[0]->row_stride + std::size_t(x) * k);
+                    continue;
+                }
+                const std::int64_t y = static_cast<std::int64_t>(c0.y) + j + r;
+                for (c = 0; c < k; ++c) {
+                    for (std::uint32_t d = 0; d < numplanes; ++d) {
+                        const nj2k_plane_t& pl = planes[d];
+                        if (pl.component == comps[c].component) {
+                            store(tmp[c] + at, row_n, type,
+                                  static_cast<std::uint8_t*>(pl.data) + y * pl.row_stride + xs * pl.sample_stride,
+                                  pl.sample_stride);
+                        }
                     }
                 }
             }

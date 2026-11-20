@@ -48,9 +48,7 @@
  */
 #include "mct.h"
 
-#include <cmath>
 #include <cstdint>
-#include <cstring>
 
 #if defined(__AVX2__)
 #include <immintrin.h>
@@ -58,60 +56,17 @@
 
 namespace nj2k::detail {
 
-namespace {
-
-inline float as_float(std::int32_t v) noexcept
-{
-    float f;
-    std::memcpy(&f, &v, sizeof f);
-    return f;
-}
-
-inline std::int32_t as_int(float f) noexcept
-{
-    std::int32_t v;
-    std::memcpy(&v, &f, sizeof v);
-    return v;
-}
-
-inline std::int32_t wrap_add(std::int32_t a, std::int32_t b) noexcept
-{
-    return static_cast<std::int32_t>(static_cast<std::uint32_t>(a) + static_cast<std::uint32_t>(b));
-}
-
-inline std::int32_t wrap_sub(std::int32_t a, std::int32_t b) noexcept
-{
-    return static_cast<std::int32_t>(static_cast<std::uint32_t>(a) - static_cast<std::uint32_t>(b));
-}
-
-// One 9/7 sample: OpenJPEG's l_value > (float)INT_MAX -> max, < INT_MIN -> min, else lrintf plus the
-// shift in 64 bits, clamped; 2^31 itself gives max on every platform (DP-2), NaN gives min as on
-// every OpenJPEG build
-inline std::int32_t shift_97_one(float v, std::int32_t shift, std::int32_t lo, std::int32_t hi) noexcept
-{
-    if (v >= 2147483648.0f) {
-        return hi;
-    }
-    if (!(v >= -2147483648.0f)) {
-        return lo;  // below INT_MIN, or NaN
-    }
-    const std::int64_t r = static_cast<std::int64_t>(std::nearbyint(v)) + shift;
-    return r < lo ? lo : (r > hi ? hi : static_cast<std::int32_t>(r));
-}
-
-}  // namespace
-
 namespace kernels {
 
 void rct_scalar(const std::int32_t* c0, const std::int32_t* c1, const std::int32_t* c2, std::int32_t* o0,
                 std::int32_t* o1, std::int32_t* o2, std::size_t n) noexcept
 {
     for (std::size_t i = 0; i < n; ++i) {
-        const std::int32_t y = c0[i], u = c1[i], v = c2[i];
-        const std::int32_t g = wrap_sub(y, wrap_add(u, v) >> 2);
-        o0[i] = wrap_add(v, g);
-        o1[i] = g;
-        o2[i] = wrap_add(u, g);
+        std::int32_t a = c0[i], b = c1[i], c = c2[i];
+        sample::rct(a, b, c);
+        o0[i] = a;
+        o1[i] = b;
+        o2[i] = c;
     }
 }
 
@@ -119,28 +74,25 @@ void ict_scalar(const std::int32_t* c0, const std::int32_t* c1, const std::int32
                 std::int32_t* o1, std::int32_t* o2, std::size_t n) noexcept
 {
     for (std::size_t i = 0; i < n; ++i) {
-        const float y = as_float(c0[i]), u = as_float(c1[i]), v = as_float(c2[i]);
-        const float r = y + (v * 1.402f);
-        const float g = y - (u * 0.34413f) - (v * (0.71414f));
-        const float b = y + (u * 1.772f);
-        o0[i] = as_int(r);
-        o1[i] = as_int(g);
-        o2[i] = as_int(b);
+        std::int32_t a = c0[i], b = c1[i], c = c2[i];
+        sample::ict(a, b, c);
+        o0[i] = a;
+        o1[i] = b;
+        o2[i] = c;
     }
 }
 
 void dc_shift_53_scalar(std::int32_t* p, std::size_t n, std::int32_t shift, std::int32_t lo, std::int32_t hi) noexcept
 {
     for (std::size_t i = 0; i < n; ++i) {
-        const std::int64_t v = std::int64_t(p[i]) + shift;
-        p[i] = v < lo ? lo : (v > hi ? hi : static_cast<std::int32_t>(v));
+        p[i] = sample::shift_53(p[i], shift, lo, hi);
     }
 }
 
 void dc_shift_97_scalar(std::int32_t* p, std::size_t n, std::int32_t shift, std::int32_t lo, std::int32_t hi) noexcept
 {
     for (std::size_t i = 0; i < n; ++i) {
-        p[i] = shift_97_one(as_float(p[i]), shift, lo, hi);
+        p[i] = sample::shift_97(p[i], shift, lo, hi);
     }
 }
 

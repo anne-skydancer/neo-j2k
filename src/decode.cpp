@@ -1458,6 +1458,30 @@ struct Walk {
     nj2k_status_t hand_over_whole(Tile& t, const std::uint32_t* resno) noexcept
     {
         if (!sink.image_planes && !direct_tile) {
+            // The viewer's case first, with none of write_tile's grouping: every component decoded,
+            // at most four, each decoded region its whole buffer and all of one size (whole_fits:
+            // the image's), so they form one write_group pass, the colour transform's three paired
+            // by place, as write_tile would group them. A few-pixel decode is mostly this fixed cost.
+            if (!d.selected_mask && mh.numcomps <= 4) {
+                CopyComp cc[4];
+                const TileComp& t0 = t.comps[0];
+                bool one = true;
+                for (std::uint32_t c = 0; c < mh.numcomps && one; ++c) {
+                    const TileComp& tc = t.comps[c];
+                    const Resolution& r = tc.res[resno[c]];
+                    one = tc.data && std::uint32_t(r.x1 - r.x0) == tc.data_w && std::uint32_t(r.y1 - r.y0) == tc.data_h &&
+                          tc.data_w == t0.data_w && tc.data_h == t0.data_h;
+                    cc[c] = CopyComp{tc.data, tc.data_w, 0, 0, comps[c].w, comps[c].h, t.finish_of(c), c, true};
+                }
+                if (one) {
+                    write_group(cc, mh.numcomps, t.mct, sink.output->sample_type, sink.output->planes, sink.output->numplanes);
+                    for (std::uint32_t c = 0; c < mh.numcomps; ++c) {
+                        comps[c].resno_decoded = resno[c];
+                        comps[c].written = true;
+                    }
+                    return NJ2K_OK;
+                }
+            }
             bool whole = true;
             for (std::uint32_t c = 0; c < mh.numcomps && whole; ++c) {
                 if (d.selected_mask && !d.selected_mask[c]) {
