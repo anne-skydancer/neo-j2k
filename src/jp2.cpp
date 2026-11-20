@@ -247,6 +247,11 @@ struct Reader {
         // fails at the first entry the box lacks)
         const std::uint8_t* bits = p + 3;
         std::uint64_t entry_bytes = 0;
+#if defined(_MSC_VER) && !defined(__clang__)
+        // at most 255 columns: MSVC would otherwise give this loop an SSE4.1 version behind its run-time
+        // CPU check (__isa_available), which a scalar build must not hold (global_state)
+#pragma loop(no_vector)
+#endif
         for (std::uint32_t i = 0; i < channels; ++i) {
             const std::uint32_t bytes = ((bits[i] & 0x7Fu) + 1 + 7) >> 3;
             entry_bytes += bytes > 4 ? 4 : bytes;
