@@ -55,6 +55,9 @@
 #if defined(__AVX2__)
 #include <immintrin.h>
 #endif
+#if defined(_MSC_VER) && !defined(__clang__)
+#include <intrin.h>
+#endif
 
 namespace nj2k::detail {
 
@@ -133,6 +136,15 @@ constexpr OPJ_UINT32 J2K_CCP_CBLKSTY_LAZY = kCblkLazy, J2K_CCP_CBLKSTY_RESET = k
 // t1.c
 #define T1_FLAGS(x, y) (t1->flags[x + 1 + ((y / 4) + 1) * (t1->w + 2)])
 #define opj_t1_setcurctx(curctx, ctxno) curctx = &(mqc)->ctxs[(OPJ_UINT32)(ctxno)]
+
+// The Tier-1 trace of the lane-per-code-block MQ prototype bench (bench/nj2k_mq_lanes.cpp, stage
+// 4): a copy of the library built with NJ2K_T1_TRACE reports every MQ segment and decision. The
+// library itself is built without it, and the hooks compile to nothing.
+#if defined(NJ2K_T1_TRACE)
+#define NJ2K_T1_TRACE_DECISION(ctx, d) g_t1_trace.decision(g_t1_trace.user, static_cast<std::uint32_t>(ctx), (d))
+#else
+#define NJ2K_T1_TRACE_DECISION(ctx, d)
+#endif
 
 // ---- mqc_inl.h: the MQ decoder ----
 
@@ -219,17 +231,42 @@ static inline OPJ_UINT32 opj_mqc_raw_decode(opj_mqc_t *mqc)
         } \
 }
 
+// The renormalisation's shifts for a in [1, 0x7fff]: until a reaches 0x8000 (15 - floor(log2 a)),
+// with the instructions of the build's floor: lzcnt in the AVX2 build (x86-64-v3 has it), bsr in
+// the scalar one (MSVC's std::countl_zero would pick lzcnt at run time, which the scalar build's
+// object check refuses)
+inline OPJ_UINT32 mq_shifts(OPJ_UINT32 a) noexcept
+{
+#if defined(_MSC_VER) && !defined(__clang__)
+#if defined(__AVX2__)
+    return _lzcnt_u32(a) - 16U;
+#else
+    unsigned long msb;
+    _BitScanReverse(&msb, a);
+    return 15U - static_cast<OPJ_UINT32>(msb);
+#endif
+#else
+    return static_cast<OPJ_UINT32>(__builtin_clz(a)) - 16U;
+#endif
+}
+
 /* For internal use of opj_mqc_decode_macro() */
+/* neo-j2k (stage 4): the shifts counted at once (count-leading-zeros) and taken as many at a time */
+/* as c has bits left, a byte read whenever none is left: the same byte reads at the same shifts */
+/* as OpenJPEG's one-bit loop (a is 1 to 0x7fff here: 1 to 15 shifts) */
 #define opj_mqc_renormd_macro(mqc, a, c, ct) \
 { \
+    OPJ_UINT32 shifts_ = mq_shifts(a); \
     do { \
         if (ct == 0) { \
             opj_mqc_bytein_macro(mqc, c, ct); \
         } \
-        a <<= 1; \
-        c <<= 1; \
-        ct--; \
-    } while (a < 0x8000); \
+        const OPJ_UINT32 k_ = shifts_ < ct ? shifts_ : ct; \
+        a <<= k_; \
+        c <<= k_; \
+        ct -= k_; \
+        shifts_ -= k_; \
+    } while (shifts_ != 0); \
 }
 
 #define opj_mqc_decode_macro(d, mqc, curctx, a, c, ct) \
@@ -251,6 +288,7 @@ static inline OPJ_UINT32 opj_mqc_raw_decode(opj_mqc_t *mqc)
             d = (*curctx)->mps; \
         } \
     } \
+    NJ2K_T1_TRACE_DECISION(curctx - mqc->ctxs, d); \
 }
 
 #define DOWNLOAD_MQC_VARIABLES(mqc, curctx, a, c, ct) \
@@ -1420,6 +1458,16 @@ bool t1_decode_cblk(T1& t1_ref, const T1Block& b, const Messages& msg) noexcept
             opj_mqc_raw_init_dec(mqc, cblkdata + cblkdataindex, seg->len, OPJ_COMMON_CBLK_DATA_EXTRA);
         } else {
             opj_mqc_init_dec(mqc, cblkdata + cblkdataindex, seg->len, OPJ_COMMON_CBLK_DATA_EXTRA);
+#if defined(NJ2K_T1_TRACE)
+            {
+                std::uint8_t states[MQC_NUMCTXS];
+                for (OPJ_UINT32 k = 0; k < MQC_NUMCTXS; ++k) {
+                    states[k] = static_cast<std::uint8_t>(mqc->ctxs[k] - mqc_states);
+                }
+                g_t1_trace.segment(g_t1_trace.user, cblkdata + cblkdataindex, seg->len, states,
+                                   (cblksty & J2K_CCP_CBLKSTY_RESET) != 0);
+            }
+#endif
         }
         cblkdataindex += seg->len;
 
@@ -1460,6 +1508,15 @@ bool t1_decode_cblk(T1& t1_ref, const T1Block& b, const Messages& msg) noexcept
     }
     return true;
 }
+
+#if defined(NJ2K_T1_TRACE)
+T1Trace g_t1_trace{};
+
+const MqState* t1_trace_states() noexcept
+{
+    return mqc_states;
+}
+#endif
 
 namespace kernels {
 

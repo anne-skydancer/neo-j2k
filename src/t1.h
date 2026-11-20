@@ -107,6 +107,20 @@ bool t1_empty_cblk_ok(const T1Block& b, const Messages& msg) noexcept;
 void t1_store(const std::int32_t* src, std::uint32_t w, std::uint32_t h, std::uint32_t roishift, bool reversible,
               float stepsize, std::int32_t* dst, std::size_t stride) noexcept;
 
+#if defined(NJ2K_T1_TRACE)
+// The trace of the MQ prototype bench (t1.cpp): each MQ segment (its bytes, which the decoder ends
+// with its 0xFF 0xFF sentinel, the 19 contexts' state indices, whether contexts reset between
+// passes) and each decision (its context, its symbol). Never built into the library.
+struct T1Trace {
+    void* user;
+    void (*segment)(void* user, const std::uint8_t* data, std::uint32_t len, const std::uint8_t* states, bool reset);
+    void (*decision)(void* user, std::uint32_t ctx, std::uint32_t d);
+};
+extern T1Trace g_t1_trace;
+// OpenJPEG's 94 MQ states, in order (the state indices above)
+const MqState* t1_trace_states() noexcept;
+#endif
+
 namespace kernels {
 // Scalar references of the store kernels, compiled in every build; the library uses the AVX2 ones
 // when built for x86-64-v3. The kernel tests compare both bit for bit.
