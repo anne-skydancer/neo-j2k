@@ -52,7 +52,7 @@ GCC 14+, Clang), Python 3 for the checks. The library needs nothing else.
 |---|---|
 | `include/neoj2k/` | `neoj2k.h` (C API), `neoj2k_openjpeg.h` (OpenJPEG names), `neoj2k.hpp` (C++ wrapper), `compat/` |
 | `src/` | the library |
-| `oracle/` | OpenJPEG at the pinned fork commit (the stage 1a hotfix) and any patches `oracle/PIN` lists, built as the test oracle (`doc/oracle.md`) |
+| `oracle/` | OpenJPEG at the pinned fork commit (the head of the stage 1a hotfix branch, as the package `v2.5.4-cpu-avx2.5` builds it) and any patches `oracle/PIN` lists, built as the test oracle (`doc/oracle.md`) |
 | `tests/` | the runner (`nj2k_diff`), conformance, unit tests, the shared harness (`tests/common`) |
 | `corpus/generated/` | the generated corpus and the oracle's reference tables |
 | `fuzz/` | libFuzzer targets, dictionary, regression inputs |

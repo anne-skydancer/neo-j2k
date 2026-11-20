@@ -83,23 +83,4 @@ if(NJ2K_BUILD_TESTS)
   target_link_libraries(nj2k_fuzz_filter_check PRIVATE nj2k_test_common)
   nj2k_program_exceptions(nj2k_fuzz_filter_check)
   add_test(NAME fuzz_filters COMMAND nj2k_fuzz_filter_check "${CMAKE_CURRENT_SOURCE_DIR}/bombs" "${_nj2k_corpus}")
-
-  # Known defect OD-4 (doc/oracle.md): with its guard off, the round-trip target's input must still
-  # make OpenJPEG's MQ encoder write past its buffer. Only AddressSanitizer sees the write; the
-  # check fails once the pinned oracle no longer has the defect, so the list follows the pin.
-  if("address" IN_LIST NJ2K_SANITIZE)
-    add_test(NAME oracle_known_defect.od4
-             COMMAND nj2k_fuzz_roundtrip_replay "${PROJECT_SOURCE_DIR}/tests/known-defects/od4-roundtrip-mqc-termall-16bit.bin")
-    set_tests_properties(oracle_known_defect.od4 PROPERTIES
-      ENVIRONMENT "NJ2K_FUZZ_UNGUARDED=1"
-      PASS_REGULAR_EXPRESSION "heap-buffer-overflow")
-  endif()
-  # Known defect OD-6: with its guard off, the round-trip target's regression input must still come
-  # back with other samples (OpenJPEG's encoder overflows its two guard bits), on every compiler and
-  # platform; the replay driver turns the target's abort into an exit code after its report.
-  add_test(NAME oracle_known_defect.od6
-           COMMAND nj2k_fuzz_roundtrip_replay "${_nj2k_regressions}/roundtrip-guard-bit-overflow.bin")
-  set_tests_properties(oracle_known_defect.od6 PROPERTIES
-    ENVIRONMENT "NJ2K_FUZZ_UNGUARDED=1"
-    PASS_REGULAR_EXPRESSION "round trip: component 1: [0-9]+ of 1023 samples differ")
 endif()

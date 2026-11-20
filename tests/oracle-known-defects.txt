@@ -6,6 +6,6 @@
 # nj2k_diff layers fails on any other mismatch, and on a listed case that matches again, so the
 # list follows the pin. Each entry names its finding in doc/oracle.md.
 #
-# None at the pin (03b3cddc). OD-1, a cut packed-header stream with EPH refused, was listed here
+# None at the pin (841b2de4). OD-1, a cut packed-header stream with EPH refused, was listed here
 # until the fork's 1a review round fixed it (06efaa3c, 5c869d3a): packed_ppm_sop_eph_97.j2k now
 # decodes the layers that arrived at every layer boundary (doc/oracle.md).

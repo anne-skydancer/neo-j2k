@@ -11,9 +11,9 @@ audit B4: one definition), built into the tests.
 ## What it is
 
 - `oracle/PIN` names the fork (`anne-skydancer/openjpeg`), the commit and the patches (none today).
-- The pin: `03b3cddc`, the fork's `vkstorm-2.5.4-hotfix` branch as the published stage 1a package
-  `3p-openjpeg` `v2.5.4-cpu-avx2.4` builds it (its tag `2fe0ef2`), which the viewer ships. It is OpenJPEG
-  2.5.4 as the package `v2.5.4-cpu-avx2.3` ships it (`3b1a6a96`) with the 1a decoder fixes:
+- The pin: `841b2de4`, the head of the fork's `vkstorm-2.5.4-hotfix` branch, as the package `3p-openjpeg`
+  `v2.5.4-cpu-avx2.5` builds it (its tag `dc27a45`). It is OpenJPEG 2.5.4 as the package `v2.5.4-cpu-avx2.3`
+  ships it (`3b1a6a96`) with the 1a decoder fixes:
   - every complete codeword segment of a cut tile kept, a cut packet header an absent packet (`c51e47ed`:
     the fork audit's general truncation fix, which the oracle carried as a patch before);
   - a reduce factor checked before it applies (`14277522`);
@@ -27,10 +27,19 @@ audit B4: one definition), built into the tests.
     resolution decoded (W9) (`dfcc4d1c`);
   - packed packet headers (PPM, PPT) kept in step with the packets of a cut tile: an absent packet
     consumes its packed header, and a code-block that loses passes takes no more (`06efaa3c`, `5c869d3a`),
-    which fixed OD-1.
-- The pin follows the published hotfix: when the fork's package moves on (`v2.5.4-cpu-avx2.5`: the
-  windowed inverse wavelet of `opj_set_decode_area`, `f83f98e3`, and the encoder fixes for OD-4 and
-  OD-6, `e64db843` and `841b2de4`, on the branch but not packaged yet), the pin moves with it.
+    which fixed OD-1;
+
+  and the fixes `v2.5.4-cpu-avx2.5` adds:
+  - the windowed inverse wavelet of `opj_set_decode_area` starts from defined samples (`f83f98e3`): no
+    decoded sample changes, and neither the viewer nor the tests set a decode area;
+  - the MQ encoder's code-block buffer covers the passes a code-block terminates (`e64db843`), which fixed
+    OD-4;
+  - the encoder refuses an image whose code-blocks do not fit the guard bits of their band (`841b2de4`),
+    which fixed OD-6.
+
+  The viewer ships `v2.5.4-cpu-avx2.4` (`03b3cddc`) until its next OpenJPEG change; the two decode alike
+  (the move to the hotfix head, below).
+- The pin follows the published hotfix: when the fork's package moves on, the pin moves with it.
 - `oracle/openjp2/` holds the library sources the package compiles (no GPU back-ends, no tools), with
   OpenJPEG's own notices, and the fork's `LICENSE`. `tools/oracle_sync.py --verify` (CI, lint job)
   fetches the pinned commit, applies the patches and compares every file.
@@ -92,12 +101,33 @@ were, then re-recorded. Windows, MSVC 14.51.
 The 22 changed lines of `corpus/generated/oracle-reference.tsv` were re-recorded; nothing else changed,
 and the nightly table did not.
 
+## The move to the hotfix head (2026-11-20)
+
+From `03b3cddc` to `841b2de4` (the `v2.5.4-cpu-avx2.5` package), checked against the tables as they
+were, then recorded again. Windows, MSVC 14.51.
+
+| Check | Result |
+|---|---|
+| Generated corpus, whole files (756 decodes, reduce 0-5, plain and viewer) | identical |
+| Generated corpus, every cut point up to 4 KB (1,028,088 decodes, 1,056 digests) | identical |
+| Nightly table, cut points from 4 to 16 KB (1,239,348 decodes) | identical |
+| Both tables recorded again with the new pin | byte for byte the committed ones |
+| The corpus encoded again (`corpus_regenerates`) | byte for byte: the encoder's new refusal leaves every image it encoded as it was |
+| `oracle_known_defect.od6` | fails, as it should: the encoder refuses OD-6's image ("needs 3 bit planes, its band holds 2 with 2 guard bits") |
+| OD-4's input under AddressSanitizer, through the round-trip target without its TERMALL skip | its code-blocks are coded with no write past a buffer; the encode then fails in Tier-2 ("only 12 bytes remaining in output buffer. 62 needed"), as OpenJPEG refuses an image whose terminated passes outgrow the tile's output buffer |
+| The rest of CTest (header facts, layer boundaries, conformance, fuzz replays, known resource defects) | unchanged |
+
+No line changed: the decoder's only change, the windowed wavelet, is on no path the tables take. The
+checks of OD-4 and OD-6 left with their defects; their inputs are round-trip regressions in
+`fuzz/regressions`, and the round-trip target lost its TERMALL skip and its model of the guard bits
+(`doc/testing.md`).
+
 ## Known defects of the oracle
 
-Each has an input and a check that fails once the defect is gone, so the list follows the pin:
-`tests/oracle-known-defects.txt` (the layer-boundary check), `tests/oracle-known-resource-defects.txt`
-(heap requests, through the counting oracle module), `oracle_known_defect.od4` and
-`oracle_known_defect.od6`; the inputs are in `tests/known-defects`, `corpus/generated` and
+Each open defect has an input and a check that fails once the defect is gone, so the list follows the
+pin: `tests/oracle-known-defects.txt` (the layer-boundary check) and
+`tests/oracle-known-resource-defects.txt` (heap requests, through the counting oracle module). The
+inputs are in `tests/known-defects` and `corpus/generated`, those of fixed defects in
 `fuzz/regressions`. They are numbered OD-n, apart from the owner's decisions D1-D15 and the fork
 audit's findings O1-O3.
 
@@ -123,21 +153,24 @@ audit's findings O1-O3.
   with `nj2k_diff decode`. Input: `tests/known-defects/od3-psot-1g.j2k` (`Psot` = 1 GiB; its request asks
   the heap for 1,024 MiB). Fix for the fork: in non-strict mode allocate at most the bytes left. The fuzz
   filter keeps tile-parts above 64 MB from the oracle meanwhile; neo-j2k never allocates from `Psot`.
-- **OD-4: the MQ encoder writes past the code-block buffer** (fork audit S5, now confirmed). The lossless
+- **OD-4 (fixed at the pin): the MQ encoder wrote past the code-block buffer** (fork audit S5). The lossless
   round-trip fuzzer (ClusterFuzzLite, ASan) found a one-byte heap write past an 83-byte code-block buffer
   (`opj_mqc_byteout`, `mqc.c:494`, from `opj_mqc_flush`, allocated in
   `opj_tcd_code_block_enc_allocate_data` with 74 bytes plus 4 a sample): a 28x2 image, three 16-bit
   signed components, 4x32 code-blocks, RESET and TERMALL, four layers, EPH. Every terminated pass adds
   bytes the fixed margin does not cover; upstream PR #1649 reports the same with 16-bit input and
-  TERMALL. Reproduced with MSVC's ASan as well. The round-trip target skips TERMALL above 8 bits. That
+  TERMALL. Reproduced with MSVC's ASan as well. The round-trip target skipped TERMALL above 8 bits. That
   bound was probed under MSVC's ASan with random TERMALL encodes (every mode switch combination with it,
   1-64 px, 1-5 components, the colour transform, code-blocks of 4-64, up to four layers): 16,192 at 1-8
   bits and 1,947 at 9 bits wrote nothing past a buffer, while 9-16 bits overflowed in every batch of
   1,000. By count, 8 bits through the colour transform and the HH gain give at most 12 bit-planes, 34
   terminated passes of about two bytes each, inside 78 bytes for a one-sample code-block; 16 bits give
-  58 passes. The viewer's uploads (8-bit, no mode switches) do not reach it. Input:
-  `tests/known-defects/od4-roundtrip-mqc-termall-16bit.bin`; neo-j2k's encoder bounds its MQ output
-  (stage 6a).
+  58 passes. The viewer's uploads (8-bit, no mode switches) never reached it. The fork's `e64db843`
+  sizes the buffer for three bytes for each pass a code-block can terminate, part of the pin since
+  2026-11-20: the round-trip target skips TERMALL no more, and the input is a round-trip regression,
+  `fuzz/regressions/roundtrip-mqc-termall-16bit.bin`. Its encode now fails later, in Tier-2: the tile's
+  output buffer, sized from the samples, does not hold the terminated passes, and OpenJPEG refuses the
+  image there, with no write past a buffer. neo-j2k's encoder bounds its MQ output itself (stage 6a).
 - **OD-5: a reduced decode builds the structures of the full resolution.** `opj_tcd_init_tile`
   (`tcd.c:1013` at the pin) sets up the precincts, code-blocks (each with its segment array) and tag trees
   of every resolution, whatever the reduce factor; only the samples are sized to the decoded level. A
@@ -148,9 +181,9 @@ audit's findings O1-O3.
   set by the viewer. Input: `tests/known-defects/od5-fullres-cblk4-2048-rgba.j2k`. neo-j2k keeps
   header-only state for the resolutions it drops (plan section 2.11) and its limits bound the rest
   (stage 1b); the fuzz filter bounds the full-resolution code-blocks meanwhile.
-- **OD-6: the encoder's two guard bits overflow unchecked.** OpenJPEG's encoder gives every component
-  two guard bits (`opj_j2k_setup_encoder`, `j2k.c:8435-8438` at the pin; only the `GUARD_BITS=` option
-  of `opj_encoder_set_extra_options` changes it) and never checks that a code-block fits its band. A
+- **OD-6 (fixed at the pin): the encoder's two guard bits overflowed unchecked.** OpenJPEG's encoder
+  gives every component two guard bits (`opj_j2k_setup_encoder`, `j2k.c:8435-8438` at the pin; only the
+  `GUARD_BITS=` option of `opj_encoder_set_extra_options` changes it) and never checks that a code-block fits its band. A
   band holds Mb = precision + gain + guard bits - 1 bit planes (gain 0 for LL, 1 for HL and LH, 2 for
   HH), and the 5/3 transform can grow a band by up to 1.5 in each direction at every level, against
   the factor of 4 two guard bits leave. A code-block that needs more bit planes than its band holds
@@ -160,12 +193,13 @@ audit's findings O1-O3.
   request, run 44467415713): a 33 x 31 image of two signed 1-bit components at five resolutions, whose
   second component reaches 4 in the coarsest LL band, where two bit planes hold 3; 127 of that
   component's 1,023 samples come back different. With `GUARD_BITS=3` the image round-trips; at one to
-  four resolutions, or at 2 bits, the same samples do too. The round-trip target computes the
-  transform the encoder applies (the DC level shift, the RCT, the 5/3 levels) and compares the samples
-  only where every band fits; it still encodes and decodes the others. Input:
-  `fuzz/regressions/roundtrip-guard-bit-overflow.bin`; `oracle_known_defect.od6` checks that it still
-  comes back different with the guard off. The viewer's reversible uploads have the same two guard
-  bits (8-bit samples, the colour transform, six resolutions from 64 px), so a contrived texture could
-  come back different; real textures were not measured, nor the 9/7 path, which has the same guard
-  bits. neo-j2k's encoder keeps D9's byte identity wherever OpenJPEG's stream holds the image; what it
-  writes where it does not (more guard bits, or a refusal) is for stage 6a.
+  four resolutions, or at 2 bits, the same samples do too. The round-trip target computed the
+  transform the encoder applies (the DC level shift, the RCT, the 5/3 levels) and compared the samples
+  only where every band fit. The fork's `841b2de4`, part of the pin since 2026-11-20, makes the encoder
+  refuse such an image ("use at least 3 guard bits"), and every image it encoded correctly encodes as
+  before (`corpus_regenerates`): the round-trip target compares every stream the encoder writes, and
+  the input, `fuzz/regressions/roundtrip-guard-bit-overflow.bin`, stays a regression the encoder
+  refuses. The viewer's reversible uploads have the same two guard bits (8-bit samples, the colour
+  transform, six resolutions from 64 px), so a contrived texture could come back different until the
+  viewer takes the fixed package. neo-j2k's encoder is held to the oracle at this pin, its refusal
+  included (D9, stage 6a).

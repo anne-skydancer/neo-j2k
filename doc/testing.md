@@ -41,8 +41,6 @@ and tests both presets.
 | `oracle_cuts.<file>` | the same for every cut point of every generated file up to 4 KB (every 13th one in sanitizer builds) |
 | `oracle_layers` | a cut where a layer starts decodes exactly as the whole file limited to the layers before it (`cp_layer`): an oracle for cut semantics that does not depend on the truncation code (plan audit B5); the oracle's known cases are in `tests/oracle-known-defects.txt` |
 | `oracle_known_resources` | each input of `tests/known-defects` still makes the oracle ask the heap for what `tests/oracle-known-resource-defects.txt` says (OD-3, OD-5), through the counting oracle module (builds without sanitizers) |
-| `oracle_known_defect.od4` | with the round-trip target's guard off, its OD-4 input still makes the oracle's MQ encoder write past its buffer (AddressSanitizer builds) |
-| `oracle_known_defect.od6` | with the round-trip target's guard off, its OD-6 input (`fuzz/regressions`) still comes back with other samples: the oracle's encoder overflows its two guard bits (every compiler and platform) |
 | `conformance_class1` | ISO/IEC 15444-4 class 1, profiles 0 and 1, with the T.803 (2024) peak and MSE limits; skipped without the data |
 | `corpus_regenerates` | the oracle's encoder writes the committed corpus byte for byte on this compiler and platform: the encoder oracle that stage 6a's byte identity relies on |
 | `fuzz_replay.*` | the fuzz targets run over their seeds (the corpus; the JP2 header seeds, made by `fuzz_seeds.header`; the decode seeds with option bytes, made by `fuzz_seeds.decode`; `fuzz/seeds/roundtrip`) and `fuzz/regressions` on every platform; a replay fails when no input gets past the target's filters and guards, and the header target's when a header read differs from the oracle's without a departure to explain it |
@@ -205,8 +203,9 @@ Targets (`fuzz/`):
   clamps to the minimum and the other to the maximum (DP-2). Both targets replay OpenJPEG's
   conformance and non-regression data (318 files) without an unexplained difference.
 - `roundtrip`: a small image and its coding from the input, encoded losslessly and decoded: every sample
-  must come back, unless the transform outgrows the two guard bits the oracle's encoder gives each
-  band (OD-6): such an image is encoded and decoded without the comparison. Seeds: `fuzz/seeds/roundtrip`.
+  of every stream the encoder writes must come back. Nothing is skipped: the oracle's encoder refuses an
+  image its guard bits cannot hold (OD-6) and keeps terminated passes inside its buffers (OD-4), both
+  fixed at the pin. Seeds: `fuzz/seeds/roundtrip`.
 
 The round-trip target drives the oracle (until the encoder, stage 6a), and the header and decode targets
 run the oracle beside neo-j2k behind filters (`fuzz/fuzz_common.h`; for a JP2 file, applied to the
