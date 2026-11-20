@@ -363,6 +363,9 @@ NJ2K_BOOL nj2k_decoder_set_executor(nj2k_codec_t *codec, const nj2k_executor_t *
   splitting a decode there buys nothing and costs CPU (the saturated-host table in `doc/bench.md`). The
   library keeps no count of what else runs, so it cannot tell; with an executor lent it threads every tile
   of 2^18 samples or more, a 1,024 x 1,024 RGB texture included, and with none it never threads.
+  A host that lends a high-concurrency executor may want to raise `nj2k_decoder_set_retained_bytes`: the
+  default 8 MiB trim of what a decoder keeps may make it re-allocate its scratch on every decode of a
+  512 x 512 texture at concurrency 64 (a performance effect only).
 - What runs through it: Tier-1 (the code-blocks, listed in OpenJPEG's order on the calling thread and cut
   into contiguous runs of about equal estimated cost before anything is decoded), the
   inverse wavelet's large levels (the horizontal lifting in bands of rows, the vertical lifting in

@@ -2743,6 +2743,30 @@ void test_threads(const std::string& files)
         CHECK_MSG(pool.batches() == edge, "the executor ran a batch for a single 511 x 511 tile");
         (void)threaded_decode(codec, one512, one512.size(), NJ2K_SAMPLE_U8, Layout::BottomUpInterleaved, m, false);
         CHECK_MSG(pool.batches() > edge, "the executor was not used for a single 512 x 512 tile");
+        // the floor applies to the decoded size: a 1,024 x 1,024 image decoded at reduce 1 (512 x 512) is
+        // threaded, at reduce 2 (256 x 256) it is not, RGB and grey alike (default thresholds)
+        {
+            const Bytes grey1024 = small_tiles_image(1024, 1024);
+            const Bytes* images[] = {&large.back().second, &grey1024};
+            for (const Bytes* img : images) {
+                for (int reduce = 1; reduce <= 2; ++reduce) {
+                    std::string mr;
+                    nj2k_codec_t* rc = threaded_codec(reduce, &pool, 8, false, mr);
+                    CHECK(rc != nullptr);
+                    const std::uint64_t pre = pool.batches();
+                    if (rc) {
+                        (void)threaded_decode(rc, *img, img->size(), NJ2K_SAMPLE_U8, Layout::BottomUpInterleaved, mr,
+                                              false);
+                        nj2k_destroy_codec(rc);
+                    }
+                    if (reduce == 1) {
+                        CHECK_MSG(pool.batches() > pre, "no batch for a 1024 x 1024 image decoded at reduce 1");
+                    } else {
+                        CHECK_MSG(pool.batches() == pre, "a batch for a 1024 x 1024 image decoded at reduce 2");
+                    }
+                }
+            }
+        }
         // a 1,024 x 1,024 RGB image in one tile (2^20 samples a component, above the 2^18 floor) is
         // threaded when an executor is lent
         const std::uint64_t rgb = pool.batches();
