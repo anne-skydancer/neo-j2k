@@ -37,6 +37,12 @@ inline constexpr std::uint16_t SOC = 0xFF4F, CAP = 0xFF50, SIZ = 0xFF51, COD = 0
                                SOP = 0xFF91, EPH = 0xFF92, SOD = 0xFF93, EOC = 0xFFD9;
 }  // namespace mk
 
+// Markers that carry no segment (ISO 15444-1 A.1): SOC, SOD, EOC, EPH and 0xFF30-0xFF3F.
+inline bool segmentless(std::uint32_t m) noexcept
+{
+    return m == mk::SOC || m == mk::SOD || m == mk::EOC || m == mk::EPH || (m >= 0xFF30 && m <= 0xFF3F);
+}
+
 inline constexpr std::uint8_t kCstyPrecincts = 0x01, kCstySop = 0x02, kCstyEph = 0x04;
 inline constexpr std::uint8_t kCblkHT = 0x40, kCblkHTMixed = 0x80;
 inline constexpr std::uint8_t kQntNone = 0, kQntDerived = 1, kQntExpounded = 2;
@@ -251,6 +257,14 @@ nj2k_status_t read_main_header(Source& src, Arena& arena, const Messages& msg, c
 nj2k_status_t read_tile_part_header(Source& src, Arena& arena, const Messages& msg, const HeaderSettings& settings,
                                     MainHeader& mh, std::uint64_t sot, TilePartHeader& out) noexcept;
 
+// One marker segment of a tile-part header (its marker code m and its body of n bytes), recorded in
+// mh.tiles for the tile or checked as read_tile_part_header does: what may not appear there is
+// refused, a marker segment the decoder does not know is skipped with a warning (DP-7). The
+// decode's walk over the tile-parts calls it for each marker it reads.
+nj2k_status_t read_tile_part_marker(Arena& arena, const Messages& msg, const HeaderSettings& settings, MainHeader& mh,
+                                    std::uint16_t tile, std::uint16_t m, const std::uint8_t* body,
+                                    std::uint32_t n) noexcept;
+
 // Every component's parameters of a tile (out: mh.numcomps entries), with marker precedence applied
 // (W7) and each component's step sizes checked against the bands its resolutions need (W8), in one
 // pass over the components and the tile's markers. tile may be null for the main header's defaults.
@@ -302,14 +316,19 @@ bool decoded_component_geometry(const MainHeader& mh, std::uint32_t comp, std::u
 
 // The memory a decode at this factor needs at most at once, computed from the header before
 // anything is allocated: the decoded samples of the components selected (all when selected is
-// null), the coefficients of the largest tile when there are several, the code-block and precinct
-// state of every resolution of the largest tile (full state for the resolutions decoded, header
-// state for the ones dropped) and fixed scratch. Saturates at UINT64_MAX. Tile-part headers can
-// change a tile's parameters; decoding checks each tile again when its headers are in.
+// null), the wavelet's lines and fixed scratch (image_working_memory), and the largest tile's part
+// with the main header's coding (tile_working_memory's count): the code-block and precinct state of
+// every resolution (full state for the resolutions decoded, header state for the ones dropped), the
+// packet iterator's table and, when there are several tiles, its coefficients. Saturates at
+// UINT64_MAX. Tile-part headers can change a tile's coding; decoding checks such a tile again with
+// its own parameters (image_working_memory + tile_working_memory) before it allocates the tile.
 std::uint64_t decode_working_memory(const MainHeader& mh, std::uint32_t factor, const bool* selected) noexcept;
 
-// The number of packets a tile declares (layers x precincts x components), for work budgets, from
-// its components' parameters (resolve_tile: mh.numcomps entries).
-std::uint64_t tile_packets(const MainHeader& mh, std::uint32_t tile, const TileComponentParams* params) noexcept;
+// The part of decode_working_memory that does not depend on the tiles.
+std::uint64_t image_working_memory(const MainHeader& mh, std::uint32_t factor, const bool* selected) noexcept;
+
+// One tile's part of the working memory with its own parameters (resolve_tile: mh.numcomps entries).
+std::uint64_t tile_working_memory(const MainHeader& mh, std::uint32_t tile, const TileComponentParams* params,
+                                  std::uint32_t factor, const bool* selected) noexcept;
 
 }  // namespace nj2k::detail

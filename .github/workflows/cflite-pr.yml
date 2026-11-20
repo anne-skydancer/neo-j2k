@@ -2,10 +2,11 @@
 # Copyright (c) 2026, Anne Skydancer (neo-j2k)
 #
 # Short fuzzing of every pull request that touches code (ClusterFuzzLite, libFuzzer): the header,
-# decode and lossless round-trip targets with AddressSanitizer and with UndefinedBehaviorSanitizer,
-# five minutes each sanitizer, from the seeds .clusterfuzzlite/build.sh packs (the corpus, the
-# option-prefixed decode seeds, the round-trip seeds). Long campaigns run locally or in the nightly
-# workflow while the repository is private.
+# decode and lossless round-trip targets with AddressSanitizer, UndefinedBehaviorSanitizer and
+# MemorySanitizer, five minutes each sanitizer, from the corpus batch fuzzing stores
+# (cflite-batch.yml, pruned by cflite-prune.yml) and the seeds .clusterfuzzlite/build.sh packs (the
+# corpus, the option-prefixed decode seeds, the round-trip seeds), on the code the change touches
+# (the coverage report of cflite-coverage.yml). The nightly workflow fuzzes too.
 name: ClusterFuzzLite PR fuzzing
 
 on:
@@ -24,10 +25,9 @@ on:
 
 permissions:
   contents: read
-  # run_fuzzers looks for a corpus and a base build among the workflow artifacts, which batch fuzzing
-  # and push builds would store. This repository stores neither (the nightly job keeps its corpus in
-  # the Actions cache), so each run starts from the seeds and cannot tell a new crash from one main
-  # already has: any crash fails the pull request.
+  # run_fuzzers reads the corpus and the coverage report the batch, prune and coverage workflows
+  # store as artifacts; until they have run it starts from the seeds. Any crash fails the pull
+  # request.
   actions: read
 
 jobs:
@@ -41,7 +41,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        sanitizer: [address, undefined]
+        sanitizer: [address, undefined, memory]
     steps:
       - name: Build fuzzers (${{ matrix.sanitizer }})
         uses: google/clusterfuzzlite/actions/build_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1  # v1

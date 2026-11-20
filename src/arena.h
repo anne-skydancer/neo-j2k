@@ -65,6 +65,9 @@ public:
     std::uint8_t* copy_bytes(const std::uint8_t* src, std::size_t n) noexcept;
 
     void release_all() noexcept;
+    // Empty again for the next codestream: keeps at most retain bytes, as one block of the total
+    // when there were several, so that use that needs no more makes no heap call.
+    void reset(std::size_t retain) noexcept;
 
     std::uint64_t reserved() const noexcept { return reserved_; }
     Failure failure() const noexcept { return failure_; }

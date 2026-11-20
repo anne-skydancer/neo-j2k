@@ -648,10 +648,15 @@ typedef struct nj2k_decoder_limits {
     /** Width and height of every component at the decoded resolution, after the reduce
      * factor, checked when decoding starts (and by nj2k_get_decoded_dimensions()). */
     NJ2K_UINT32 max_decoded_side;
-    /** Bytes the decoder may allocate, checked against two needs computed from the headers,
-     * each on its own and before it is allocated: the header's own state, as it is read, and
-     * the working memory of a decode (the decoded samples and the structures of every
-     * resolution of the largest tile), when decoding starts. */
+    /** Bytes the decoder may allocate, checked against needs computed from the headers before
+     * what they bound is allocated: the header's own state, as it is read; the working memory of
+     * a decode (the decoded samples, the wavelet's lines, and the code-block, precinct and packet
+     * state of every resolution of the largest tile with the main header's coding), when decoding
+     * starts and by nj2k_get_decoded_dimensions(); and the working memory with a tile's own
+     * coding, before a tile whose COD or COC changes it is decoded. While decoding, the
+     * structures the decode holds and a tile's decoded samples share the limit. The codestream's
+     * bytes are not counted: nj2k_decode() holds the stream's (up to the length the host gave, or
+     * the end of a JP2 file's codestream box), and the memory API reads the caller's. */
     NJ2K_UINT64 max_memory;
 } nj2k_decoder_limits_t;
 
@@ -1375,6 +1380,10 @@ NJ2K_API void NJ2K_CALLCONV nj2k_destroy_codec(nj2k_codec_t * p_codec);
  * Read after the codestream if necessary
  * @param   p_codec         the JPEG2000 codec to read.
  * @param   p_stream        the JPEG2000 stream.
+ *
+ * neo-j2k: reads nothing more, also after a JP2 file's codestream (DP-13), and returns NJ2K_TRUE;
+ * nj2k_get_status() keeps the status of the decode before it (NJ2K_TRUNCATED stays). Without a
+ * stream it fails with NJ2K_E_ARGUMENT.
  */
 NJ2K_API NJ2K_BOOL NJ2K_CALLCONV nj2k_end_decompress(nj2k_codec_t *p_codec,
         nj2k_stream_t *p_stream);
@@ -1579,7 +1588,11 @@ NJ2K_API NJ2K_BOOL NJ2K_CALLCONV nj2k_get_decoded_tile(nj2k_codec_t *p_codec,
  * yet); after it the factor is checked against every component first, and a refused factor leaves
  * the decoder as it was. A factor at or above a component's number of resolutions is refused
  * (NJ2K_E_LIMIT) under the default reduce policy, NJ2K_REDUCE_EXACT, and lowered to the coarsest
- * level the codestream has under NJ2K_REDUCE_CLAMP (nj2k_decoder_set_reduce_policy()).
+ * level the codestream has under NJ2K_REDUCE_CLAMP (nj2k_decoder_set_reduce_policy()). A codec
+ * decoding from memory (nj2k_read_header_memory(), nj2k_decode_memory()) takes the factor this way
+ * too after a failed header read: it is kept for the next codestream, whose header read starts
+ * afresh, and the call returns NJ2K_FALSE. After a failed decode the codec still holds the header,
+ * and the factor is checked against it at once.
  */
 NJ2K_API NJ2K_BOOL NJ2K_CALLCONV nj2k_set_decoded_resolution_factor(
     nj2k_codec_t *p_codec, NJ2K_UINT32 res_factor);
@@ -1928,7 +1941,9 @@ typedef NJ2K_INT32 nj2k_status_t;
  * JP2 file read from a stream whose length is not given (nj2k_stream_set_user_data_length()), which
  * OpenJPEG cannot read either. */
 #define NJ2K_E_UNSUPPORTED      (-5)
-/** A decoder limit, or the reduce factor under NJ2K_REDUCE_EXACT, refuses the codestream. */
+/** A decoder limit refuses the codestream, or the reduce factor does: under NJ2K_REDUCE_EXACT,
+ * or, under either policy, a tile whose own COD or COC leaves a component no more resolutions
+ * than the factor in effect. */
 #define NJ2K_E_LIMIT            (-6)
 /** An allocation failed; the codec can still be destroyed. */
 #define NJ2K_E_NO_MEMORY        (-7)
@@ -1943,8 +1958,9 @@ typedef NJ2K_INT32 nj2k_status_t;
  * The status of the codec's last call that reports one: nj2k_setup_decoder(),
  * nj2k_decoder_set_strict_mode(), nj2k_decoder_set_limits(), nj2k_decoder_set_reduce_policy(),
  * nj2k_read_header(), nj2k_set_decoded_resolution_factor(), nj2k_set_decoded_components(),
- * nj2k_get_decoded_dimensions(), nj2k_get_cstr_info(), and the decoding functions. NJ2K_OK for a
- * codec that has made none of these calls yet; NJ2K_E_ARGUMENT for a null codec.
+ * nj2k_get_decoded_dimensions(), nj2k_get_cstr_info(), and the decoding functions but
+ * nj2k_end_decompress(), which keeps the status of the decode before it (it reads nothing).
+ * NJ2K_OK for a codec that has made none of these calls yet; NJ2K_E_ARGUMENT for a null codec.
  */
 NJ2K_API nj2k_status_t NJ2K_CALLCONV nj2k_get_status(nj2k_codec_t *p_codec);
 
@@ -1981,7 +1997,9 @@ NJ2K_API nj2k_codec_t* NJ2K_CALLCONV nj2k_create_decompress_with_allocator(
  * as OpenJPEG does; the default. */
 #define NJ2K_REDUCE_EXACT 0
 /** Such a factor is lowered to the coarsest level the main header gives every component; the
- * factor used is the components' factor in the image (nj2k_get_decoded_dimensions()). */
+ * factor used is the components' factor in the image (nj2k_get_decoded_dimensions()). A tile
+ * whose own COD or COC leaves a component no more resolutions than that factor has no level of
+ * the image's size: it is refused (NJ2K_E_LIMIT), as under NJ2K_REDUCE_EXACT. */
 #define NJ2K_REDUCE_CLAMP 1
 
 /**
@@ -1996,12 +2014,129 @@ NJ2K_API NJ2K_BOOL NJ2K_CALLCONV nj2k_decoder_set_reduce_policy(nj2k_codec_t *p_
  * to what nj2k_decode() delivers at the codec's reduce factor and policy, without decoding, so a
  * host can size its buffers first. It checks what decoding checks before it allocates: the reduce
  * factor, the decoded side and the working memory against the decoder limits. Call it after
- * nj2k_read_header() and nj2k_set_decoded_resolution_factor().
+ * nj2k_read_header() and nj2k_set_decoded_resolution_factor(), or after nj2k_read_header_memory()
+ * with the image it described (its components are at the factor in effect; after setting another
+ * factor, read the header again).
  *
  * @return NJ2K_TRUE if p_image is set; on failure p_image is unchanged and nj2k_get_status() says why.
  */
 NJ2K_API NJ2K_BOOL NJ2K_CALLCONV nj2k_get_decoded_dimensions(nj2k_codec_t *p_codec,
         nj2k_image_t *p_image);
+
+/*
+ * Decoding from memory, codestream after codestream (neo-j2k's own; no OpenJPEG counterpart).
+ *
+ * One codec per thread decodes any number of codestreams held in memory: nj2k_read_header_memory()
+ * reads a header (or keeps the one it holds when the bytes start with the same main header) and
+ * nj2k_decode_memory() decodes into the caller's own buffers. The caller's bytes are read where
+ * they lie during the call, never written and never copied whole: the codec copies only the main
+ * header (to know it again), the tile-part headers' marker segments, each code-block's bytes (into
+ * a padded buffer for the arithmetic decoder) and the tile-parts of a tile that has several. No
+ * image is allocated, and the codec keeps its memory for the next codestream
+ * (nj2k_decoder_set_retained_bytes()): after the first decodes of a given size it makes no heap
+ * call at all. The settings stay from one codestream to the next: strict mode, limits, reduce
+ * policy, the layers (cp_layer of nj2k_setup_decoder()) and the reduce factor
+ * (nj2k_set_decoded_resolution_factor(), before or after the header read). A component selection
+ * (nj2k_set_decoded_components() after nj2k_read_header_memory()) holds for the decodes of that
+ * header, until the next nj2k_read_header_memory() or a decode that reads another header. Decoded
+ * samples are those of nj2k_decode(), bit for bit.
+ */
+
+/* Sample types of nj2k_output_t. */
+/** The decoded samples, as nj2k_decode() puts them in an image's planes. */
+#define NJ2K_SAMPLE_I32 0
+/** Their low 8 bits (what an 8-bit copy of the image's planes keeps). */
+#define NJ2K_SAMPLE_U8  1
+/** Their low 16 bits. */
+#define NJ2K_SAMPLE_U16 2
+
+/**
+ * Where one component goes: sample (x, y) of the decoded component (x < its w, y < its h, as
+ * nj2k_read_header_memory() describes it) is written at (char *)data + y * row_stride +
+ * x * sample_stride. A negative row_stride writes the image bottom-up (data then points at the
+ * last row); a sample_stride above the sample's size interleaves components (data then points at
+ * the component's first sample). Several planes may take the same component. The structure is an
+ * array element and keeps its layout; a later version that needs more for a plane says so in
+ * nj2k_output_t, which starts with its size.
+ */
+typedef struct nj2k_plane {
+    void *data;
+    NJ2K_INT64 row_stride;
+    NJ2K_UINT32 sample_stride;
+    NJ2K_UINT32 component;
+} nj2k_plane_t;
+
+/** The caller's buffers for nj2k_decode_memory(). */
+typedef struct nj2k_output {
+    NJ2K_SIZE_T struct_size;        /**< sizeof(nj2k_output_t) */
+    NJ2K_UINT32 sample_type;        /**< NJ2K_SAMPLE_I32, NJ2K_SAMPLE_U8 or NJ2K_SAMPLE_U16 */
+    NJ2K_UINT32 numplanes;
+    const nj2k_plane_t *planes;
+} nj2k_output_t;
+
+/** The codestream's tile grid and the main header's coding, from nj2k_get_codestream_layout(). */
+typedef struct nj2k_codestream_layout {
+    NJ2K_SIZE_T struct_size;        /**< sizeof(nj2k_codestream_layout_t) */
+    NJ2K_UINT32 tx0, ty0, tdx, tdy; /**< the tile grid's origin and tile size */
+    NJ2K_UINT32 tw, th;             /**< tiles across and down */
+    NJ2K_UINT32 numlayers;          /**< layers of the main header's coding style */
+    NJ2K_UINT32 min_resolutions;    /**< the fewest resolutions of any component (main header) */
+} nj2k_codestream_layout_t;
+
+/**
+ * Reads the header of a codestream (or of a JP2/JPH file, for a codec made for NJ2K_CODEC_JP2)
+ * from p_size bytes at p_data, as nj2k_read_header() reads one from a stream, whatever the codec
+ * read or decoded before: the codec starts a new codestream, and keeps the header model it holds
+ * when these bytes start with the same main header (the header is then not parsed again), without
+ * a component selection. The bytes are only read during the call. On success, *p_image (the
+ * caller's structure) describes the image as nj2k_read_header() gives it, with the components at
+ * the reduce factor in effect; p_image->comps and p_image->icc_profile_buf point into the codec and
+ * stay valid until the codec reads another header or is destroyed: never pass p_image to
+ * nj2k_image_destroy(). p_image may be NULL.
+ *
+ * The decoder limits that bound the decode (the decoded side, the working memory) are not checked
+ * here, so that a host can read a header at reduce 0 and then choose a factor: the image may be
+ * larger than any decode the limits allow. nj2k_get_decoded_dimensions() checks them as
+ * nj2k_decode_memory() will, without decoding; a host sizes its planes once that call (or its own
+ * checks) accepts the components' sizes.
+ */
+NJ2K_API NJ2K_BOOL NJ2K_CALLCONV nj2k_read_header_memory(nj2k_codec_t *p_codec,
+        const NJ2K_BYTE *p_data, NJ2K_SIZE_T p_size, nj2k_image_t *p_image);
+
+/**
+ * The tile grid and the main header's coding of the header the codec holds, without allocating
+ * (nj2k_get_cstr_info() gives more, from the heap).
+ */
+NJ2K_API NJ2K_BOOL NJ2K_CALLCONV nj2k_get_codestream_layout(nj2k_codec_t *p_codec,
+        nj2k_codestream_layout_t *p_layout);
+
+/**
+ * Decodes the codestream (or JP2/JPH file) in p_size bytes at p_data into the caller's planes:
+ * reads its header first unless the codec holds the header of the same bytes (as
+ * nj2k_read_header_memory() decides), then decodes as nj2k_decode() does and writes each decoded
+ * component, converted to p_output->sample_type, to the planes that take it. The planes must hold
+ * each component's w x h samples at the reduce factor in effect (nj2k_read_header_memory()
+ * describes them); a component no plane takes is decoded all the same, unless a component selection
+ * leaves it out (a plane for a component left out is refused, NJ2K_E_OUTPUT). A JP2 file whose
+ * palette or channel definitions would change the components is refused (NJ2K_E_UNSUPPORTED;
+ * nj2k_decode() applies them) unless the decoder parameters ignore them or components are
+ * selected (nj2k_decode() then leaves them as the codestream has them). A JP2 file's codestream
+ * ends where its codestream box ends, when the box gives its length (DP-15). The decoder limits
+ * are checked from the headers before anything is decoded, and a tile with its own coding again
+ * before that tile (NJ2K_E_LIMIT). Success is NJ2K_OK, or
+ * NJ2K_TRUNCATED when the bytes end before the codestream does (the planes then hold what arrived,
+ * as nj2k_decode() gives it); on failure the planes may have been partly written.
+ */
+NJ2K_API NJ2K_BOOL NJ2K_CALLCONV nj2k_decode_memory(nj2k_codec_t *p_codec,
+        const NJ2K_BYTE *p_data, NJ2K_SIZE_T p_size, const nj2k_output_t *p_output);
+
+/**
+ * How much memory the codec keeps between decodes (its working memory, Tier-1 and wavelet
+ * buffers, a tile's samples): at most bytes, the rest goes back to the allocator after each
+ * decode. The default is 8 MiB; 0 keeps nothing. Applies from the next decode.
+ */
+NJ2K_API NJ2K_BOOL NJ2K_CALLCONV nj2k_decoder_set_retained_bytes(nj2k_codec_t *p_codec,
+        NJ2K_SIZE_T bytes);
 
 
 #ifdef __cplusplus

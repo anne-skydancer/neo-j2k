@@ -62,4 +62,10 @@ nj2k_status_t read_jp2_boxes(Source& src, Arena& arena, const Messages& msg, Jp2
 // The image colour space OpenJPEG gives a JP2 file (opj_jp2_read_header).
 NJ2K_COLOR_SPACE jp2_color_space(const Jp2Header& jp2) noexcept;
 
+// What OpenJPEG's opj_jp2_decode does to a decoded image after the codestream
+// (opj_jp2_apply_color_postprocessing): the channel and mapping checks, the palette (with the fork's
+// component limit) and the channel definitions. image is an image of the API (heap planes).
+nj2k_status_t jp2_apply_colour(const Jp2Header& jp2, nj2k_image_t* image, const nj2k_decoder_limits_t& limits,
+                               const Messages& msg) noexcept;
+
 }  // namespace nj2k::detail

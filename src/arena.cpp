@@ -78,6 +78,36 @@ std::uint8_t* Arena::copy_bytes(const std::uint8_t* src, std::size_t n) noexcept
     return p;
 }
 
+void Arena::reset(std::size_t retain) noexcept
+{
+    if (!blocks_) {
+        failure_ = Failure::none;
+        return;
+    }
+    const std::uint64_t total = reserved_;
+    if (blocks_->next || total > retain) {
+        release_all();
+        if (total > retain) {
+            return;
+        }
+        // one block of the total size, so the next use of no more fits it
+        void* raw = allocator_ ? allocator_->allocate(std::size_t(total), 16) : nullptr;
+        if (!raw) {
+            return;
+        }
+        auto* b = static_cast<Block*>(raw);
+        b->next = nullptr;
+        b->size = std::size_t(total);
+        blocks_ = b;
+        reserved_ = total;
+    }
+    const std::size_t header = align_up(sizeof(Block), 16);
+    cur_ = reinterpret_cast<std::uint8_t*>(blocks_) + header;
+    end_ = reinterpret_cast<std::uint8_t*>(blocks_) + blocks_->size;
+    next_block_ = kFirstBlock;
+    failure_ = Failure::none;
+}
+
 void Arena::release_all() noexcept
 {
     Block* b = blocks_;

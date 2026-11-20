@@ -47,6 +47,8 @@
 #include <cstdarg>
 #include <cstring>
 
+#include "memory.h"
+
 namespace nj2k::detail {
 
 namespace {
@@ -245,6 +247,11 @@ struct Reader {
         // fails at the first entry the box lacks)
         const std::uint8_t* bits = p + 3;
         std::uint64_t entry_bytes = 0;
+#if defined(_MSC_VER) && !defined(__clang__)
+        // at most 255 columns: MSVC would otherwise give this loop an SSE4.1 version behind its run-time
+        // CPU check (__isa_available), which a scalar build must not hold (global_state)
+#pragma loop(no_vector)
+#endif
         for (std::uint32_t i = 0; i < channels; ++i) {
             const std::uint32_t bytes = ((bits[i] & 0x7Fu) + 1 + 7) >> 3;
             entry_bytes += bytes > 4 ? 4 : bytes;
@@ -403,7 +410,7 @@ nj2k_status_t read_jp2_boxes(Source& src, Arena& arena, const Messages& msg, Jp2
     Reader rd{*jp2, arena, msg};
     bool signature = false, file_type = false, header = false;
     for (;;) {
-        std::uint8_t h[16];
+        std::uint8_t h[16] = {};
         const std::size_t got = src.read(h, 8);
         if (!signature) {
             // a JP2 file starts with its signature box: anything else is no JP2 file
@@ -552,6 +559,259 @@ NJ2K_COLOR_SPACE jp2_color_space(const Jp2Header& jp2) noexcept
     default:
         return NJ2K_CLRSPC_UNKNOWN;
     }
+}
+
+namespace {
+
+// opj_jp2_check_color, on copies of the mapping and the channel definitions (the header model's stay
+// as read); false (an error given) when OpenJPEG refuses the image
+bool check_colour(const Jp2Header& jp2, const nj2k_image_t* image, Jp2CmapEntry* cmap, const Messages& msg) noexcept
+{
+    if (jp2.cdef) {
+        const std::uint16_t n = jp2.cdef_count;
+        std::uint32_t nr_channels = image->numcomps;
+        // cdef applies to the cmap channels if any
+        if (jp2.has_pclr && jp2.cmap) {
+            nr_channels = jp2.pclr_channels;
+        }
+        for (std::uint16_t i = 0; i < n; i++) {
+            const Jp2CdefEntry& info = jp2.cdef[i];
+            if (info.cn >= nr_channels) {
+                msg.emit(Messages::Error, "Invalid component index %d (>= %d).\n", int(info.cn), int(nr_channels));
+                return false;
+            }
+            if (info.asoc == 65535U) {
+                continue;
+            }
+            if (info.asoc > 0 && std::uint32_t(info.asoc - 1) >= nr_channels) {
+                msg.emit(Messages::Error, "Invalid component index %d (>= %d).\n", int(info.asoc - 1), int(nr_channels));
+                return false;
+            }
+        }
+        // issue 397: a complete list of channel definitions
+        while (nr_channels > 0) {
+            std::uint16_t i = 0;
+            for (; i < n; ++i) {
+                if (std::uint32_t(jp2.cdef[i].cn) == (nr_channels - 1U)) {
+                    break;
+                }
+            }
+            if (i == n) {
+                msg.emit(Messages::Error, "Incomplete channel definitions.\n");
+                return false;
+            }
+            --nr_channels;
+        }
+    }
+    if (jp2.has_pclr && jp2.cmap) {
+        const std::uint16_t nr_channels = jp2.pclr_channels;
+        bool is_sane = true;
+        for (std::uint16_t i = 0; i < nr_channels; i++) {
+            if (cmap[i].cmp >= image->numcomps) {
+                msg.emit(Messages::Error, "Invalid component index %d (>= %d).\n", int(cmap[i].cmp),
+                         int(image->numcomps));
+                is_sane = false;
+            }
+        }
+        bool pcol_usage[256] = {};
+        for (std::uint16_t i = 0; i < nr_channels; i++) {
+            const std::uint8_t mtyp = cmap[i].mtyp;
+            const std::uint8_t pcol = cmap[i].pcol;
+            if (mtyp != 0 && mtyp != 1) {
+                msg.emit(Messages::Error, "Invalid value for cmap[%d].mtyp = %d.\n", int(i), int(mtyp));
+                is_sane = false;
+            } else if (pcol >= nr_channels) {
+                msg.emit(Messages::Error, "Invalid component/palette index for direct mapping %d.\n", int(pcol));
+                is_sane = false;
+            } else if (pcol_usage[pcol] && mtyp == 1) {
+                msg.emit(Messages::Error, "Component %d is mapped twice.\n", int(pcol));
+                is_sane = false;
+            } else if (mtyp == 0 && pcol != 0) {
+                msg.emit(Messages::Error, "Direct use at #%d however pcol=%d.\n", int(i), int(pcol));
+                is_sane = false;
+            } else if (mtyp == 1 && pcol != i) {
+                msg.emit(Messages::Error,
+                         "Implementation limitation: for palette mapping, pcol[%d] should be equal to %d, but is "
+                         "equal to %d.\n",
+                         int(i), int(i), int(pcol));
+                is_sane = false;
+            } else {
+                pcol_usage[pcol] = true;
+            }
+        }
+        for (std::uint16_t i = 0; i < nr_channels; i++) {
+            if (!pcol_usage[i] && cmap[i].mtyp != 0) {
+                msg.emit(Messages::Error, "Component %d doesn't have a mapping.\n", int(i));
+                is_sane = false;
+            }
+        }
+        // issue 235/447: a weird mapping of a one-component image
+        if (is_sane && image->numcomps == 1U) {
+            for (std::uint16_t i = 0; i < nr_channels; i++) {
+                if (!pcol_usage[i]) {
+                    is_sane = false;
+                    msg.emit(Messages::Warning, "Component mapping seems wrong. Trying to correct.\n");
+                    break;
+                }
+            }
+            if (!is_sane) {
+                is_sane = true;
+                for (std::uint16_t i = 0; i < nr_channels; i++) {
+                    cmap[i].mtyp = 1U;
+                    cmap[i].pcol = std::uint8_t(i);
+                }
+            }
+        }
+        if (!is_sane) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// opj_jp2_apply_pclr
+bool apply_pclr(const Jp2Header& jp2, nj2k_image_t* image, const Jp2CmapEntry* cmap, const Messages& msg) noexcept
+{
+    const std::uint16_t nr_channels = jp2.pclr_channels;
+    for (std::uint16_t i = 0; i < nr_channels; ++i) {
+        if (image->comps[cmap[i].cmp].data == nullptr) {
+            msg.emit(Messages::Error, "image->comps[%d].data == NULL in opj_jp2_apply_pclr().\n", int(i));
+            return false;
+        }
+    }
+    nj2k_image_comp_t* old_comps = image->comps;
+    auto* new_comps = static_cast<nj2k_image_comp_t*>(heap_calloc(nr_channels, sizeof(nj2k_image_comp_t)));
+    if (!new_comps) {
+        msg.emit(Messages::Error, "Memory allocation failure in opj_jp2_apply_pclr().\n");
+        return false;
+    }
+    for (std::uint16_t i = 0; i < nr_channels; ++i) {
+        const std::uint16_t pcol = cmap[i].pcol, cmp = cmap[i].cmp;
+        if (cmap[i].mtyp == 0) {
+            new_comps[i] = old_comps[cmp];
+        } else {
+            new_comps[pcol] = old_comps[cmp];
+        }
+        new_comps[i].data = static_cast<std::int32_t*>(
+            plane_alloc(sizeof(std::int32_t) * std::size_t(old_comps[cmp].w) * old_comps[cmp].h));
+        if (!new_comps[i].data && std::size_t(old_comps[cmp].w) * old_comps[cmp].h != 0) {
+            while (i > 0) {
+                --i;
+                plane_free(new_comps[i].data);
+            }
+            heap_free(new_comps);
+            msg.emit(Messages::Error, "Memory allocation failure in opj_jp2_apply_pclr().\n");
+            return false;
+        }
+        new_comps[i].prec = (jp2.pclr_bits[i] & 0x7Fu) + 1;
+        new_comps[i].sgnd = (jp2.pclr_bits[i] & 0x80u) ? 1u : 0u;
+    }
+    const std::int32_t top_k = std::int32_t(jp2.pclr_entries) - 1;
+    for (std::uint16_t i = 0; i < nr_channels; ++i) {
+        const std::uint16_t cmp = cmap[i].cmp, pcol = cmap[i].pcol;
+        const std::int32_t* src = old_comps[cmp].data;
+        const std::size_t max = std::size_t(new_comps[i].w) * new_comps[i].h;
+        if (cmap[i].mtyp == 0) {
+            std::int32_t* dst = new_comps[i].data;
+            for (std::size_t j = 0; j < max; ++j) {
+                dst[j] = src[j];
+            }
+        } else {
+            std::int32_t* dst = new_comps[pcol].data;
+            for (std::size_t j = 0; j < max; ++j) {
+                std::int32_t k = src[j];
+                if (k < 0) {
+                    k = 0;
+                } else if (k > top_k) {
+                    k = top_k;
+                }
+                dst[j] = std::int32_t(jp2.pclr_values[std::size_t(k) * nr_channels + pcol]);
+            }
+        }
+    }
+    for (std::uint32_t j = 0; j < image->numcomps; ++j) {
+        plane_free(old_comps[j].data);
+    }
+    heap_free(old_comps);
+    image->comps = new_comps;
+    image->numcomps = nr_channels;
+    return true;
+}
+
+// opj_jp2_apply_cdef, on a copy of the channel definitions
+void apply_cdef(Jp2CdefEntry* info, std::uint16_t n, nj2k_image_t* image, const Messages& msg) noexcept
+{
+    for (std::uint16_t i = 0; i < n; ++i) {
+        const std::uint16_t asoc = info[i].asoc, cn = info[i].cn;
+        if (cn >= image->numcomps) {
+            msg.emit(Messages::Warning, "opj_jp2_apply_cdef: cn=%d, numcomps=%d\n", int(cn), int(image->numcomps));
+            continue;
+        }
+        if (asoc == 0 || asoc == 65535) {
+            image->comps[cn].alpha = info[i].typ;
+            continue;
+        }
+        const std::uint16_t acn = std::uint16_t(asoc - 1);
+        if (acn >= image->numcomps) {
+            msg.emit(Messages::Warning, "opj_jp2_apply_cdef: acn=%d, numcomps=%d\n", int(acn), int(image->numcomps));
+            continue;
+        }
+        // swap only a colour channel
+        if ((cn != acn) && (info[i].typ == 0)) {
+            const nj2k_image_comp_t saved = image->comps[cn];
+            image->comps[cn] = image->comps[acn];
+            image->comps[acn] = saved;
+            // the later definitions follow the swap
+            for (std::uint16_t j = std::uint16_t(i + 1U); j < n; ++j) {
+                if (info[j].cn == cn) {
+                    info[j].cn = acn;
+                } else if (info[j].cn == acn) {
+                    info[j].cn = cn;
+                }
+            }
+        }
+        image->comps[cn].alpha = info[i].typ;
+    }
+}
+
+}  // namespace
+
+nj2k_status_t jp2_apply_colour(const Jp2Header& jp2, nj2k_image_t* image, const nj2k_decoder_limits_t& limits,
+                               const Messages& msg) noexcept
+{
+    Jp2CmapEntry cmap[256];
+    if (jp2.has_pclr && jp2.cmap) {
+        std::memcpy(cmap, jp2.cmap, sizeof(Jp2CmapEntry) * jp2.pclr_channels);
+    }
+    if (!check_colour(jp2, image, cmap, msg)) {
+        return NJ2K_E_DATA;
+    }
+    if (jp2.has_pclr && jp2.cmap) {
+        // the palette makes one full-size component per column: they count against the component
+        // limit (the fork's 1a, ed7727f8)
+        if (limits.max_components != 0U && jp2.pclr_channels > limits.max_components) {
+            msg.emit(Messages::Error, "The palette (pclr box) makes %u components, more than the decoder's limit of %u\n",
+                     unsigned(jp2.pclr_channels), limits.max_components);
+            return NJ2K_E_LIMIT;
+        }
+        if (!apply_pclr(jp2, image, cmap, msg)) {
+            return NJ2K_E_DATA;
+        }
+    }
+    if (jp2.cdef) {
+        Jp2CdefEntry info[1024];
+        Jp2CdefEntry* copy = jp2.cdef_count <= 1024 ? info : static_cast<Jp2CdefEntry*>(heap_malloc(sizeof(Jp2CdefEntry) * jp2.cdef_count));
+        if (!copy) {
+            msg.emit(Messages::Error, "Not enough memory for the channel definitions\n");
+            return NJ2K_E_NO_MEMORY;
+        }
+        std::memcpy(copy, jp2.cdef, sizeof(Jp2CdefEntry) * jp2.cdef_count);
+        apply_cdef(copy, jp2.cdef_count, image, msg);
+        if (copy != info) {
+            heap_free(copy);
+        }
+    }
+    return NJ2K_OK;
 }
 
 }  // namespace nj2k::detail

@@ -95,12 +95,6 @@ nj2k_status_t arena_failure(const Messages& msg, const Arena& arena) noexcept
     return fail(msg, NJ2K_E_NO_MEMORY, "Not enough memory to read the headers\n");
 }
 
-// Markers that carry no segment.
-bool segmentless(std::uint16_t m) noexcept
-{
-    return m == mk::SOC || m == mk::SOD || m == mk::EOC || m == mk::EPH || (m >= 0xFF30 && m <= 0xFF3F);
-}
-
 // JPEG 2000 Part 2 markers (DCO, VMS, DFS, ADS, MCT, MCC, NLT, MCO, CBD, ATK, ...).
 bool part2_marker(std::uint16_t m) noexcept
 {
@@ -763,7 +757,7 @@ nj2k_status_t read_main_header(Source& src, Arena& arena, const Messages& msg, c
                                MainHeader*& out) noexcept
 {
     const std::uint64_t start = src.tell();
-    std::uint8_t b[2];
+    std::uint8_t b[2] = {};
     const std::size_t got = src.read(b, 2);
     if (got == 0) {
         return need_data(msg, "the main header (no bytes)");
@@ -940,10 +934,112 @@ nj2k_status_t read_main_header(Source& src, Arena& arena, const Messages& msg, c
     return NJ2K_OK;
 }
 
+nj2k_status_t read_tile_part_marker(Arena& arena, const Messages& msg, const HeaderSettings& set, MainHeader& mh,
+                                    std::uint16_t tile, std::uint16_t m, const std::uint8_t* body, std::uint32_t n) noexcept
+{
+    TileOverrides* t = nullptr;
+    if (m == mk::COD || m == mk::COC || m == mk::QCD || m == mk::QCC || m == mk::RGN || m == mk::POC ||
+        m == mk::PPT) {
+        t = tile_overrides(arena, mh, tile);
+        if (!t) {
+            return arena_failure(msg, arena);
+        }
+    }
+    nj2k_status_t st = NJ2K_OK;
+    switch (m) {
+    case mk::COD:
+        st = read_cod(msg, set, body, n, t->cod, t->cod_style);
+        if (st == NJ2K_OK) {
+            t->has_cod = true;
+        }
+        break;
+    case mk::COC: {
+        std::uint32_t comp = 0;
+        CodingStyle cs{};
+        st = read_coc(msg, mh.numcomps, body, n, comp, cs);
+        if (st == NJ2K_OK) {
+            auto* keep = arena.make<CodingStyle>();
+            if (!keep || !t->coc.push(arena, CompValue<const CodingStyle*>{std::uint16_t(comp), keep})) {
+                return arena_failure(msg, arena);
+            }
+            *keep = cs;
+        }
+        break;
+    }
+    case mk::QCD: {
+        auto* q = arena.make<Quantization>();
+        if (!q) {
+            return arena_failure(msg, arena);
+        }
+        st = read_sqcd(msg, body, n, *q, "QCD");
+        if (st == NJ2K_OK) {
+            t->qcd = q;
+        }
+        break;
+    }
+    case mk::QCC: {
+        std::uint32_t comp = 0;
+        auto* q = arena.make<Quantization>();
+        if (!q) {
+            return arena_failure(msg, arena);
+        }
+        st = read_qcc(msg, mh.numcomps, body, n, comp, *q);
+        if (st == NJ2K_OK && !t->qcc.push(arena, CompValue<const Quantization*>{std::uint16_t(comp), q})) {
+            return arena_failure(msg, arena);
+        }
+        break;
+    }
+    case mk::RGN: {
+        std::uint32_t comp = 0;
+        std::uint8_t shift = 0;
+        st = read_rgn(msg, mh.numcomps, body, n, comp, shift);
+        if (st == NJ2K_OK && !t->rgn.push(arena, CompValue<std::uint8_t>{std::uint16_t(comp), shift})) {
+            return arena_failure(msg, arena);
+        }
+        break;
+    }
+    case mk::POC:
+        // OpenJPEG's limit counts the main header's changes too
+        st = read_poc(msg, arena, mh.numcomps, body, n, mh.poc.size + t->poc.size, t->poc);
+        break;
+    case mk::PPT:
+        if (mh.has_ppm) {
+            st = fail(msg, NJ2K_E_HEADER,
+                      "Error reading PPT marker: packet header have been previously found in the main header "
+                      "(PPM marker).\n");
+        } else {
+            st = add_packed(msg, arena, body, n, t->ppt, false);
+        }
+        break;
+    case mk::PLT:
+        st = check_plt(msg, body, n);
+        break;
+    case mk::COM:
+        break;
+    case mk::SOT:
+    case mk::SIZ:
+    case mk::TLM:
+    case mk::PLM:
+    case mk::PPM:
+    case mk::CRG:
+    case mk::CAP:
+    case mk::CPF:
+    case mk::SOP:
+        st = fail(msg, NJ2K_E_HEADER, "Marker is not compliant with its position\n");
+        break;
+    default:
+        // skipped by its length (OpenJPEG fails a tile-part header with an unknown marker)
+        msg.emit(Messages::Warning, "Unknown marker 0x%04X (%u bytes) skipped in a tile-part header\n", unsigned(m),
+                 n);
+        break;
+    }
+    return st;
+}
+
 nj2k_status_t read_tile_part_header(Source& src, Arena& arena, const Messages& msg, const HeaderSettings& set,
                                     MainHeader& mh, std::uint64_t sot, TilePartHeader& out) noexcept
 {
-    std::uint8_t b[8];
+    std::uint8_t b[8] = {};
     if (src.read(b, 2) != 2) {
         return need_data(msg, "a SOT marker segment");
     }
@@ -1017,103 +1113,7 @@ nj2k_status_t read_tile_part_header(Source& src, Arena& arena, const Messages& m
         if (const nj2k_status_t st = read_body(src, arena, msg, n, body, "a tile-part header"); st != NJ2K_OK) {
             return st;
         }
-        TileOverrides* t = nullptr;
-        if (m == mk::COD || m == mk::COC || m == mk::QCD || m == mk::QCC || m == mk::RGN || m == mk::POC ||
-            m == mk::PPT) {
-            t = tile_overrides(arena, mh, tp.tile);
-            if (!t) {
-                return arena_failure(msg, arena);
-            }
-        }
-        nj2k_status_t st = NJ2K_OK;
-        switch (m) {
-        case mk::COD:
-            st = read_cod(msg, set, body, n, t->cod, t->cod_style);
-            if (st == NJ2K_OK) {
-                t->has_cod = true;
-            }
-            break;
-        case mk::COC: {
-            std::uint32_t comp = 0;
-            CodingStyle cs{};
-            st = read_coc(msg, mh.numcomps, body, n, comp, cs);
-            if (st == NJ2K_OK) {
-                auto* keep = arena.make<CodingStyle>();
-                if (!keep || !t->coc.push(arena, CompValue<const CodingStyle*>{std::uint16_t(comp), keep})) {
-                    return arena_failure(msg, arena);
-                }
-                *keep = cs;
-            }
-            break;
-        }
-        case mk::QCD: {
-            auto* q = arena.make<Quantization>();
-            if (!q) {
-                return arena_failure(msg, arena);
-            }
-            st = read_sqcd(msg, body, n, *q, "QCD");
-            if (st == NJ2K_OK) {
-                t->qcd = q;
-            }
-            break;
-        }
-        case mk::QCC: {
-            std::uint32_t comp = 0;
-            auto* q = arena.make<Quantization>();
-            if (!q) {
-                return arena_failure(msg, arena);
-            }
-            st = read_qcc(msg, mh.numcomps, body, n, comp, *q);
-            if (st == NJ2K_OK && !t->qcc.push(arena, CompValue<const Quantization*>{std::uint16_t(comp), q})) {
-                return arena_failure(msg, arena);
-            }
-            break;
-        }
-        case mk::RGN: {
-            std::uint32_t comp = 0;
-            std::uint8_t shift = 0;
-            st = read_rgn(msg, mh.numcomps, body, n, comp, shift);
-            if (st == NJ2K_OK && !t->rgn.push(arena, CompValue<std::uint8_t>{std::uint16_t(comp), shift})) {
-                return arena_failure(msg, arena);
-            }
-            break;
-        }
-        case mk::POC:
-            // OpenJPEG's limit counts the main header's changes too
-            st = read_poc(msg, arena, mh.numcomps, body, n, mh.poc.size + t->poc.size, t->poc);
-            break;
-        case mk::PPT:
-            if (mh.has_ppm) {
-                st = fail(msg, NJ2K_E_HEADER,
-                          "Error reading PPT marker: packet header have been previously found in the main header "
-                          "(PPM marker).\n");
-            } else {
-                st = add_packed(msg, arena, body, n, t->ppt, false);
-            }
-            break;
-        case mk::PLT:
-            st = check_plt(msg, body, n);
-            break;
-        case mk::COM:
-            break;
-        case mk::SOT:
-        case mk::SIZ:
-        case mk::TLM:
-        case mk::PLM:
-        case mk::PPM:
-        case mk::CRG:
-        case mk::CAP:
-        case mk::CPF:
-        case mk::SOP:
-            st = fail(msg, NJ2K_E_HEADER, "Marker is not compliant with its position\n");
-            break;
-        default:
-            // skipped by its length (OpenJPEG fails a tile-part header with an unknown marker)
-            msg.emit(Messages::Warning, "Unknown marker 0x%04X (%u bytes) skipped in a tile-part header\n", unsigned(m),
-                     n);
-            break;
-        }
-        if (st != NJ2K_OK) {
+        if (const nj2k_status_t st = read_tile_part_marker(arena, msg, set, mh, tp.tile, m, body, n); st != NJ2K_OK) {
             return st;
         }
     }
@@ -1226,13 +1226,15 @@ bool decoded_component_geometry(const MainHeader& mh, std::uint32_t comp, std::u
 
 namespace {
 
-// Bytes per item in the working-memory estimate. Stage 1c measures its high-water marks against
-// this estimate and adjusts these numbers where a decode needs more (plan stage 1c gate).
+// Bytes per item in the working-memory estimate. Stage 1c measured what decodes take from the
+// allocator against it (decode_unit, test_memory_bound): the structures live in the working arena,
+// which reserves blocks in a doubling series, so they count twice (kArenaReserve).
 constexpr std::uint64_t kCodeBlockDecoded = 128;  // code-block state of a resolution that is decoded
 constexpr std::uint64_t kCodeBlockHeader = 32;    // tag-tree nodes and Lblock of a dropped resolution
 constexpr std::uint64_t kPrecinct = 64;
 constexpr std::uint64_t kScratch = 256 * 1024;    // Tier-1 buffers and the decoder's own state
 constexpr std::uint64_t kLineBytes = 64;          // wavelet lines: per sample of the longest side
+constexpr std::uint64_t kArenaReserve = 2;        // what the working arena reserves for what it holds
 
 std::uint64_t sat_add(std::uint64_t a, std::uint64_t b) noexcept
 {
@@ -1241,6 +1243,9 @@ std::uint64_t sat_add(std::uint64_t a, std::uint64_t b) noexcept
 
 std::uint64_t sat_mul(std::uint64_t a, std::uint64_t b) noexcept
 {
+    if (((a | b) >> 32) == 0) {
+        return a * b;  // both below 2^32: the product fits, no division needed
+    }
     return a && b > UINT64_MAX / a ? UINT64_MAX : a * b;
 }
 
@@ -1254,9 +1259,10 @@ std::uint64_t cells(std::uint64_t a, std::uint64_t b, std::uint32_t e) noexcept
     return ((b - a + (std::uint64_t(1) << e) - 1) >> e) + 1;
 }
 
-// Code-block and precinct state of one tile-component, over every resolution.
+// Code-block and precinct state of one tile-component, over every resolution; most_precincts
+// becomes the most precincts of any of its resolutions, if more.
 std::uint64_t structure_bytes(const CodingStyle& s, std::uint32_t factor, std::uint64_t tcx0, std::uint64_t tcy0,
-                              std::uint64_t tcx1, std::uint64_t tcy1) noexcept
+                              std::uint64_t tcx1, std::uint64_t tcy1, std::uint64_t& most_precincts) noexcept
 {
     std::uint64_t bytes = 0;
     const std::uint32_t levels = s.numresolutions - 1u;
@@ -1265,7 +1271,9 @@ std::uint64_t structure_bytes(const CodingStyle& s, std::uint32_t factor, std::u
         const std::uint64_t rx0 = ceildivpow2(std::uint32_t(tcx0), down), ry0 = ceildivpow2(std::uint32_t(tcy0), down);
         const std::uint64_t rx1 = ceildivpow2(std::uint32_t(tcx1), down), ry1 = ceildivpow2(std::uint32_t(tcy1), down);
         const std::uint32_t ppx = s.precincts[r] & 0xF, ppy = s.precincts[r] >> 4;
-        bytes = sat_add(bytes, sat_mul(sat_mul(cells(rx0, rx1, ppx), cells(ry0, ry1, ppy)), kPrecinct));
+        const std::uint64_t precincts = sat_mul(cells(rx0, rx1, ppx), cells(ry0, ry1, ppy));
+        most_precincts = precincts > most_precincts ? precincts : most_precincts;
+        bytes = sat_add(bytes, sat_mul(precincts, kPrecinct));
         // code-blocks never cross a precinct: above resolution 0 the bands are half the resolution
         const std::uint32_t gx = r ? (ppx ? ppx - 1 : 0) : ppx, gy = r ? (ppy ? ppy - 1 : 0) : ppy;
         const std::uint32_t cbw = s.cblkw < gx ? s.cblkw : gx, cbh = s.cblkh < gy ? s.cblkh : gy;
@@ -1283,9 +1291,41 @@ std::uint64_t structure_bytes(const CodingStyle& s, std::uint32_t factor, std::u
     return bytes;
 }
 
+// One tile's part of the working memory, with each component's coding style from style(c) and the
+// tile's layers: the code-block and precinct state of every resolution, the packet iterator's table
+// of packets met (a bit for each layer, plus one, resolution, component and precinct), and the
+// tile's coefficients at the decoded level when there are several tiles (the coefficients of a
+// single tile are the image's samples).
+template <class Style>
+std::uint64_t tile_part(const MainHeader& mh, const Rect& t, Style style, std::uint32_t layers, std::uint32_t factor,
+                        const bool* selected) noexcept
+{
+    const bool several = mh.tile_count() > 1;
+    std::uint64_t tile = 0, most_precincts = 0;
+    std::uint32_t most_resolutions = 0;
+    for (std::uint32_t c = 0; c < mh.numcomps; ++c) {
+        const SizComponent& sc = mh.comps[c];
+        const std::uint64_t tcx0 = ceildiv(t.x0, sc.dx), tcy0 = ceildiv(t.y0, sc.dy);
+        const std::uint64_t tcx1 = ceildiv(t.x1, sc.dx), tcy1 = ceildiv(t.y1, sc.dy);
+        const CodingStyle& s = style(c);
+        most_resolutions = s.numresolutions > most_resolutions ? s.numresolutions : most_resolutions;
+        tile = sat_add(tile,
+                       sat_mul(structure_bytes(s, factor, tcx0, tcy0, tcx1, tcy1, most_precincts), kArenaReserve));
+        if (several && (!selected || selected[c])) {
+            // the tile's coefficients at the decoded level, before they go to the image
+            const std::uint64_t w = ceildivpow2(std::uint32_t(tcx1), factor) - ceildivpow2(std::uint32_t(tcx0), factor);
+            const std::uint64_t h = ceildivpow2(std::uint32_t(tcy1), factor) - ceildivpow2(std::uint32_t(tcy0), factor);
+            tile = sat_add(tile, sat_mul(sat_mul(w, h), 4));
+        }
+    }
+    const std::uint64_t table_bits =
+        sat_mul(sat_mul(sat_mul(std::uint64_t(layers) + 1, most_resolutions), mh.numcomps), most_precincts);
+    return sat_add(tile, sat_mul(table_bits / 8 + 16, kArenaReserve));
+}
+
 }  // namespace
 
-std::uint64_t decode_working_memory(const MainHeader& mh, std::uint32_t factor, const bool* selected) noexcept
+std::uint64_t image_working_memory(const MainHeader& mh, std::uint32_t factor, const bool* selected) noexcept
 {
     std::uint64_t total = kScratch;
     // the decoded samples: int32 per sample, whichever geometry rule the decode uses
@@ -1305,60 +1345,44 @@ std::uint64_t decode_working_memory(const MainHeader& mh, std::uint32_t factor, 
         longest = w > longest ? w : longest;
         longest = h > longest ? h : longest;
     }
-    total = sat_add(total, sat_mul(longest, kLineBytes));
-    // the largest tile: the first, an inner and the last column and row of the grid
-    const std::uint32_t cols[3] = {0, mh.tw > 2 ? 1u : 0u, mh.tw - 1}, rows[3] = {0, mh.th > 2 ? 1u : 0u, mh.th - 1};
-    const bool several = mh.tw * mh.th > 1;
+    return sat_add(total, sat_mul(longest, kLineBytes));
+}
+
+std::uint64_t tile_working_memory(const MainHeader& mh, std::uint32_t tile, const TileComponentParams* params,
+                                  std::uint32_t factor, const bool* selected) noexcept
+{
+    return tile_part(mh, tile_rect(mh, tile), [params](std::uint32_t c) -> const CodingStyle& { return *params[c].style; },
+                     params[0].coding->numlayers, factor, selected);
+}
+
+std::uint64_t decode_working_memory(const MainHeader& mh, std::uint32_t factor, const bool* selected) noexcept
+{
+    // the largest tile with the main header's coding: the first, an inner and the last column and
+    // row of the grid, each once
+    std::uint32_t cols[3] = {0, 0, 0}, rows[3] = {0, 0, 0}, ncols = 1, nrows = 1;
+    if (mh.tw > 2) {
+        cols[ncols++] = 1;
+    }
+    if (mh.tw > 1) {
+        cols[ncols++] = mh.tw - 1;
+    }
+    if (mh.th > 2) {
+        rows[nrows++] = 1;
+    }
+    if (mh.th > 1) {
+        rows[nrows++] = mh.th - 1;
+    }
     std::uint64_t largest = 0;
-    for (std::uint32_t qi = 0; qi < 3; ++qi) {
-        for (std::uint32_t pi = 0; pi < 3; ++pi) {
-            const Rect t = tile_rect(mh, rows[qi] * mh.tw + cols[pi]);
-            std::uint64_t tile = 0;
-            for (std::uint32_t c = 0; c < mh.numcomps; ++c) {
-                const SizComponent& sc = mh.comps[c];
-                const std::uint64_t tcx0 = ceildiv(t.x0, sc.dx), tcy0 = ceildiv(t.y0, sc.dy);
-                const std::uint64_t tcx1 = ceildiv(t.x1, sc.dx), tcy1 = ceildiv(t.y1, sc.dy);
-                const CodingStyle& s = mh.main_style(c);
-                tile = sat_add(tile, structure_bytes(s, factor, tcx0, tcy0, tcx1, tcy1));
-                if (several && (!selected || selected[c])) {
-                    // the tile's coefficients at the decoded level, before they go to the image
-                    const std::uint64_t w = ceildivpow2(std::uint32_t(tcx1), factor) - ceildivpow2(std::uint32_t(tcx0), factor);
-                    const std::uint64_t h = ceildivpow2(std::uint32_t(tcy1), factor) - ceildivpow2(std::uint32_t(tcy0), factor);
-                    tile = sat_add(tile, sat_mul(sat_mul(w, h), 4));
-                }
-            }
+    for (std::uint32_t qi = 0; qi < nrows; ++qi) {
+        for (std::uint32_t pi = 0; pi < ncols; ++pi) {
+            const std::uint64_t tile =
+                tile_part(mh, tile_rect(mh, rows[qi] * mh.tw + cols[pi]),
+                          [&mh](std::uint32_t c) -> const CodingStyle& { return mh.main_style(c); }, mh.cod.numlayers,
+                          factor, selected);
             largest = tile > largest ? tile : largest;
         }
     }
-    return sat_add(total, largest);
-}
-
-std::uint64_t tile_packets(const MainHeader& mh, std::uint32_t tile, const TileComponentParams* params) noexcept
-{
-    const Rect t = tile_rect(mh, tile);
-    std::uint64_t precincts = 0;
-    for (std::uint32_t c = 0; c < mh.numcomps; ++c) {
-        const CodingStyle* s = params[c].style;
-        const SizComponent& sc = mh.comps[c];
-        const std::uint32_t tcx0 = ceildiv(t.x0, sc.dx), tcy0 = ceildiv(t.y0, sc.dy);
-        const std::uint32_t tcx1 = ceildiv(t.x1, sc.dx), tcy1 = ceildiv(t.y1, sc.dy);
-        const std::uint32_t levels = s->numresolutions - 1u;
-        for (std::uint32_t r = 0; r <= levels; ++r) {
-            const std::uint32_t down = levels - r;
-            const std::uint32_t rx0 = ceildivpow2(tcx0, down), ry0 = ceildivpow2(tcy0, down);
-            const std::uint32_t rx1 = ceildivpow2(tcx1, down), ry1 = ceildivpow2(tcy1, down);
-            if (rx0 >= rx1 || ry0 >= ry1) {
-                continue;
-            }
-            const std::uint32_t ppx = s->precincts[r] & 0xF, ppy = s->precincts[r] >> 4;
-            // OpenJPEG's precinct grid: from the precinct holding rx0 to the one past rx1
-            const std::uint64_t pw = ((std::uint64_t(ceildivpow2(rx1, ppx)) << ppx) - ((std::uint64_t(rx0) >> ppx) << ppx)) >> ppx;
-            const std::uint64_t ph = ((std::uint64_t(ceildivpow2(ry1, ppy)) << ppy) - ((std::uint64_t(ry0) >> ppy) << ppy)) >> ppy;
-            precincts = sat_add(precincts, sat_mul(pw, ph));
-        }
-    }
-    // the layers are the tile's (its COD's, or the main header's), the same in every component
-    return sat_mul(precincts, params[0].coding->numlayers);
+    return sat_add(image_working_memory(mh, factor, selected), largest);
 }
 
 }  // namespace nj2k::detail

@@ -4,14 +4,18 @@
 # neo-j2k
 
 A JPEG 2000 Part 1 codec (decode and encode, lossless 5/3 and lossy 9/7) in C++20, built as a static library or
-as its own DLL (`neoj2k.dll`, `libneoj2k.so`). Its arithmetic is OpenJPEG 2.5.4's, so whole-file decodes are
-bit-identical to it; everything around the arithmetic is rebuilt for small images, flawless partial decodes and
-bounded resources. A native Rust crate follows later and is tested against the C++ library bit for bit.
+as a shared library (`neoj2k.dll`, `libneoj2k.so`). Its arithmetic is OpenJPEG 2.5.4's, so its decodes are
+bit-identical to OpenJPEG 2.5.4 on x86-64 through OpenJPEG's SSE 9/7 path (`opj_includes.h` defines `__SSE__` on
+x86-64; its scalar path, which AArch64 takes, may be fused into FMA by GCC and Clang), both built and compared
+without floating-point contraction (`-ffp-contract=off`; MSVC `/fp:precise` without `/fp:contract`), lossy 9/7
+included. Everything around the arithmetic is rebuilt for small images, defined partial decodes and bounded
+resources: the decoder limits (`doc/api.md`) bound the work and the memory a codestream can ask for, checked
+from its headers before anything is allocated. Where OpenJPEG departs from the standard, neo-j2k follows the
+standard and lists the departure with its test (`doc/departures.md`). A native Rust crate follows later and is
+tested against the C++ library bit for bit.
 
 Licence: BSD-2-Clause (`LICENSE`). Code ported from OpenJPEG keeps its own BSD-2-Clause notices (`NOTICE.md`,
 `LICENSE.OpenJPEG`).
-
-The repository is private until the C++ library and the Rust crate are at parity and fuzzed.
 
 ## State
 
@@ -19,11 +23,16 @@ Stage 0, the skeleton: the build, the draft API (OpenJPEG's API under `nj2k_` na
 compatibility header), CI, the test oracle, the corpus and its reference tables, the differential, cut-point,
 layer and conformance harness, fuzz targets and the bench.
 
-Stage 1b, the header and the limits: streams, the decoder up to the decode, the main and tile-part header
-model and the JP2/JPH box reader, the decoder limits (the Second Life profile built in, an OpenSim module),
-statuses (`NJ2K_E_NEED_DATA`, `NJ2K_TRUNCATED` for 1c's partial decodes), the allocator hook, the reduce
-policy and the decoded dimensions (`doc/api.md`). Decoding comes in stage 1c, the encoder in 6a
-(`doc/stages.md`).
+Stage 1b, the header and the limits: streams, the main and tile-part header model and the JP2/JPH box reader,
+the decoder limits (the Second Life profile built in, an OpenSim module), statuses, the allocator hook, the
+reduce policy and the decoded dimensions.
+
+Stage 1c, the decoder: whole and partial codestreams decode bit-identical to the oracle at every reduce level and
+every cut point (the stage 1a semantics: every complete codeword segment kept), through OpenJPEG's API or from
+memory into the caller's buffers (`nj2k_read_header_memory`, `nj2k_decode_memory`: one decoder per thread, the
+main header parsed once, the caller's bytes read in place and never written, no heap call once warmed up for
+images up to 256 x 256). Large images decode too, on one thread as fast as OpenJPEG or faster (`doc/bench.md`).
+Decoding by tile and decode areas come later, the encoder in 6a (`doc/stages.md`).
 
 ## Build and test
 

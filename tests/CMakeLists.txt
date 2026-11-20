@@ -1,9 +1,10 @@
 # SPDX-License-Identifier: BSD-2-Clause
 # Copyright (c) 2026, Anne Skydancer (neo-j2k)
 #
-# Tests: API units, header checks, the oracle against its reference tables (whole files at every
-# reduce level, every cut point of the small files), the layer-boundary oracle, the oracle's known
-# resource defects, ISO class 1 conformance, the fuzz targets on their seeds (fuzz/CMakeLists.txt),
+# Tests: API units, header checks, the decode core's units, the oracle and neo-j2k against the
+# oracle's reference tables (whole files at every reduce level, every cut point of the small files),
+# the layer-boundary oracle, the oracle's known resource defects, ISO class 1 conformance, neo-j2k
+# against the oracle on the test data, the fuzz targets on their seeds (fuzz/CMakeLists.txt),
 # and the export, global-state, LTO and instruction-set object checks. Compiled tests run with
 # TEMP/TMP (TMPDIR) in NJ2K_TEST_TMP when it is set.
 set(NJ2K_CORPUS "${PROJECT_SOURCE_DIR}/corpus/generated")
@@ -25,6 +26,9 @@ nj2k_test_program(nj2k_api_unit unit/api_unit.cpp)
 # stage 1b: the header model and the limits, through the API and the library's internals (included
 # by their path: src/ is no include directory, its limits and memory headers would hide the C ones)
 nj2k_test_program(nj2k_header_unit unit/header_unit.cpp)
+# stage 1c: the decode core's departures, kernels, memory decode and zero-heap gate
+nj2k_test_program(nj2k_decode_unit unit/decode_unit.cpp)
+nj2k_simd(nj2k_decode_unit)  # the AVX2 kernels' declarations, compared with their scalar references
 # the local gate on a viewer's texture cache (private: run where it is, doc/testing.md)
 nj2k_test_program(nj2k_cache_check tools/nj2k_cache_check.cpp)
 if(NJ2K_PROFILE_OPENSIM)
@@ -63,6 +67,7 @@ function(nj2k_add_test name)
 endfunction()
 
 nj2k_add_test(api_unit nj2k_api_unit)
+nj2k_add_test(decode_unit nj2k_decode_unit "${NJ2K_CORPUS}")
 nj2k_add_test(header_unit nj2k_header_unit "${NJ2K_CORPUS}" "${PROJECT_SOURCE_DIR}/fuzz/bombs"
               "${CMAKE_CURRENT_SOURCE_DIR}/known-defects")
 
@@ -125,6 +130,47 @@ if(NJ2K_TEST_NIGHTLY)
     message(FATAL_ERROR "the nightly reference table ${_nj2k_ref_nightly} is missing (it is committed)")
   endif()
   nj2k_add_test(oracle_cuts_nightly nj2k_diff verify --a oracle --ref "${_nj2k_ref_nightly}" --root "${NJ2K_CORPUS}")
+endif()
+
+# neo-j2k against the same tables (stage 1c gate): whole files at every reduce level and every cut
+# point give the oracle's digests, one test per file as above. The files of neoj2k-departures.txt,
+# where neo-j2k departs from the oracle on purpose (doc/departures.md), are left out and tested on
+# their own (decode_unit); verify fails on a listed file the table does not hold. Then the
+# layer-boundary oracle with no known defect, ISO class 1 conformance, and with the test data every
+# conformance codestream and JP2 file in every mode at every reduce level equal to the oracle (with
+# tools/fetch_testdata.py --all, OpenJPEG's non-regression files too, less their departures).
+set(_nj2k_departures "${CMAKE_CURRENT_SOURCE_DIR}/neoj2k-departures.txt")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_nj2k_departures}")
+file(STRINGS "${_nj2k_departures}" _nj2k_departure_lines REGEX "^[^#]")
+set(_nj2k_departure_files)
+foreach(_line IN LISTS _nj2k_departure_lines)
+  string(REGEX REPLACE "[ \t].*$" "" _file "${_line}")
+  list(APPEND _nj2k_departure_files "${_file}")
+endforeach()
+nj2k_add_test(neoj2k_whole nj2k_diff verify --a neoj2k --ref "${_nj2k_ref}" --root "${NJ2K_CORPUS}" --no-cuts
+              --departures "${_nj2k_departures}")
+foreach(_file IN LISTS _nj2k_cut_files)
+  if(_file IN_LIST _nj2k_departure_files)
+    continue()
+  endif()
+  string(REGEX REPLACE "\\.j2k$" "" _name "${_file}")
+  nj2k_add_test(neoj2k_cuts.${_name} nj2k_diff verify --a neoj2k --ref "${_nj2k_ref}" --root "${NJ2K_CORPUS}"
+                --no-whole --only "${_file}" --cut-steps ${NJ2K_TEST_CUT_STEP})
+endforeach()
+nj2k_add_test(neoj2k_layers nj2k_diff layers --a neoj2k --files "${NJ2K_CORPUS}")
+if(NJ2K_TEST_NIGHTLY)
+  nj2k_add_test(neoj2k_cuts_nightly nj2k_diff verify --a neoj2k --ref "${_nj2k_ref_nightly}" --root "${NJ2K_CORPUS}")
+endif()
+nj2k_add_test(conformance_class1_neoj2k nj2k_conformance --a neoj2k --data "${NJ2K_TESTDATA}")
+set_tests_properties(conformance_class1_neoj2k PROPERTIES SKIP_RETURN_CODE 77)
+if(EXISTS "${NJ2K_TESTDATA}/input/conformance")
+  nj2k_add_test(neoj2k_conformance_differential nj2k_diff compare --a oracle --b neoj2k --jp2
+                --files "${NJ2K_TESTDATA}/input/conformance" --mode plain,strict,viewer --reduce 0-5)
+endif()
+if(EXISTS "${NJ2K_TESTDATA}/input/nonregression")
+  nj2k_add_test(neoj2k_nonregression_differential nj2k_diff compare --a oracle --b neoj2k --jp2
+                --files "${NJ2K_TESTDATA}/input/nonregression" --mode plain,viewer --reduce 0-5
+                --departures "${CMAKE_CURRENT_SOURCE_DIR}/neoj2k-departures-nonregression.txt")
 endif()
 
 # The oracle's known resource defects (doc/oracle.md, tests/oracle-known-resource-defects.txt):

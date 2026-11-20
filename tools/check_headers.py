@@ -17,7 +17,9 @@ EXEMPT_FILES = {"LICENSE", ".gitattributes", ".gitignore", "CMakePresets.json"} 
 TEXT_SUFFIXES = (".c", ".cc", ".cpp", ".h", ".hpp", ".inl", ".py", ".cmake", ".txt", ".md", ".yml", ".yaml",
                  ".json", ".in", ".map", ".sh", ".cmd", ".dict", ".toml", ".patch")
 OPENJPEG_DERIVED = ("include/neoj2k/neoj2k.h", "src/image.cpp", "src/defaults.cpp", "src/header.cpp",
-                    "src/jp2.cpp", "src/codec.cpp", "src/stream.cpp")
+                    "src/jp2.cpp", "src/codec.cpp", "src/stream.cpp",
+                    # stage 1c: the decoder
+                    "src/decode.cpp", "src/tile.cpp", "src/t2.cpp", "src/t1.cpp", "src/dwt.cpp", "src/mct.cpp")
 
 
 def tracked_files(root):
