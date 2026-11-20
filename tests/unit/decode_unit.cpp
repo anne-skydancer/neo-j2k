@@ -2069,6 +2069,32 @@ void test_dp15()
     }
 }
 
+// DP-20: the packet walk stops once a tile's data is exhausted in strict mode too (the oracle stops
+// only in the non-strict modes). Every prefix of codestreams with EPH markers, with SOP markers, and
+// with both, in strict mode: a cut at a packet boundary leaves packets to read from no bytes, and
+// neo-j2k's decode (refused or not) is the oracle's, with the same image.
+void test_dp20()
+{
+    auto oracle = make_oracle_backend();
+    auto neo = make_neoj2k_backend();
+    std::size_t cuts = 0, decoded = 0;
+    for (const char* name : {"mark_eph.j2k", "mark_sop.j2k", "mark_sop_eph_97.j2k"}) {
+        const Bytes cs = corpus_file(name);
+        for (std::size_t n = 1; n <= cs.size(); ++n) {
+            Request rq;
+            rq.data = cs.data();
+            rq.size = n;
+            rq.mode = Mode::Strict;
+            const Outcome a = oracle->decode(rq), b = neo->decode(rq);
+            ++cuts;
+            decoded += a.ok ? 1 : 0;
+            CHECK_MSG(a.ok == b.ok && (!a.ok || a.hash == b.hash), "%s cut at %zu of %zu in strict mode: oracle %s, neo-j2k %s",
+                      name, n, cs.size(), a.ok ? "decodes" : "refuses", b.ok ? "decodes" : "refuses");
+        }
+    }
+    CHECK_MSG(cuts > 0 && decoded > 0, "DP-20: %zu cuts, %zu decoded", cuts, decoded);
+}
+
 // The viewer's path in CI: one codec for every file and reduce level (its header held while the main
 // header is the same), the Second Life limits, NJ2K_REDUCE_CLAMP, non-strict, 8-bit planes with guard
 // bytes, sized once nj2k_get_decoded_dimensions() accepts the header: every decode equals the
@@ -2955,6 +2981,7 @@ int main(int argc, char** argv)
     test_dp12();
     test_dp13();
     test_dp15();
+    test_dp20();
     test_memory_decode();
     test_large_generated();
     test_mct_unpaired();

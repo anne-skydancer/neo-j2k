@@ -100,6 +100,9 @@ jobs:
         include:
           - { preset: linux-gcc, cc: gcc-15, cxx: g++-15, packages: g++-15 }
           - { preset: linux-gcc-scalar, cc: gcc-15, cxx: g++-15, packages: g++-15 }
+          # link-time optimisation with -Werror=odr: a type defined differently in two translation
+          # units (the decoder's and the encoder's tag trees did) fails the build
+          - { preset: linux-gcc-lto-odr, cc: gcc-15, cxx: g++-15, packages: g++-15 }
           - { preset: linux-clang, cc: clang, cxx: clang++, packages: clang lld }
           - { preset: linux-clang-asan-ubsan, cc: clang, cxx: clang++, packages: clang lld }
           # stage 5: the test preset runs the tests named threads (decode_threads: one thread against

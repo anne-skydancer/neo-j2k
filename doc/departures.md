@@ -17,7 +17,7 @@ the two decoders differ, not merely a marker that could. The reference tests lea
 the non-regression differential those of `tests/neoj2k-departures-nonregression.txt`, each tested on its
 own.
 Departures are numbered DP-n and the oracle's known defects OD-n (`doc/oracle.md`), apart from the
-owner's decisions D1-D15 and the fork audit's findings O1-O3. DP-16 to DP-19 are the encoder's (stage 6a).
+owner's decisions D1-D15 and the fork audit's findings O1-O3. DP-16 to DP-19 are the encoder's (stage 6a); DP-20 is the decoder's again (found in the Rust-twin scoping, 2026-11-20).
 
 | # | Case | OpenJPEG 2.5.4 | neo-j2k | Test |
 |---|---|---|---|---|
@@ -40,6 +40,7 @@ owner's decisions D1-D15 and the fork audit's findings O1-O3. DP-16 to DP-19 are
 | DP-17 | A write function that returns 0 | `opj_stream_flush` calls it again for ever | the stream fails (`NJ2K_E_OUTPUT` from the encoder's call) | `encode_unit` (`test_limits_and_states`: a write function that returns 0, and one that fails after n bytes) |
 | DP-18 | Encoder settings OpenJPEG accepts and gets wrong: the colour transform (`tcp_mct` 1) of fewer than three components, and a comment of 65,532 bytes or more (Lcom, the comment's length plus 4, no longer fits 16 bits) | the first reads components that do not exist (the oracle crashes); the second writes Lcom modulo 65,536, so the codestream is damaged | refused with `NJ2K_E_ARGUMENT` | `encode_unit` (`test_limits_and_states`, DP-18); the encode fuzz target keeps the first from the oracle |
 | DP-19 | The sample planes of the image given to `nj2k_start_compress` | `opj_start_compress` moves them into the codec and sets the caller's `data` pointers to `NULL`; the single-tile path then shifts the samples in place | copied: the caller's image is untouched and still owns its planes (`nj2k_image_destroy` frees them as before); the codec holds its own copy until `nj2k_encode` returns | `encode_unit` (`test_limits_and_states`, DP-19: the planes are the same after the encode) |
+| DP-20 | A cut tile whose data ends at a packet boundary, in strict mode (the packet walk's exhaustion exit, `t2.cpp`) | the walk stops once the tile's data is exhausted only in the non-strict modes (`opj_t2_decode_packets`: `!l_cp->strict`); in strict mode it goes on and reads each remaining packet's header from no bytes, an absent packet, or an error where EPH markers are in use | the walk stops in strict mode too (owner decision 2026-11-19): the remaining packets are absent without being read, and with EPH markers in use the next packet reports OpenJPEG's error ("Not enough space for required EPH marker"), so the outcome and the image are the oracle's; only the work differs | `decode_unit` (`test_dp20`: every prefix of `mark_eph.j2k`, `mark_sop.j2k` and `mark_sop_eph_97.j2k` in strict mode, refused or decoded as the oracle does, with the same image) |
 
 ## Shared with OpenJPEG: a NaN's payload after the ICT
 

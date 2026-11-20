@@ -47,16 +47,16 @@ struct EncCblk {
     EncLayer* layers;
 };
 
-struct TagNode {
-    TagNode* parent;
+struct EncTagNode {
+    EncTagNode* parent;
     std::int32_t value;
     std::int32_t low;
     std::uint32_t known;
 };
 
-struct TagTree {
+struct EncTagTree {
     std::uint32_t numleafsh, numleafsv, numnodes;
-    TagNode* nodes;
+    EncTagNode* nodes;
 };
 
 // A band with its one precinct (the viewer's streams have precincts of 2^15 samples, larger than
@@ -68,7 +68,7 @@ struct EncBand {
     std::int32_t numbps;
     std::uint32_t cw, ch;  // code-blocks of the precinct
     EncCblk* cblks;
-    TagTree incltree, imsbtree;
+    EncTagTree incltree, imsbtree;
     bool empty() const noexcept { return x1 - x0 == 0 || y1 - y0 == 0; }
 };
 
@@ -152,6 +152,6 @@ bool enc_rate_allocate_and_packets(const Messages& msg, EncTile& tile, const Enc
                                    std::uint8_t* dest, std::uint32_t len, std::uint32_t* written) noexcept;
 
 // the tag tree of opj_tgt_create, for numleafsh x numleafsv leaves; false when the arena runs out
-bool enc_tgt_create(Arena& arena, TagTree& tree, std::uint32_t h, std::uint32_t v) noexcept;
+bool enc_tgt_create(Arena& arena, EncTagTree& tree, std::uint32_t h, std::uint32_t v) noexcept;
 
 }  // namespace nj2k::detail

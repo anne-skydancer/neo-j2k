@@ -47,6 +47,15 @@
       "cacheVariables": { "NJ2K_SIMD": "SCALAR" }
     },
     {
+      "name": "linux-gcc-lto-odr",
+      "displayName": "Linux, GCC, link-time optimisation with -Werror=odr (one definition rule across translation units)",
+      "inherits": "linux-base",
+      "cacheVariables": {
+        "CMAKE_C_FLAGS": "-flto=auto",
+        "CMAKE_CXX_FLAGS": "-flto=auto -Wodr -Werror=odr"
+      }
+    },
+    {
       "name": "linux-clang",
       "displayName": "Linux, Clang",
       "inherits": "linux-base",
@@ -86,6 +95,7 @@
     { "name": "windows-clang-cl-asan", "configurePreset": "windows-clang-cl-asan", "configuration": "RelWithDebInfo" },
     { "name": "linux-gcc", "configurePreset": "linux-gcc" },
     { "name": "linux-gcc-scalar", "configurePreset": "linux-gcc-scalar" },
+    { "name": "linux-gcc-lto-odr", "configurePreset": "linux-gcc-lto-odr" },
     { "name": "linux-clang", "configurePreset": "linux-clang" },
     { "name": "linux-clang-asan-ubsan", "configurePreset": "linux-clang-asan-ubsan" },
     { "name": "linux-clang-tsan", "configurePreset": "linux-clang-tsan" },
@@ -104,6 +114,7 @@
     { "name": "windows-clang-cl-asan", "inherits": "test-base", "configurePreset": "windows-clang-cl-asan", "configuration": "RelWithDebInfo" },
     { "name": "linux-gcc", "inherits": "test-base", "configurePreset": "linux-gcc" },
     { "name": "linux-gcc-scalar", "inherits": "test-base", "configurePreset": "linux-gcc-scalar" },
+    { "name": "linux-gcc-lto-odr", "inherits": "test-base", "configurePreset": "linux-gcc-lto-odr" },
     { "name": "linux-clang", "inherits": "test-base", "configurePreset": "linux-clang" },
     { "name": "linux-clang-asan-ubsan", "inherits": "test-base", "configurePreset": "linux-clang-asan-ubsan" },
     {
