@@ -125,9 +125,9 @@ int floorlog2(std::int32_t a) noexcept
 
 // ---- tgt.c: the tag tree coder ----
 
-void tgt_reset(TagTree& tree) noexcept
+void tgt_reset(EncTagTree& tree) noexcept
 {
-    TagNode* node = tree.nodes;
+    EncTagNode* node = tree.nodes;
     for (std::uint32_t i = 0; i < tree.numnodes; ++i) {
         node->value = 999;
         node->low = 0;
@@ -136,20 +136,20 @@ void tgt_reset(TagTree& tree) noexcept
     }
 }
 
-void tgt_setvalue(TagTree& tree, std::uint32_t leafno, std::int32_t value) noexcept
+void tgt_setvalue(EncTagTree& tree, std::uint32_t leafno, std::int32_t value) noexcept
 {
-    TagNode* node = &tree.nodes[leafno];
+    EncTagNode* node = &tree.nodes[leafno];
     while (node && node->value > value) {
         node->value = value;
         node = node->parent;
     }
 }
 
-void tgt_encode(Bio& bio, TagTree& tree, std::uint32_t leafno, std::int32_t threshold) noexcept
+void tgt_encode(Bio& bio, EncTagTree& tree, std::uint32_t leafno, std::int32_t threshold) noexcept
 {
-    TagNode* stk[31];
-    TagNode** stkptr;
-    TagNode* node;
+    EncTagNode* stk[31];
+    EncTagNode** stkptr;
+    EncTagNode* node;
     std::int32_t low;
 
     stkptr = stk;
@@ -645,13 +645,13 @@ void rateallocate(const Messages& msg, EncTile& tile, const EncParams& p, std::u
 
 }  // namespace
 
-bool enc_tgt_create(Arena& arena, TagTree& tree, std::uint32_t numleafsh, std::uint32_t numleafsv) noexcept
+bool enc_tgt_create(Arena& arena, EncTagTree& tree, std::uint32_t numleafsh, std::uint32_t numleafsv) noexcept
 {
     std::int32_t nplh[32];
     std::int32_t nplv[32];
-    TagNode* node = nullptr;
-    TagNode* l_parent_node = nullptr;
-    TagNode* l_parent_node0 = nullptr;
+    EncTagNode* node = nullptr;
+    EncTagNode* l_parent_node = nullptr;
+    EncTagNode* l_parent_node0 = nullptr;
     std::uint32_t i;
     std::int32_t j, k;
     std::uint32_t numlvls;
@@ -675,7 +675,7 @@ bool enc_tgt_create(Arena& arena, TagTree& tree, std::uint32_t numleafsh, std::u
     if (tree.numnodes == 0) {
         return false;
     }
-    tree.nodes = arena.make_array<TagNode>(tree.numnodes);
+    tree.nodes = arena.make_array<EncTagNode>(tree.numnodes);
     if (!tree.nodes) {
         return false;
     }
