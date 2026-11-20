@@ -5,11 +5,13 @@
 // interleaved round by round (the median of each), on synthetic planes. Every pair is checked
 // equal before it is timed.
 //
-//   nj2k_kernels [--size 1024] [--rounds 41] [--only output]
+//   nj2k_kernels [--size 1024] [--rounds 41] [--only output|dwt97|dwt53]
 //
 // - output: the end of a 1024^2 RGB 9/7 decode into the viewer's raw image (8 bits, interleaved,
 //   bottom-up): stage 1c's steps (the ICT over the three planes, the DC shift of each, the strided
 //   copy of the low bytes) against stage 2's fused pass.
+// - dwt97, dwt53: the inverse wavelet of one size^2 plane, five levels, stage 1c's transform
+//   (OpenJPEG's structure) against the current one.
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -23,6 +25,7 @@
 #include <neoj2k/neoj2k.h>
 
 // the library's internals (by their path: src/ is no include directory)
+#include "../src/dwt.h"
 #include "../src/mct.h"
 #include "../src/output.h"
 
@@ -135,6 +138,56 @@ int bench_output(std::uint32_t n, int rounds)
     return 0;
 }
 
+int bench_dwt(std::uint32_t n, bool reversible, int rounds)
+{
+    using namespace nj2k::detail;
+    std::mt19937 rng(11);
+    std::uniform_int_distribution<int> di(-2000, 2000);
+    std::uniform_real_distribution<float> df(-200.0f, 200.0f);
+    const std::uint32_t numres = 6;
+    ResRect res[6];
+    for (std::uint32_t r = 0; r < numres; ++r) {
+        const std::int32_t s = static_cast<std::int32_t>((n + (1u << (numres - 1 - r)) - 1) >> (numres - 1 - r));
+        res[r] = ResRect{0, 0, s, s};
+    }
+    const std::size_t samples = std::size_t(n) * n;
+    std::vector<std::int32_t> src(samples), a(samples), b(samples);
+    for (auto& v : src) {
+        v = reversible ? di(rng) : static_cast<std::int32_t>(float_bits(df(rng)));
+    }
+    std::vector<std::uint8_t> scratch_a(kernels::dwt_scratch_bytes_reference(res, numres, reversible) + 64);
+    std::vector<std::uint8_t> scratch_b(dwt_scratch_bytes(res, numres, reversible) + 64);
+    auto align = [](std::vector<std::uint8_t>& v) {
+        return reinterpret_cast<void*>((reinterpret_cast<std::uintptr_t>(v.data()) + 63) & ~std::uintptr_t(63));
+    };
+    void* sa = align(scratch_a);
+    void* sb = align(scratch_b);
+    auto before = [&] {
+        a = src;
+        kernels::dwt_decode_reference(a.data(), n, res, numres, reversible, sa);
+    };
+    auto after = [&] {
+        b = src;
+        dwt_decode(b.data(), n, res, numres, reversible, sb);
+    };
+    before();
+    after();
+    if (a != b) {
+        std::printf("dwt: the transform differs from stage 1c's\n");
+        return 1;
+    }
+    std::vector<double> tc;
+    for (int r = 0; r < rounds; ++r) {
+        const auto t0 = clk::now();
+        a = src;
+        tc.push_back(std::chrono::duration<double, std::micro>(clk::now() - t0).count());
+    }
+    std::printf("%s %u^2, %u levels (each time includes %.1f us of plane copy made for the timing)\n",
+                reversible ? "dwt53" : "dwt97", n, numres - 1, median(tc));
+    pair(reversible ? "dwt53" : "dwt97", rounds, before, after);
+    return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv)
@@ -151,13 +204,19 @@ int main(int argc, char** argv)
         } else if (a == "--only" && i + 1 < argc) {
             only = argv[++i];
         } else {
-            std::fprintf(stderr, "usage: nj2k_kernels [--size N] [--rounds R] [--only output]\n");
+            std::fprintf(stderr, "usage: nj2k_kernels [--size N] [--rounds R] [--only output|dwt97|dwt53]\n");
             return 2;
         }
     }
     int fails = 0;
     if (only.empty() || only == "output") {
         fails += bench_output(size, rounds);
+    }
+    if (only.empty() || only == "dwt97") {
+        fails += bench_dwt(size, false, rounds);
+    }
+    if (only.empty() || only == "dwt53") {
+        fails += bench_dwt(size, true, rounds);
     }
     return fails ? 1 : 0;
 }

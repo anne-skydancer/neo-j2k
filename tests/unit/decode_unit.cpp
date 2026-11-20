@@ -888,6 +888,79 @@ void test_output_fused()
     std::printf("fused output: %zu cases against the unfused steps\n", cases);
 }
 
+// n int32 at a 64-byte boundary in buf, as the decoder's wavelet scratch is (the AVX2 5/3 kernels
+// load and store it aligned, as OpenJPEG's do)
+std::int32_t* aligned_ints(std::vector<std::int32_t>& buf, std::size_t n)
+{
+    buf.assign(n + 16, 0);
+    return reinterpret_cast<std::int32_t*>((reinterpret_cast<std::uintptr_t>(buf.data()) + 63) & ~std::uintptr_t(63));
+}
+
+// Stage 3's inverse wavelet against stage 1c's (OpenJPEG's structure), whole tile-components of
+// random geometry: 1 to 7 resolutions, odd and even origins and sizes, 1 to 300 samples a side,
+// random and special samples (9/7: extremes, NaN, infinities; 5/3: int32 wrap-around), in both
+// builds: the transform as decodes take it, its scalar kernels, and its row-wise path on every level
+// (decodes take it on large levels only).
+void test_dwt_whole()
+{
+    namespace dk = nj2k::detail;
+    std::size_t cases = 0, bad = 0, samples = 0;
+    for (int round = 0; round < 1500; ++round) {
+        const bool reversible = (round & 1) != 0;
+        const std::uint32_t numres = 1 + static_cast<std::uint32_t>(g_rng() % 7);
+        const std::int32_t x0 = static_cast<std::int32_t>(g_rng() % 9), y0 = static_cast<std::int32_t>(g_rng() % 9);
+        const std::int32_t big = (g_rng() % 8) == 0 ? 300 : 70;
+        const std::int32_t x1 = x0 + 1 + static_cast<std::int32_t>(g_rng() % big);
+        const std::int32_t y1 = y0 + 1 + static_cast<std::int32_t>(g_rng() % big);
+        dk::ResRect res[8];
+        for (std::uint32_t r = 0; r < numres; ++r) {
+            const std::int32_t l = static_cast<std::int32_t>(numres - 1 - r);
+            auto cdp = [l](std::int32_t v) { return static_cast<std::int32_t>((std::int64_t(v) + (std::int64_t(1) << l) - 1) >> l); };
+            res[r] = dk::ResRect{cdp(x0), cdp(y0), cdp(x1), cdp(y1)};
+        }
+        const std::uint32_t w = static_cast<std::uint32_t>(res[numres - 1].x1 - res[numres - 1].x0);
+        const std::uint32_t h = static_cast<std::uint32_t>(res[numres - 1].y1 - res[numres - 1].y0);
+        std::vector<std::int32_t> src(std::size_t(w) * h);
+        const bool wide = (g_rng() & 3) == 0;
+        for (auto& v : src) {
+            v = reversible ? random_sample(wide) : random_float_sample();
+        }
+        const std::size_t sa = dk::kernels::dwt_scratch_bytes_reference(res, numres, reversible);
+        const std::size_t sb = dk::dwt_scratch_bytes(res, numres, reversible);
+        std::vector<std::int32_t> buf_a, buf_b;
+        void* scratch_a = aligned_ints(buf_a, sa / 4 + 16);
+        void* scratch_b = aligned_ints(buf_b, sb / 4 + 16);
+        auto a = src, b = src;
+        dk::kernels::dwt_decode_reference(a.data(), w, res, numres, reversible, scratch_a);
+        dk::dwt_decode(b.data(), w, res, numres, reversible, scratch_b);
+        std::size_t diff = 0;
+        for (std::size_t i = 0; i < a.size(); ++i) {
+            diff += reversible ? a[i] != b[i] : !same_float_bits(a[i], b[i]);
+        }
+        // the scalar kernels, and the row-wise transform on every level (scalar and the build's)
+        for (int variant = 0; variant < 3; ++variant) {
+            auto c = src;
+            if (variant == 0) {
+                dk::kernels::dwt_decode_scalar(c.data(), w, res, numres, reversible, scratch_b);
+            } else {
+                dk::kernels::dwt_decode_row_wise(c.data(), w, res, numres, reversible, variant == 1, scratch_b);
+            }
+            for (std::size_t i = 0; i < a.size(); ++i) {
+                diff += reversible ? a[i] != c[i] : !same_float_bits(a[i], c[i]);
+            }
+        }
+        bad += diff != 0;
+        if (diff && bad <= 5) {
+            std::printf("dwt %s: %u resolutions, (%d, %d)-(%d, %d): %zu samples differ\n", reversible ? "5/3" : "9/7",
+                        numres, x0, y0, x1, y1, diff);
+        }
+        ++cases;
+        samples += src.size();
+    }
+    CHECK_MSG(bad == 0, "inverse wavelet: %zu of %zu tile-components differ from stage 1c's transform", bad, cases);
+    std::printf("inverse wavelet: %zu tile-components, %zu samples, against stage 1c's transform\n", cases, samples);
+}
+
 #if defined(__AVX2__)
 void test_kernels_colour()
 {
@@ -986,14 +1059,6 @@ void test_kernels_output()
     }
     CHECK_MSG(bad == 0, "output kernels: %zu rows differ between scalar and AVX2", bad);
     std::printf("kernels: output rows %zu samples\n", samples);
-}
-
-// n int32 at a 64-byte boundary in buf, as the decoder's wavelet scratch is (the AVX2 5/3 kernels
-// load and store it aligned, as OpenJPEG's do)
-std::int32_t* aligned_ints(std::vector<std::int32_t>& buf, std::size_t n)
-{
-    buf.assign(n + 16, 0);
-    return reinterpret_cast<std::int32_t*>((reinterpret_cast<std::uintptr_t>(buf.data()) + 63) & ~std::uintptr_t(63));
 }
 
 // sn and dn of a line of len samples whose first sample has parity cas (OpenJPEG's rw_prev)
@@ -1848,6 +1913,7 @@ int main(int argc, char** argv)
     std::printf("kernels: scalar build, no AVX2 versions to compare\n");
 #endif
     test_output_fused();
+    test_dwt_whole();
     test_dp12();
     test_dp13();
     test_dp15();
