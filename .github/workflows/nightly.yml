@@ -79,14 +79,15 @@ jobs:
       - name: Fuzz
         run: |
           set -uo pipefail
-          mkdir -p findings seeds/header seeds/decode seeds/roundtrip
+          mkdir -p findings seeds/header seeds/decode seeds/roundtrip seeds/encode
           cp corpus/generated/*.j2k seeds/header/
           python3 -I fuzz/make_inputs.py --header-seeds seeds/header
           cp corpus/generated/*.j2k seeds/decode/
           python3 -I fuzz/make_inputs.py --decode-seeds seeds/decode
           cp fuzz/seeds/roundtrip/*.bin seeds/roundtrip/
+          cp fuzz/seeds/encode/*.bin seeds/encode/
           status=0
-          for t in header decode roundtrip; do
+          for t in header decode roundtrip encode; do
             fuzzer="build/linux-clang-fuzz/fuzz/nj2k_fuzz_$t"
             mkdir -p "work/$t"
             # new inputs go to the first folder: the corpus the cache keeps
