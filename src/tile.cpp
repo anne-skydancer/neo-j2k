@@ -4,8 +4,8 @@
 // A tile's layout and its samples, after OpenJPEG 2.5.4's tcd.c: opj_tcd_init_tile for decoding
 // (the geometry of every tile-component, resolution, band, precinct and code-block, the step sizes
 // and the checks that refuse a tile) and opj_tcd_decode_tile after Tier-2 (opj_t1_decode_cblks for
-// a whole tile, opj_tcd_dwt_decode, opj_tcd_mct_decode, opj_tcd_dc_level_shift_decode), on flat
-// arrays in the work arena. Code-blocks without data are not run through Tier-1: their samples
+// a whole tile, opj_tcd_dwt_decode, and opj_tcd_mct_decode's checks; the colour transform and the DC
+// shift themselves are the output pass's, output.h), on flat arrays in the work arena. Code-blocks without data are not run through Tier-1: their samples
 // are written as zeros, which is what Tier-1 gives them, after OpenJPEG's bit-plane check.
 // OpenJPEG's notice:
 //
@@ -54,8 +54,6 @@
 #include <climits>
 #include <cmath>
 #include <cstring>
-
-#include "mct.h"
 
 namespace nj2k::detail {
 

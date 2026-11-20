@@ -1465,8 +1465,9 @@ std::size_t dwt_scratch_bytes(const ResRect* res, std::uint32_t numres, bool rev
         return 0;
     }
     const std::size_t mr = max_resolution(res, numres);
-    // 5/3: kCols53 columns of the longest side; 9/7: a row and a bit a row (the row-wise transform
-    // needs less than the eight floats a sample OpenJPEG's took)
+    // 5/3: kCols53 columns of the longest side; 9/7: eight floats a sample of it (NB_ELTS_V8), as in
+    // stage 1c: unchanged, since the levels below the row-wise thresholds keep OpenJPEG's structure
+    // and its scratch. The row-wise path needs less (a row and one bit a row) and fits inside it.
     return reversible ? mr * kCols53 * sizeof(std::int32_t) : mr * kV8 * sizeof(float);
 }
 
@@ -1486,6 +1487,9 @@ void dwt_decode(std::int32_t* data, std::uint32_t w, const ResRect* res, std::ui
 
 namespace kernels {
 
+// Stage 1c's sizing, kept as the reference transform's own (the same formula as dwt_scratch_bytes
+// today, by design: it stays when dwt_scratch_bytes changes, so the test of the reference never
+// depends on the code under test)
 std::size_t dwt_scratch_bytes_reference(const ResRect* res, std::uint32_t numres, bool reversible) noexcept
 {
     if (numres <= 1) {

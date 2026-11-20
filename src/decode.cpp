@@ -949,6 +949,10 @@ struct Walk {
 
     // Writes k prepared components (one group of output.h's write_group: the same region, the colour
     // transformed three first when mct is set) finished into the image or the caller's planes.
+    // write_planes skips the caller's plane that a tile decoded into (pl.data == src, direct_output);
+    // this path has no such skip, deliberately: a direct-output tile never comes here (decode_tile
+    // finishes it in place and hand_over_whole copies it to the other planes with write_planes), so
+    // every source here is the decoder's own buffer and every plane of the component is written.
     void write_prepared(const Prepared* p, std::uint32_t k, Mct mct) noexcept
     {
         CopyComp cc[4];

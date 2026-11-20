@@ -248,7 +248,10 @@ std::unique_ptr<Backend> make_neoj2k_library_backend(const std::string& path, co
                                                      std::string* error)
 {
 #if defined(_WIN32)
-    const std::wstring wide(path.begin(), path.end());
+    // the path is UTF-8, as every path of the tests and the bench
+    const int n = MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, nullptr, 0);
+    std::wstring wide(static_cast<std::size_t>(n > 0 ? n : 1), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, wide.data(), n);
     HMODULE m = LoadLibraryExW(wide.c_str(), nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
     auto sym = [m](const char* s) { return m ? reinterpret_cast<void*>(GetProcAddress(m, s)) : nullptr; };
 #else

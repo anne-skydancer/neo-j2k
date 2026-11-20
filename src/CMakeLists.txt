@@ -146,8 +146,9 @@ endif()
 
 # The lane-per-code-block MQ prototype bench's copy of the library (bench/nj2k_mq_lanes.cpp, stage
 # 4): Tier-1 built with its trace hook, which reports every MQ segment and decision. Never shipped
-# or installed; the library targets above are built without the hook.
-if(NJ2K_BUILD_BENCH)
+# or installed; the library targets above are built without the hook. AVX2 builds only, as its one
+# user (bench/CMakeLists.txt).
+if(NJ2K_BUILD_BENCH AND NJ2K_SIMD STREQUAL "AVX2")
   nj2k_cpu_check_objects(nj2k_t1_trace_cpu_check "NJ2K_STATIC")
   add_library(nj2k_t1_trace STATIC $<TARGET_OBJECTS:nj2k_t1_trace_cpu_check>)
   nj2k_library_common(nj2k_t1_trace)
