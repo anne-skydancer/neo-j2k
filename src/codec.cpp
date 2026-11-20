@@ -375,7 +375,13 @@ std::size_t Decoder::kept_bytes() const noexcept
 
 void Decoder::trim_after_decode() noexcept
 {
+    // Both arenas are merged into one block here, at the end of the decode, not when the next one
+    // starts: a decode that grew either (a tile-part header with more markers than any before it, a
+    // larger layout) then leaves memory the same decode fits in, so even the first repeat of a request
+    // makes no heap call. Merging at the next start would free the blocks and take the merged one
+    // in that repeat instead (one allocation, two frees).
     work.reset(retain);
+    tile_arena.reset(retain);
     if (kept_bytes() <= retain) {
         return;
     }

@@ -2150,17 +2150,91 @@ void test_zero_heap()
     }
 }
 
+// The zero-heap gate per request, as the bench counts it: the viewer's request (neo-j2k's own path,
+// one codec kept across every request, the Second Life limits, the header at reduce 0 then at the
+// viewer's factor, the decode into its 8-bit bottom-up image), every file whose sides are at most
+// max_side, at every reduce level and as the viewer cuts it (the bytes it asks for at that level,
+// the first 600 bytes), each request taken once and then again: the repeat asks the allocator for
+// nothing and calls no operator new, whatever was decoded before it. Without the end-of-decode
+// merge of the tile-part arena (Decoder::trim_after_decode), the repeat of a request whose tile-part
+// headers held more markers than any request before it made one allocation and two frees.
+void test_zero_heap_requests(const std::string& inputs, std::uint32_t max_side, const char* what)
+{
+    auto backend = make_neoj2k_memory_backend();
+    std::size_t files = 0, requests = 0, decoded = 0, failures = 0;
+    for (const auto& path : expand_inputs(inputs)) {
+        const auto data = read_file(path);
+        const auto mh = data ? parse_main_header(*data) : std::nullopt;
+        if (!mh || mh->width() > max_side || mh->height() > max_side || base_name(path) == "edge_ppt_empty_tiles_97.j2k") {
+            continue;
+        }
+        ++files;
+        const int grid_w = viewer::grid_side(mh->tiles_x(), mh->xtsiz), grid_h = viewer::grid_side(mh->tiles_y(), mh->ytsiz);
+        for (int r = 0; r <= 5; ++r) {
+            std::size_t sizes[3] = {data->size(), 0, 0};
+            if (r > 0) {
+                const auto b = viewer::data_size_j2c(grid_w, grid_h, r);
+                sizes[1] = b > 0 && std::uint64_t(b) < data->size() ? std::size_t(b) : 0;
+            }
+            if (r == 5 && data->size() > viewer::kFirstRequestBytes) {
+                sizes[2] = viewer::kFirstRequestBytes;
+            }
+            for (const std::size_t size : sizes) {
+                if (size == 0) {
+                    continue;
+                }
+                Request rq;
+                rq.data = data->data();
+                rq.size = size;
+                rq.reduce = r;
+                rq.mode = Mode::Viewer;
+                rq.inspect = false;
+                const bool first_ok = backend->decode(rq).ok;
+                backend->alloc_reset();
+                g_news = 0;
+                g_count_new = true;
+                const bool ok = backend->decode(rq).ok;
+                g_count_new = false;
+                std::uint64_t counts[4] = {};
+                backend->alloc_counts(counts);
+                ++requests;
+                decoded += ok;
+                CHECK_MSG(ok == first_ok, "%s %s reduce %d, %zu bytes: the repeat's outcome differs", what,
+                          base_name(path).c_str(), r, size);
+                CHECK_MSG(counts[0] == 0 && counts[2] == 0, "%s %s reduce %d, %zu bytes: %llu allocations, %llu frees on the repeat",
+                          what, base_name(path).c_str(), r, size, static_cast<unsigned long long>(counts[0]),
+                          static_cast<unsigned long long>(counts[2]));
+#if NJ2K_TEST_COUNT_NEW
+                CHECK_MSG(g_news == 0, "%s %s reduce %d, %zu bytes: %zu operator new on the repeat", what,
+                          base_name(path).c_str(), r, size, g_news.load());
+#endif
+                failures += (counts[0] + counts[2]) != 0;
+            }
+        }
+    }
+    CHECK_MSG(files > 0, "%s: no file up to %u x %u", what, max_side, max_side);
+    std::printf("zero heap per request, %s: %zu files up to %u x %u, %zu requests repeated (%zu decoded), %zu with heap "
+                "calls\n",
+                what, files, max_side, max_side, requests, decoded, failures);
+}
+
 }  // namespace
 
 int main(int argc, char** argv)
 {
     console_reports();
     std::setvbuf(stdout, nullptr, _IONBF, 0);  // every line out before a crash
-    if (argc < 2) {
-        std::fprintf(stderr, "usage: nj2k_decode_unit <corpus folder>\n");
+    if (argc != 2 && !(argc == 4 && std::strcmp(argv[2], "--heap-files") == 0)) {
+        std::fprintf(stderr, "usage: nj2k_decode_unit <corpus folder> [--heap-files <list or folder>]\n");
         return 2;
     }
     g_corpus = argv[1];
+    if (argc == 4) {
+        // the zero-heap gate alone, on other files (the private bench corpus, locally)
+        test_zero_heap_requests(argv[3], 512, "files");
+        std::printf("%d checks, %d failures\n", g_checks, g_failures);
+        return g_failures ? 1 : 0;
+    }
     test_dp3();
     test_two_invk();
     test_dp2();
@@ -2190,6 +2264,7 @@ int main(int argc, char** argv)
     test_tile_memory_limit();
     test_viewer_path();
     test_zero_heap();
+    test_zero_heap_requests(g_corpus, 512, "corpus");
     std::printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures ? 1 : 0;
 }
