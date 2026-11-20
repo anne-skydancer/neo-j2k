@@ -115,7 +115,7 @@ if(NJ2K_BUILD_SHARED)
   add_library(neoj2k_shared SHARED $<TARGET_OBJECTS:neoj2k_cpu_check_shared>)
   nj2k_library_common(neoj2k_shared)
   target_compile_definitions(neoj2k_shared PRIVATE NJ2K_BUILDING)
-  # 0.x: the ABI may change with every minor version, so the soname carries it (libneoj2k.so.0.0);
+  # 0.x: the ABI may change with every minor version, so the soname carries it (libneoj2k.so.0.1 at 0.1);
   # from 1.0 on it is the major version alone.
   if(PROJECT_VERSION_MAJOR EQUAL 0)
     set(_nj2k_soversion "${PROJECT_VERSION_MAJOR}.${PROJECT_VERSION_MINOR}")

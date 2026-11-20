@@ -408,7 +408,7 @@ NJ2K_BOOL nj2k_decoder_set_executor(nj2k_codec_t *codec, const nj2k_executor_t *
 
 - `neoj2k_static` (`neoj2k_static.lib`, `libneoj2k.a`; define `NJ2K_STATIC` when linking it) and
   `neoj2k_shared` (`neoj2k.dll` with its import library `neoj2k.lib`; `libneoj2k.so`, soname
-  `libneoj2k.so.0.0` while 0.x, the major version from 1.0). An installed package exports them as
+  `libneoj2k.so.0.1` while 0.x, the major version from 1.0). An installed package exports them as
   `neoj2k::static` and `neoj2k::shared`, the names a build tree gives them too.
 - The shared library exports `nj2k_*` only: dllexport on Windows, a version script on Linux. `abi/exports.txt`
   lists the exports; `tools/check_exports.py --write-list abi/exports.txt` after an API change, which
