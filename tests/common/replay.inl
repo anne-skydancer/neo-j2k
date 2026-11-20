@@ -624,7 +624,7 @@ inline bool replay_upload_ex(const Api& A, const nj2k::test::UploadSpec& us, std
     p.cod_format = OPJ_CODEC_J2K;
     p.prog_order = OPJ_RLCP;
     p.cp_disto_alloc = 1;
-    p.max_cs_size = 0;
+    p.max_cs_size = us.max_cs_size;
     if (reversible) {
         p.irreversible = 0;
         p.tcp_numlayers = 1;

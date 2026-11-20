@@ -96,7 +96,31 @@ NJ2K_BOOL fail(Encoder* e, nj2k_status_t status, const char* format, ...) noexce
     return finish(e, status);
 }
 
-// A refused request leaves the encoder where it was (a caller may fix it and call again).
+constexpr const char* kExtra = "the j2k-extra module";
+// OpenJPEG's own comment when the caller gives none, kept so that the bytes are the same
+constexpr const char* kDefaultComment = "Created by OpenJPEG version 2.5.4";
+
+// A refusal is a mistake of the caller's, which it may fix and retry: the encoder stays where it was
+// (refuse); only what the caller cannot mend (memory, the output stream, a tile that does not fit) ends
+// the encoder (fail). The _st forms return the status, for the checks.
+nj2k_status_t refuse_st(Encoder* e, nj2k_status_t status, const char* format, ...) noexcept NJ2K_PRINTF_LIKE(3, 4);
+
+nj2k_status_t refuse_st(Encoder* e, nj2k_status_t status, const char* format, ...) noexcept
+{
+    va_list args;
+    va_start(args, format);
+    e->messages.vemit(Messages::Error, format, args);
+    va_end(args);
+    e->status = status;
+    return status;
+}
+
+nj2k_status_t unsupported_st(Encoder* e, const char* who, const char* what) noexcept
+{
+    return refuse_st(e, NJ2K_E_UNSUPPORTED, "%s: %s is not supported by the core encoder (it belongs to %s)\n", who,
+                     what, kExtra);
+}
+
 NJ2K_BOOL refuse(Encoder* e, nj2k_status_t status, const char* format, ...) noexcept NJ2K_PRINTF_LIKE(3, 4);
 
 NJ2K_BOOL refuse(Encoder* e, nj2k_status_t status, const char* format, ...) noexcept
@@ -109,18 +133,19 @@ NJ2K_BOOL refuse(Encoder* e, nj2k_status_t status, const char* format, ...) noex
     return NJ2K_FALSE;
 }
 
-constexpr const char* kExtra = "the j2k-extra module";
-
 NJ2K_BOOL unsupported(Encoder* e, const char* who, const char* what) noexcept
 {
-    return refuse(e, NJ2K_E_UNSUPPORTED, "%s: %s is not supported by the core encoder (it belongs to %s)\n", who, what,
-                  kExtra);
+    unsupported_st(e, who, what);
+    return NJ2K_FALSE;
 }
 
-// opj_stream_write_data semantics over the stream's buffer; false when the host's write function fails
-bool put(Stream* s, const std::uint8_t* data, std::size_t n) noexcept
+// what a refused start_compress leaves behind: nothing, so that the caller can mend the image and call again
+void discard_planes(Encoder* e) noexcept
 {
-    return s->write(data, n);
+    e->arena.release_all();
+    for (auto& pl : e->planes) {
+        pl = nullptr;
+    }
 }
 
 inline void put16(std::uint8_t*& p, std::uint32_t v) noexcept
@@ -161,79 +186,70 @@ struct Settings {
     bool mct;
 };
 
-nj2k_status_t check_params(Encoder* e, nj2k_cparameters_t* p, const nj2k_image_t* image, Settings& s) noexcept
+nj2k_status_t check_params(Encoder* e, const nj2k_cparameters_t* p, const nj2k_image_t* image, Settings& s) noexcept
 {
     const char* who = "nj2k_setup_encoder";
     if (p->tile_size_on) {
-        return unsupported(e, who, "tiling"), NJ2K_E_UNSUPPORTED;
+        return unsupported_st(e, who, "tiling");
     }
     if (p->cp_tx0 != 0 || p->cp_ty0 != 0) {
-        return unsupported(e, who, "a tile offset"), NJ2K_E_UNSUPPORTED;
+        return unsupported_st(e, who, "a tile offset");
     }
     if (p->cp_fixed_alloc || p->cp_fixed_quality) {
-        return unsupported(e, who, "fixed layer or fixed quality allocation"), NJ2K_E_UNSUPPORTED;
+        return unsupported_st(e, who, "fixed layer or fixed quality allocation");
     }
     if (p->csty != 0) {
-        return unsupported(e, who, "SOP, EPH or precinct sizes"), NJ2K_E_UNSUPPORTED;
+        return unsupported_st(e, who, "SOP, EPH or precinct sizes");
     }
     if (p->prog_order != NJ2K_RLCP) {
-        return unsupported(e, who, "a progression order other than RLCP"), NJ2K_E_UNSUPPORTED;
+        return unsupported_st(e, who, "a progression order other than RLCP");
     }
     if (p->numpocs != 0) {
-        return unsupported(e, who, "progression order changes"), NJ2K_E_UNSUPPORTED;
+        return unsupported_st(e, who, "progression order changes");
     }
     if (p->cblockw_init != 64 || p->cblockh_init != 64) {
-        return unsupported(e, who, "code-blocks other than 64 x 64"), NJ2K_E_UNSUPPORTED;
+        return unsupported_st(e, who, "code-blocks other than 64 x 64");
     }
     if (p->mode != 0) {
-        return unsupported(e, who, "code-block mode switches"), NJ2K_E_UNSUPPORTED;
-    }
-    if (p->irreversible != 0 && p->irreversible != 1) {
-        return unsupported(e, who, "irreversible other than 0 or 1"), NJ2K_E_UNSUPPORTED;
+        return unsupported_st(e, who, "code-block mode switches");
     }
     if (p->roi_compno >= 0 && static_cast<std::uint32_t>(p->roi_compno) < image->numcomps && p->roi_shift != 0) {
-        return unsupported(e, who, "a region of interest"), NJ2K_E_UNSUPPORTED;
+        return unsupported_st(e, who, "a region of interest");
     }
     if (p->cp_cinema != NJ2K_OFF || p->cp_rsiz != NJ2K_STD_RSIZ || p->rsiz != NJ2K_PROFILE_NONE) {
-        return unsupported(e, who, "a profile"), NJ2K_E_UNSUPPORTED;
+        return unsupported_st(e, who, "a profile");
     }
     if (p->max_comp_size != 0) {
-        return unsupported(e, who, "max_comp_size"), NJ2K_E_UNSUPPORTED;
+        return unsupported_st(e, who, "max_comp_size");
     }
     if (p->tp_on) {
-        return unsupported(e, who, "several tile-parts"), NJ2K_E_UNSUPPORTED;
+        return unsupported_st(e, who, "several tile-parts");
     }
     if (p->mct_data) {
-        return unsupported(e, who, "a custom colour transform"), NJ2K_E_UNSUPPORTED;
+        return unsupported_st(e, who, "a custom colour transform");
     }
     if (p->tcp_mct != 0 && p->tcp_mct != 1) {
-        return unsupported(e, who, "a colour transform other than none or the standard one"), NJ2K_E_UNSUPPORTED;
+        return unsupported_st(e, who, "a colour transform other than none or the standard one");
     }
     if (p->tcp_mct == 1 && image->numcomps < 3) {
-        return refuse(e, NJ2K_E_ARGUMENT, "%s: the colour transform needs three components\n", who), NJ2K_E_ARGUMENT;
-    }
-    if (p->max_cs_size > 0) {
-        return unsupported(e, who, "a codestream size limit"), NJ2K_E_UNSUPPORTED;
+        return refuse_st(e, NJ2K_E_ARGUMENT, "%s: the colour transform needs three components\n", who);
     }
     if (p->numresolution <= 0 || p->numresolution > NJ2K_J2K_MAXRLVLS) {
-        return refuse(e, NJ2K_E_ARGUMENT, "Invalid number of resolutions : %d not in range [1,%d]\n", p->numresolution,
-                      NJ2K_J2K_MAXRLVLS),
-               NJ2K_E_ARGUMENT;
+        return refuse_st(e, NJ2K_E_ARGUMENT, "Invalid number of resolutions : %d not in range [1,%d]\n", p->numresolution,
+                      NJ2K_J2K_MAXRLVLS);
     }
     if (p->tcp_numlayers < 0) {
-        return refuse(e, NJ2K_E_ARGUMENT, "%s: negative number of layers\n", who), NJ2K_E_ARGUMENT;
+        return refuse_st(e, NJ2K_E_ARGUMENT, "%s: negative number of layers\n", who);
     }
     if (static_cast<std::uint32_t>(p->tcp_numlayers) > Encoder::kMaxLayers) {
-        return refuse(e, NJ2K_E_LIMIT, "%s: %d layers, at most %u\n", who, p->tcp_numlayers, Encoder::kMaxLayers),
-               NJ2K_E_LIMIT;
+        return refuse_st(e, NJ2K_E_LIMIT, "%s: %d layers, at most %u\n", who, p->tcp_numlayers, Encoder::kMaxLayers);
     }
     if (p->cp_comment && std::strlen(p->cp_comment) > Encoder::kMaxComment) {
-        return refuse(e, NJ2K_E_ARGUMENT, "%s: the comment is longer than a marker segment holds\n", who),
-               NJ2K_E_ARGUMENT;
+        return refuse_st(e, NJ2K_E_ARGUMENT, "%s: the comment is longer than a marker segment holds\n", who);
     }
     s.numres = static_cast<std::uint32_t>(p->numresolution);
     s.numlayers = static_cast<std::uint32_t>(p->tcp_numlayers);
-    s.reversible = p->irreversible == 0;
+    s.reversible = p->irreversible == 0;  // any other value is the 9/7, as in OpenJPEG
     s.mct = p->tcp_mct == 1;
     return NJ2K_OK;
 }
@@ -241,39 +257,37 @@ nj2k_status_t check_params(Encoder* e, nj2k_cparameters_t* p, const nj2k_image_t
 nj2k_status_t check_image(Encoder* e, const nj2k_image_t* image, const char* who) noexcept
 {
     if (!image || !image->comps || image->numcomps == 0) {
-        return refuse(e, NJ2K_E_ARGUMENT, "%s: no image\n", who), NJ2K_E_ARGUMENT;
+        return refuse_st(e, NJ2K_E_ARGUMENT, "%s: no image\n", who);
     }
     if (image->numcomps > Encoder::kMaxComponents) {
-        return refuse(e, NJ2K_E_LIMIT, "%s: %u components, at most %u\n", who, image->numcomps,
-                      Encoder::kMaxComponents),
-               NJ2K_E_LIMIT;
+        return refuse_st(e, NJ2K_E_LIMIT, "%s: %u components, at most %u\n", who, image->numcomps,
+                      Encoder::kMaxComponents);
     }
     if (image->x0 != 0 || image->y0 != 0) {
-        return unsupported(e, who, "an image offset"), NJ2K_E_UNSUPPORTED;
+        return unsupported_st(e, who, "an image offset");
     }
     if (image->x1 == 0 || image->y1 == 0) {
-        return refuse(e, NJ2K_E_ARGUMENT, "%s: an empty image\n", who), NJ2K_E_ARGUMENT;
+        return refuse_st(e, NJ2K_E_ARGUMENT, "%s: an empty image\n", who);
     }
     if (image->x1 > Encoder::kMaxSide || image->y1 > Encoder::kMaxSide ||
         std::uint64_t(image->x1) * image->y1 * image->numcomps > Encoder::kMaxSamples) {
-        return refuse(e, NJ2K_E_LIMIT, "%s: a %u x %u image of %u components is over the encoder's limits (%u per side, %llu samples)\n",
+        return refuse_st(e, NJ2K_E_LIMIT, "%s: a %u x %u image of %u components is over the encoder's limits (%u per side, %llu samples)\n",
                       who, image->x1, image->y1, image->numcomps, Encoder::kMaxSide,
-                      static_cast<unsigned long long>(Encoder::kMaxSamples)),
-               NJ2K_E_LIMIT;
+                      static_cast<unsigned long long>(Encoder::kMaxSamples));
     }
     for (std::uint32_t c = 0; c < image->numcomps; ++c) {
         const nj2k_image_comp_t& comp = image->comps[c];
         if (comp.dx != 1 || comp.dy != 1) {
-            return unsupported(e, who, "subsampled components"), NJ2K_E_UNSUPPORTED;
+            return unsupported_st(e, who, "subsampled components");
         }
         if (comp.x0 != 0 || comp.y0 != 0) {
-            return unsupported(e, who, "a component offset"), NJ2K_E_UNSUPPORTED;
+            return unsupported_st(e, who, "a component offset");
         }
         if (comp.w != image->x1 || comp.h != image->y1) {
-            return unsupported(e, who, "components of different sizes"), NJ2K_E_UNSUPPORTED;
+            return unsupported_st(e, who, "components of different sizes");
         }
         if (comp.prec != 8 || comp.sgnd != 0) {
-            return unsupported(e, who, "components other than 8-bit unsigned"), NJ2K_E_UNSUPPORTED;
+            return unsupported_st(e, who, "components other than 8-bit unsigned");
         }
     }
     return NJ2K_OK;
@@ -411,9 +425,6 @@ std::uint32_t tile_buffer_size(const Encoder& e) noexcept
     // opj_j2k_get_specific_header_sizes: the tile-part's SOT (12), the COC and QCC room of the
     // other components (11 + 11 each) and a POC marker (13)
     l_tile_size += 12 + std::uint64_t(p.numcomps - 1) * (11 + 11) + 13;
-    if (l_tile_size > UINT_MAX) {
-        l_tile_size = UINT_MAX;
-    }
     return static_cast<std::uint32_t>(l_tile_size);
 }
 
@@ -434,7 +445,6 @@ bool build_tile(Encoder& e, EncTile& tile) noexcept
     const EncParams& p = e.params;
     nj2k::detail::Arena& arena = e.arena;
     tile.numcomps = p.numcomps;
-    tile.distotile = 0;
     tile.comps = arena.make_array<EncComp>(p.numcomps);
     if (!tile.comps) {
         return false;
@@ -494,8 +504,8 @@ bool build_tile(Encoder& e, EncTile& tile) noexcept
                     band.numbps = step.expn + static_cast<std::int32_t>(p.numgbits) - 1;
                 }
                 // the one precinct: its code-blocks, from the band's origin
-                band.cw = static_cast<std::uint32_t>(ceildivpow2(band.x1, 6) - 0) ;
-                band.ch = static_cast<std::uint32_t>(ceildivpow2(band.y1, 6) - 0);
+                band.cw = static_cast<std::uint32_t>(ceildivpow2(band.x1, 6));
+                band.ch = static_cast<std::uint32_t>(ceildivpow2(band.y1, 6));
                 const std::uint32_t n = band.cw * band.ch;
                 band.cblks = arena.make_array<EncCblk>(n);
                 if (!band.cblks || !nj2k::detail::enc_tgt_create(arena, band.incltree, band.cw, band.ch) ||
@@ -520,10 +530,6 @@ bool build_tile(Encoder& e, EncTile& tile) noexcept
     }
     return true;
 }
-
-}  // namespace
-
-namespace {
 
 using nj2k::detail::ResRect;
 
@@ -563,7 +569,6 @@ struct T1Jobs {
     Encoder* e;
     EncTile* tile;
     T1Job* list;
-    double* cumwmsedec;
     nj2k::detail::EncT1* t1;
     const double* mct_norms;
     std::uint32_t mct_numcomps;
@@ -644,13 +649,12 @@ void t1_job(void* ctx, std::uint32_t index) noexcept
             }
         }
     }
-    const EncT1Result r = enc_t1_encode(j->t1, j->e->arena, cblk, band.bandno, job.compno, tilec.numres - 1 - job.resno,
+    const bool coded = enc_t1_encode(j->t1, j->e->arena, cblk, band.bandno, job.compno, tilec.numres - 1 - job.resno,
                                         p.reversible, static_cast<double>(band.stepsize), j->mct_norms, j->mct_numcomps);
-    if (!r.ok) {
+    if (!coded) {
         j->status = j->e->arena.failure() == nj2k::detail::Arena::Failure::none ? NJ2K_E_LIMIT : NJ2K_E_NO_MEMORY;
         return;
     }
-    j->cumwmsedec[index] = r.cumwmsedec;
 }
 
 // Everything of the tile but the stream: the colour and wavelet transforms, Tier-1, the rate
@@ -694,11 +698,9 @@ nj2k_status_t encode_tile(Encoder& e, std::uint32_t* total) noexcept
     }
 
     // The stages that are independent per component (the wavelet) and per code-block (Tier-1) are
-    // jobs, run in order on the calling thread by run_jobs(): the shape a host's executor takes in
-    // stage 6b (stage 5's parallel_for over an index). Each job works on its own part of the tile; a
-    // threaded run gives each worker its own Tier-1 scratch and an arena for what it commits, and the
-    // sum of the distortions is taken afterwards in the code-blocks' order, so the result does not
-    // depend on the order the jobs ran in.
+    // jobs, run in order on the calling thread by run_jobs(): the shape stage 6b gives to a host's
+    // executor (stage 5's parallel_for over an index). They are not thread-safe yet: the Tier-1
+    // scratch, the arena Tier-1 commits to and the jobs' status are shared (doc/api.md, 6b's to-do).
     ResRect* rects = arena.make_array<ResRect>(p.numres);
     if (!rects) {
         return NJ2K_E_NO_MEMORY;
@@ -733,9 +735,8 @@ nj2k_status_t encode_tile(Encoder& e, std::uint32_t* total) noexcept
         jobs.e = &e;
         jobs.tile = &tile;
         jobs.list = arena.make_array<T1Job>(count);
-        jobs.cumwmsedec = arena.make_array<double>(count);
         jobs.t1 = enc_t1_create(e.allocator);
-        if ((count && (!jobs.list || !jobs.cumwmsedec)) || !jobs.t1) {
+        if ((count && !jobs.list) || !jobs.t1) {
             enc_t1_destroy(jobs.t1, e.allocator);
             return NJ2K_E_NO_MEMORY;
         }
@@ -765,16 +766,13 @@ nj2k_status_t encode_tile(Encoder& e, std::uint32_t* total) noexcept
         if (jobs.status != NJ2K_OK) {
             return jobs.status;
         }
-        for (std::uint32_t i = 0; i < count; ++i) {
-            tile.distotile += jobs.cumwmsedec[i];
-        }
     }
 
     // the rate allocation and Tier-2, behind the tile-part's SOT and SOD
     std::uint8_t* const buf = e.tile_buf;
     const std::uint32_t room = e.tile_size - 12 - 4;
     std::uint32_t written = 0;
-    if (!enc_rate_allocate_and_packets(arena, e.messages, tile, p, buf + 12 + 2, room, &written)) {
+    if (!enc_rate_allocate_and_packets(e.messages, tile, p, buf + 12 + 2, room, &written)) {
         e.messages.emit(Messages::Error, "Cannot encode tile\n");
         return NJ2K_E_LIMIT;
     }
@@ -868,13 +866,32 @@ NJ2K_API NJ2K_BOOL NJ2K_CALLCONV nj2k_setup_encoder(nj2k_codec_t* p_codec, nj2k_
                                             image->comps[0].h * image->comps[0].prec) /
                                            (static_cast<double>(parameters->tcp_rates[parameters->tcp_numlayers - 1]) *
                                             8 * image->comps[0].dx * image->comps[0].dy));
-            if (temp_size > static_cast<float>(INT_MAX)) {
+            if (temp_size >= static_cast<float>(INT_MAX)  /* 2^31: the cast would overflow */) {
                 parameters->max_cs_size = INT_MAX;
             } else {
                 parameters->max_cs_size = static_cast<int>(std::floor(temp_size));
             }
         } else {
             parameters->max_cs_size = 0;
+        }
+    } else {
+        // a codestream size the caller asks for (or the one an earlier setup wrote back into the same
+        // parameters) lifts the layers' rates up to the ratio it implies
+        const float temp_rate = static_cast<float>((static_cast<double>(image->numcomps) * image->comps[0].w *
+                                                    image->comps[0].h * image->comps[0].prec) /
+                                                   ((static_cast<double>(parameters->max_cs_size)) * 8 *
+                                                    image->comps[0].dx * image->comps[0].dy));
+        bool cap = false;
+        for (int i = 0; i < parameters->tcp_numlayers; i++) {
+            if (parameters->tcp_rates[i] < temp_rate) {
+                parameters->tcp_rates[i] = temp_rate;
+                cap = true;
+            }
+        }
+        if (cap) {
+            e->messages.emit(Messages::Warning,
+                             "The desired maximum codestream size has limited\n"
+                             "at least one of the desired quality layers\n");
         }
     }
 
@@ -900,7 +917,7 @@ NJ2K_API NJ2K_BOOL NJ2K_CALLCONV nj2k_setup_encoder(nj2k_codec_t* p_codec, nj2k_
 
     const char* text = parameters->cp_comment;
     if (!text) {
-        text = "Created by OpenJPEG version 2.5.4";  // OpenJPEG's default, kept for identical output
+        text = kDefaultComment;
     }
     e->comment_len = std::strlen(text);
     e->comment = static_cast<char*>(e->allocator.allocate(e->comment_len + 1, 16));
@@ -926,12 +943,18 @@ NJ2K_API NJ2K_BOOL NJ2K_CALLCONV nj2k_encoder_set_extra_options(nj2k_codec_t* p_
         return finish(e, NJ2K_OK);
     }
     for (const char* const* it = p_options; *it != nullptr; ++it) {
-        if (std::strcmp(*it, "PLT=NO") == 0 || std::strcmp(*it, "TLM=NO") == 0) {
+        const bool plt_tlm = std::strncmp(*it, "PLT=", 4) == 0 || std::strncmp(*it, "TLM=", 4) == 0;
+        if (std::strcmp(*it, "PLT=NO") == 0 || std::strcmp(*it, "TLM=NO") == 0 || std::strcmp(*it, "GUARD_BITS=2") == 0) {
             continue;  // what the encoder does anyway
         }
-        if (std::strncmp(*it, "PLT=", 4) == 0 || std::strncmp(*it, "TLM=", 4) == 0 ||
-            std::strncmp(*it, "GUARD_BITS=", 11) == 0) {
+        if (plt_tlm && (std::strcmp(*it + 4, "YES") == 0)) {
             return unsupported(e, "nj2k_encoder_set_extra_options", *it);
+        }
+        if (std::strncmp(*it, "GUARD_BITS=", 11) == 0) {
+            const int bits = std::atoi(*it + 11);
+            if (bits >= 0 && bits <= 7) {
+                return unsupported(e, "nj2k_encoder_set_extra_options", *it);  // other guard bits: j2k-extra
+            }
         }
         return refuse(e, NJ2K_E_ARGUMENT, "Invalid option: %s.\n", *it);
     }
@@ -970,18 +993,24 @@ NJ2K_API NJ2K_BOOL NJ2K_CALLCONV nj2k_start_compress(nj2k_codec_t* p_codec, nj2k
     for (std::uint32_t c = 0; c < p.numcomps; ++c) {
         const std::int32_t* src = image->comps[c].data;
         if (!src) {
-            return fail(e, NJ2K_E_ARGUMENT, "nj2k_start_compress: component %u has no samples\n", c);
+            discard_planes(e);
+            return refuse(e, NJ2K_E_ARGUMENT, "nj2k_start_compress: component %u has no samples\n", c);
         }
         std::uint32_t* dst = static_cast<std::uint32_t*>(e->arena.allocate(n * sizeof(std::uint32_t), 64));
         if (!dst) {
+            discard_planes(e);
             return fail(e, NJ2K_E_NO_MEMORY, "Not enough memory to copy the samples\n");
         }
+        // 8-bit unsigned samples: OpenJPEG leaves others to arithmetic that wraps (DP-16); one test a plane
+        std::uint32_t over = 0;
         for (std::size_t i = 0; i < n; ++i) {
-            // 8-bit unsigned samples: OpenJPEG leaves others to arithmetic that wraps (DP-16)
-            if (static_cast<std::uint32_t>(src[i]) > 255u) {
-                return fail(e, NJ2K_E_ARGUMENT, "nj2k_start_compress: a sample of component %u is not in [0, 255]\n", c);
-            }
-            dst[i] = static_cast<std::uint32_t>(src[i]);
+            const std::uint32_t v = static_cast<std::uint32_t>(src[i]);
+            over |= v;
+            dst[i] = v;
+        }
+        if (over > 255u) {
+            discard_planes(e);
+            return refuse(e, NJ2K_E_ARGUMENT, "nj2k_start_compress: a sample of component %u is not in [0, 255]\n", c);
         }
         e->planes[c] = dst;
     }
@@ -993,7 +1022,7 @@ NJ2K_API NJ2K_BOOL NJ2K_CALLCONV nj2k_start_compress(nj2k_codec_t* p_codec, nj2k
         return fail(e, NJ2K_E_NO_MEMORY, "Not enough memory for the main header\n");
     }
     write_header(*e, header);
-    if (!put(s, header, hsize)) {
+    if (!s->write(header, hsize)) {
         return fail(e, NJ2K_E_OUTPUT, "nj2k_start_compress: the output stream refused the main header\n");
     }
 
@@ -1027,7 +1056,7 @@ NJ2K_API NJ2K_BOOL NJ2K_CALLCONV nj2k_encode(nj2k_codec_t* p_codec, nj2k_stream_
     if (st != NJ2K_OK) {
         return fail(e, st, "nj2k_encode: the tile could not be encoded\n");
     }
-    if (!put(s, e->tile_buf, total)) {
+    if (!s->write(e->tile_buf, total)) {
         return fail(e, NJ2K_E_OUTPUT, "nj2k_encode: the output stream refused the tile\n");
     }
     // the tile's memory goes back; the encode is done but for the end of the codestream
@@ -1054,7 +1083,7 @@ NJ2K_API NJ2K_BOOL NJ2K_CALLCONV nj2k_end_compress(nj2k_codec_t* p_codec, nj2k_s
         return refuse(e, NJ2K_E_STATE, "nj2k_end_compress: call it after nj2k_encode\n");
     }
     static const std::uint8_t eoc[2] = {0xff, 0xd9};
-    if (!put(s, eoc, 2) || !s->flush()) {
+    if (!s->write(eoc, 2) || !s->flush()) {
         return fail(e, NJ2K_E_OUTPUT, "nj2k_end_compress: the output stream refused the end of the codestream\n");
     }
     e->state = Encoder::State::finished;

@@ -125,18 +125,6 @@ bool Stream::write(const std::uint8_t* src, std::size_t n) noexcept
         return false;
     }
     while (n > 0) {
-        if (buffer_size == 0) {
-            // no buffer: straight to the host
-            const std::size_t got = write_fn(const_cast<std::uint8_t*>(src), n, user);
-            if (got == kEnd || got == 0) {
-                return false;
-            }
-            const std::size_t took = got < n ? got : n;
-            src += took;
-            n -= took;
-            offset += took;
-            continue;
-        }
         const std::size_t room = buffer_size - filled;
         if (n <= room) {
             std::memcpy(buffer + filled, src, n);
@@ -206,6 +194,9 @@ namespace {
 
 Stream* new_stream(NJ2K_SIZE_T buffer_size, NJ2K_BOOL is_input) noexcept
 {
+    if (buffer_size == 0) {
+        return nullptr;  // as OpenJPEG: opj_malloc(0) gives no buffer and no stream
+    }
     void* mem = nj2k::detail::heap_calloc(1, sizeof(Stream));
     if (!mem) {
         return nullptr;

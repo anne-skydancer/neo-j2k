@@ -11,15 +11,20 @@
 // transform, comment). A refusal must be a refusal on both sides. Then the round trip (neo-j2k's
 // codestreams decode, in both decoders, to the samples encoded or to the lossy decode the oracle's
 // stream gives), what the core encoder refuses with NJ2K_E_UNSUPPORTED (the rest of OpenJPEG's
-// settings belong to the j2k-extra module), its limits, state errors and output failures, and
-// departure DP-16 (samples outside the 8-bit range are refused).
+// settings belong to the j2k-extra module), its limits, state errors, retries after a refusal, output
+// streams of every buffer size and a host that takes a few bytes a call, output failures, and
+// departures DP-16 to DP-19.
 #include <neoj2k/neoj2k.h>
 
 #include <algorithm>
 #include <cstdio>
+#include <climits>
 #include <cstdlib>
+#include <limits>
 #include <cstring>
 #include <random>
+#include <tuple>
+#include <utility>
 #include <string>
 #include <vector>
 
@@ -156,6 +161,50 @@ void test_viewer_matrix()
                     }
                 }
             }
+        }
+    }
+    // one to three samples a side: the viewer's stream has no buffer then (its size guess is 0, which
+    // OpenJPEG's stream_create refuses and neo-j2k's too), so both refuse
+    for (const auto& dims : {std::pair<int, int>{1, 1}, {3, 64}, {2, 2}, {100, 3}, {1, 100}, {3, 3}}) {
+        const Raw raw = make_raw(dims.first, dims.second, 3, 0);
+        UploadSpec us;
+        us.raw = raw.data();
+        us.width = dims.first;
+        us.height = dims.second;
+        us.comps = 3;
+        us.reversible = true;
+        CHECK_MSG(!same_codestream(us, "tiny"), "%dx%d", dims.first, dims.second);
+    }
+    // components the viewer's rule leaves out of the main matrix: 2, 6 and 8
+    for (const int comps : {2, 6, 8}) {
+        for (const int w : {33, 100}) {
+            for (const bool reversible : {true, false}) {
+                const int h = w * 3 / 4 + 5;
+                const Raw raw = make_raw(w, h, comps, comps + w);
+                UploadSpec us;
+                us.raw = raw.data();
+                us.width = w;
+                us.height = h;
+                us.comps = comps;
+                us.reversible = reversible;
+                if (same_codestream(us, "components")) {
+                    ++encoded;
+                }
+            }
+        }
+    }
+    // the limits: 4,096 samples a side, wide and tall
+    for (const bool reversible : {true, false}) {
+        for (const auto& dims : {std::pair<int, int>{4096, 16}, std::pair<int, int>{16, 4096}}) {
+            const Raw raw = make_raw(dims.first, dims.second, 3, 0);
+            UploadSpec us;
+            us.raw = raw.data();
+            us.width = dims.first;
+            us.height = dims.second;
+            us.comps = 3;
+            us.reversible = reversible;
+            CHECK_MSG(same_codestream(us, "limit side"), "%dx%d", dims.first, dims.second);
+            ++encoded;
         }
     }
     // each kind of texture at a few sizes, both modes
@@ -328,7 +377,7 @@ void test_settings()
             }
             for (const int mct : {0, 1}) {
                 if (mct == 1 && im.comps < 3) {
-                    continue;  // OpenJPEG reads components that are not there; neo-j2k refuses it (api_unit)
+                    continue;  // OpenJPEG reads components that are not there; neo-j2k refuses it (DP-18)
                 }
                 UploadSpec us;
                 us.raw = im.raw->data();
@@ -368,6 +417,40 @@ void test_settings()
             }
         }
     }
+    // a codestream size the caller asks for lifts the rates (the same on both sides)
+    for (const int max_cs : {1500, 6000, 40000}) {
+        UploadSpec us;
+        us.raw = rgb.data();
+        us.width = 200;
+        us.height = 120;
+        us.comps = 3;
+        us.reversible = false;
+        us.max_cs_size = max_cs;
+        CHECK_MSG(same_codestream(us, "max_cs_size"), "max_cs_size %d", max_cs);
+        us.layers = 3;
+        us.rates = {40.0f, 20.0f, 10.0f};
+        CHECK_MSG(same_codestream(us, "max_cs_size layers"), "max_cs_size %d", max_cs);
+    }
+    // rates no one means: not a number, infinite, negative, huge (OpenJPEG takes them as it takes the rest)
+    for (const float bad : {std::numeric_limits<float>::quiet_NaN(), std::numeric_limits<float>::infinity(), -5.0f,
+                            -std::numeric_limits<float>::infinity(), 1e30f, 1e-30f}) {
+        for (const bool reversible : {true, false}) {
+            UploadSpec us;
+            us.raw = rgb.data();
+            us.width = 200;
+            us.height = 120;
+            us.comps = 3;
+            us.reversible = reversible;
+            us.layers = 3;
+            us.rates = {bad, 20.0f, bad};
+            (void)same_codestream(us, "hostile rate");
+            us.rates = {40.0f, 20.0f, bad};
+            (void)same_codestream(us, "hostile last rate");
+            us.layers = 1;
+            us.rates = {bad};
+            (void)same_codestream(us, "hostile only rate");
+        }
+    }
     // comments at the edge of Lcom: OpenJPEG writes them correctly up to 65,531 bytes
     for (const std::size_t n : {std::size_t(65529), std::size_t(65530), std::size_t(65531)}) {
         const std::string text(n, 'k');
@@ -380,7 +463,9 @@ void test_settings()
         us.comment = text.c_str();
         CHECK_MSG(same_codestream(us, "long comment"), "comment of %zu bytes", n);
     }
-    // a texture noisier than the buffer OpenJPEG guesses for the codestream holds: both refuse or both encode
+    // noise, the least compressible texture: both encode alike (no image of these settings has been found
+    // to outgrow the buffer OpenJPEG guesses for the codestream, 1.4 times the raw size, so that path is
+    // ported but not reached)
     for (const bool reversible : {true, false}) {
         const Raw noise = make_raw(64, 64, 4, 5);
         UploadSpec us;
@@ -453,6 +538,7 @@ void test_round_trip()
 struct Sink {
     std::vector<std::uint8_t> bytes;
     std::size_t fail_after = SIZE_MAX;  // the write function fails once this many bytes went in
+    std::size_t per_call = SIZE_MAX;    // the most bytes it takes a call
 };
 
 NJ2K_SIZE_T sink_write(void* buf, NJ2K_SIZE_T n, void* user)
@@ -460,6 +546,9 @@ NJ2K_SIZE_T sink_write(void* buf, NJ2K_SIZE_T n, void* user)
     auto* s = static_cast<Sink*>(user);
     if (s->bytes.size() + n > s->fail_after) {
         return static_cast<NJ2K_SIZE_T>(-1);
+    }
+    if (n > s->per_call) {
+        n = s->per_call;
     }
     s->bytes.insert(s->bytes.end(), static_cast<std::uint8_t*>(buf), static_cast<std::uint8_t*>(buf) + n);
     return n;
@@ -517,7 +606,7 @@ struct Job {
             nj2k_set_error_handler(codec, on_error, &msgs);
             nj2k_set_warning_handler(codec, on_error, &msgs);
         }
-        stream = nj2k_stream_create(1 << 16, NJ2K_FALSE);
+        stream = nj2k_stream_create(1, NJ2K_FALSE);  // one byte: every byte reaches the sink as it is written
         if (stream) {
             nj2k_stream_set_user_data(stream, &sink, nullptr);
             nj2k_stream_set_write_function(stream, sink_write);
@@ -583,7 +672,11 @@ void test_unsupported()
     expect_unsupported("a profile", [](Job& j) { j.p.rsiz = NJ2K_PROFILE_CINEMA_2K; });
     expect_unsupported("cinema", [](Job& j) { j.p.cp_cinema = NJ2K_CINEMA2K_24; });
     expect_unsupported("max_comp_size", [](Job& j) { j.p.max_comp_size = 1000; });
-    expect_unsupported("max_cs_size", [](Job& j) { j.p.max_cs_size = 1000; });
+    expect_unsupported("a tile y offset", [](Job& j) { j.p.cp_ty0 = 2; });
+    expect_unsupported("a component y offset", [](Job& j) { j.image->comps[0].y0 = 1; });
+    expect_unsupported("vertical subsampling", [](Job& j) { j.image->comps[1].dy = 2; });
+    expect_unsupported("progression order changes", [](Job& j) { j.p.numpocs = 1; });
+    expect_unsupported("the MCT profile", [](Job& j) { j.p.cp_rsiz = NJ2K_MCT; });
     expect_unsupported("tile-parts", [](Job& j) { j.p.tp_on = 1; });
     expect_unsupported("a custom transform", [](Job& j) {
         static float mct[9 + 3] = {};
@@ -602,7 +695,7 @@ void test_unsupported()
     expect_unsupported("subsampling", [](Job& j) { j.image->comps[1].dx = 2; });
     expect_unsupported("an image offset", [](Job& j) { j.image->x0 = 4; });
     expect_unsupported("components of other sizes", [](Job& j) { j.image->comps[2].w = 20; });
-    for (const char* option : {"PLT=YES", "TLM=YES", "GUARD_BITS=3"}) {
+    for (const char* option : {"PLT=YES", "TLM=YES", "GUARD_BITS=3", "GUARD_BITS=0"}) {
         Job j;
         CHECK(j.setup());
         const char* opts[] = {option, nullptr};
@@ -612,11 +705,15 @@ void test_unsupported()
     {
         Job j;
         CHECK(j.setup());
-        const char* ok_opts[] = {"PLT=NO", "TLM=NO", nullptr};
+        const char* ok_opts[] = {"PLT=NO", "TLM=NO", "GUARD_BITS=2", nullptr};
         CHECK(nj2k_encoder_set_extra_options(j.codec, ok_opts));
-        const char* bad_opts[] = {"NOPE=1", nullptr};
-        CHECK(!nj2k_encoder_set_extra_options(j.codec, bad_opts));
-        CHECK(j.status() == NJ2K_E_ARGUMENT);
+        for (const char* bad : {"NOPE=1", "PLT=MAYBE", "TLM=", "GUARD_BITS=9", "GUARD_BITS=-1"}) {
+            const char* bad_opts[] = {bad, nullptr};
+            CHECK_MSG(!nj2k_encoder_set_extra_options(j.codec, bad_opts), "%s", bad);
+            CHECK_MSG(j.status() == NJ2K_E_ARGUMENT, "%s: %s", bad, nj2k_status_string(j.status()));
+        }
+        CHECK(j.run() == false);  // the encoder was set up already: a second setup is a state error
+        CHECK(j.status() == NJ2K_E_STATE);
     }
     // JP2 and JPT output
     CHECK(nj2k_create_compress(NJ2K_CODEC_JP2) == nullptr);
@@ -642,25 +739,39 @@ void test_limits_and_states()
     {
         Job j(4100, 4, 1);
         CHECK(j.codec && j.image);
-        CHECK(!j.setup());
+        CHECK(!j.run());
         CHECK_MSG(j.status() == NJ2K_E_LIMIT, "%s", nj2k_status_string(j.status()));
+        CHECK(j.sink.bytes.empty());
     }
     {
         Job j(8, 8, 9);
-        CHECK(!j.setup());
+        CHECK(!j.run());
         CHECK_MSG(j.status() == NJ2K_E_LIMIT, "%s", nj2k_status_string(j.status()));
+        CHECK(j.sink.bytes.empty());
     }
     {
         Job j;
         j.p.tcp_numlayers = 101;
-        CHECK(!j.setup());
+        CHECK(!j.run());
         CHECK(j.status() == NJ2K_E_LIMIT);
+        CHECK(j.sink.bytes.empty());
     }
     {
         Job j;
         j.p.numresolution = 0;
-        CHECK(!j.setup());
+        CHECK(!j.run());
         CHECK(j.status() == NJ2K_E_ARGUMENT);
+        CHECK(j.sink.bytes.empty());
+    }
+    for (const int bad : {-1, 34, 100}) {
+        Job j;
+        j.p.numresolution = bad;
+        CHECK_MSG(!j.run() && j.status() == NJ2K_E_ARGUMENT && j.sink.bytes.empty(), "numresolution %d", bad);
+    }
+    {
+        Job j;
+        j.p.tcp_numlayers = -1;
+        CHECK(!j.run() && j.status() == NJ2K_E_ARGUMENT && j.sink.bytes.empty());
     }
     {
         // more resolutions than the image holds: OpenJPEG's start_compress refuses
@@ -708,6 +819,99 @@ void test_limits_and_states()
         CHECK(!nj2k_start_compress(j.codec, j.image, nullptr));
         CHECK(!nj2k_start_compress(nullptr, j.image, j.stream));
     }
+    // the limits' edges, set on an image whose planes stay small (setup reads none): 4,096 samples a side and
+    // 2^26 samples are taken, one more of either is NJ2K_E_LIMIT
+    for (const auto& edge : {std::tuple<int, int, int, bool>{4096, 4096, 4, true}, {4097, 1, 1, false},
+                             {1, 4097, 1, false}, {4096, 4096, 5, false}, {4096, 4096, 1, true}}) {
+        Job j(8, 8, std::get<2>(edge));
+        j.image->x1 = static_cast<NJ2K_UINT32>(std::get<0>(edge));
+        j.image->y1 = static_cast<NJ2K_UINT32>(std::get<1>(edge));
+        for (std::uint32_t c = 0; c < j.image->numcomps; ++c) {
+            j.image->comps[c].w = j.image->x1;
+            j.image->comps[c].h = j.image->y1;
+        }
+        const bool ok = j.setup();
+        CHECK_MSG(ok == std::get<3>(edge), "%dx%dx%d", std::get<0>(edge), std::get<1>(edge), std::get<2>(edge));
+        if (!ok) {
+            CHECK_MSG(j.status() == NJ2K_E_LIMIT, "%dx%dx%d: %s", std::get<0>(edge), std::get<1>(edge),
+                      std::get<2>(edge), nj2k_status_string(j.status()));
+        }
+        // the image's own sizes are restored before it is destroyed (its planes are the small ones)
+        for (std::uint32_t c = 0; c < j.image->numcomps; ++c) {
+            j.image->comps[c].w = j.image->comps[c].h = 8;
+        }
+    }
+    // the codestream size written back saturates at INT_MAX (OpenJPEG's cast overflows at exactly 2^31)
+    {
+        Job j(8, 8, 4);
+        j.image->x1 = j.image->y1 = 4096;
+        for (std::uint32_t c = 0; c < 4; ++c) {
+            j.image->comps[c].w = j.image->comps[c].h = 4096;
+        }
+        j.p.tcp_rates[0] = 0.03125f;
+        j.p.tcp_mct = 0;
+        CHECK(j.setup());
+        CHECK_MSG(j.p.max_cs_size == INT_MAX, "%d", j.p.max_cs_size);
+        for (std::uint32_t c = 0; c < 4; ++c) {
+            j.image->comps[c].w = j.image->comps[c].h = 8;
+        }
+    }
+    // streams: every buffer size and a host that takes a few bytes a call write the same codestream
+    {
+        Job ref;
+        CHECK(ref.run());
+        for (const std::size_t buffer : {std::size_t(1), std::size_t(16), std::size_t(4096)}) {
+            for (const std::size_t per_call : {SIZE_MAX, std::size_t(7), std::size_t(1)}) {
+                Job j;
+                j.sink.per_call = per_call;
+                nj2k_stream_destroy(j.stream);
+                j.stream = nj2k_stream_create(buffer, NJ2K_FALSE);
+                nj2k_stream_set_user_data(j.stream, &j.sink, nullptr);
+                nj2k_stream_set_write_function(j.stream, sink_write);
+                CHECK_MSG(j.run(), "buffer %zu, %zu a call", buffer, per_call);
+                CHECK_MSG(j.sink.bytes == ref.sink.bytes, "buffer %zu, %zu a call: other bytes", buffer, per_call);
+            }
+        }
+        // as OpenJPEG, a stream has a buffer
+        CHECK(nj2k_stream_create(0, NJ2K_FALSE) == nullptr);
+        CHECK(nj2k_stream_create(0, NJ2K_TRUE) == nullptr);
+    }
+    // a refusal leaves the encoder where it was: the caller mends the call and goes on
+    {
+        Job ref;
+        CHECK(ref.run());
+        Job j;
+        j.p.tile_size_on = NJ2K_TRUE;
+        CHECK(!j.setup());
+        CHECK(j.status() == NJ2K_E_UNSUPPORTED);
+        j.p.tile_size_on = NJ2K_FALSE;
+        CHECK(j.setup());
+        const NJ2K_INT32 good = j.image->comps[2].data[7];
+        j.image->comps[2].data[7] = 300;
+        CHECK(!nj2k_start_compress(j.codec, j.image, j.stream));
+        CHECK(j.status() == NJ2K_E_ARGUMENT);
+        j.image->comps[2].data[7] = good;
+        CHECK(nj2k_start_compress(j.codec, j.image, j.stream));
+        CHECK(!nj2k_end_compress(j.codec, j.stream));  // out of order: refused, the encode goes on
+        CHECK(j.status() == NJ2K_E_STATE);
+        CHECK(nj2k_encode(j.codec, j.stream));
+        CHECK(nj2k_end_compress(j.codec, j.stream));
+        CHECK(j.sink.bytes == ref.sink.bytes);
+    }
+    // the same parameters, written back by the first setup, serve a second encode (a codestream size
+    // the last rate implies is in max_cs_size then)
+    {
+        Job a(64, 64, 3);
+        a.p.irreversible = 2;  // any non-zero value is the 9/7
+        a.p.tcp_numlayers = 2;
+        a.p.tcp_rates[0] = 40.0f;
+        a.p.tcp_rates[1] = 10.0f;
+        CHECK(a.run());
+        CHECK(a.p.max_cs_size > 0);
+        Job b(64, 64, 3);
+        b.p = a.p;
+        CHECK(b.run());
+    }
     // DP-16: samples outside the 8-bit range are refused where OpenJPEG's arithmetic would wrap
     {
         Job j;
@@ -715,6 +919,16 @@ void test_limits_and_states()
         CHECK(j.setup());
         CHECK(!nj2k_start_compress(j.codec, j.image, j.stream));
         CHECK(j.status() == NJ2K_E_ARGUMENT);
+        CHECK(j.sink.bytes.empty());  // before anything is written
+        // and the caller mends the sample and goes on: the same codestream as a clean run's
+        j.image->comps[1].data[5] = 3;
+        CHECK(nj2k_start_compress(j.codec, j.image, j.stream));
+        CHECK(nj2k_encode(j.codec, j.stream));
+        CHECK(nj2k_end_compress(j.codec, j.stream));
+        Job fresh;
+        fresh.image->comps[1].data[5] = 3;
+        CHECK(fresh.run());
+        CHECK(j.sink.bytes == fresh.sink.bytes);
     }
     {
         Job j;
@@ -722,9 +936,14 @@ void test_limits_and_states()
         CHECK(j.setup());
         CHECK(!nj2k_start_compress(j.codec, j.image, j.stream));
         CHECK(j.status() == NJ2K_E_ARGUMENT);
+        CHECK(j.sink.bytes.empty());
     }
     // an output stream that fails: at the header, at the tile, at the end
-    for (const std::size_t fail_after : {std::size_t(0), std::size_t(50), std::size_t(300), std::size_t(10000)}) {
+    Job clean;
+    CHECK(clean.run());
+    const std::size_t clean_size = clean.sink.bytes.size();
+    for (const std::size_t fail_after :
+         {std::size_t(0), std::size_t(50), std::size_t(300), clean_size - 1, clean_size}) {
         Job j;
         j.sink.fail_after = fail_after;
         nj2k_stream_destroy(j.stream);
@@ -735,7 +954,7 @@ void test_limits_and_states()
         if (!ok) {
             CHECK_MSG(j.status() == NJ2K_E_OUTPUT, "fail_after %zu: %s", fail_after, nj2k_status_string(j.status()));
         }
-        CHECK_MSG(ok == (fail_after >= 10000), "fail_after %zu: %s", fail_after, ok ? "encoded" : "failed");
+        CHECK_MSG(ok == (fail_after >= clean_size), "fail_after %zu: %s", fail_after, ok ? "encoded" : "failed");
     }
     // DP-17: a write function that returns 0 fails the stream, where OpenJPEG would call it for ever
     {

@@ -208,13 +208,14 @@ header maps the `opj_*` names. The statuses of `nj2k_get_status` apply (`NJ2K_E_
 |---|---|
 | Output | a J2K codestream (`NJ2K_CODEC_J2K`), one tile (no tile size) at the origin, one tile-part, SOC, SIZ, COD, QCD, COM, SOT, SOD, the packets, EOC |
 | Image | 1 to 8 components, 8 bits unsigned, no subsampling, no offset, every component the image's size (`x1`, `y1`); 1 to 4,096 samples a side, at most 2^26 samples in all |
-| Wavelet | `irreversible` 0 (5/3, lossless: the samples come back exactly when the last layer's rate is 0 or at most 1) or 1 (9/7 with the standard's explicit step sizes) |
+| Wavelet | `irreversible` 0 (5/3, lossless: the samples come back exactly when the last layer's rate is 0 or at most 1) or any other value (9/7 with the standard's explicit step sizes) |
 | Colour | `tcp_mct` 0 or 1; 1 needs three components or more and transforms the first three (RCT for 5/3, ICT for 9/7) |
-| Layers | `tcp_numlayers` 0 to 100 with `cp_disto_alloc` (rate allocation by distortion): `tcp_rates[i]` is the compression ratio of layer i (a rate of 1 or less, or 0, is lossless); 0 layers is one lossless layer, written back into the parameters |
-| Resolutions | `numresolution` 1 to 33 as OpenJPEG; the image must be at least 2^(n-1) samples a side (OpenJPEG's check, at `nj2k_start_compress`) |
-| Coding | RLCP, code-blocks 64 x 64, no precinct sizes (`csty` 0: one precinct a resolution), no mode switch (`mode` 0), no SOP, EPH, PLT or TLM, no ROI, no POC, no profile |
+| Layers | `tcp_numlayers` 0 to 100, rate allocation by distortion (`cp_disto_alloc` is not read): `tcp_rates[i]` is the compression ratio of layer i (a rate of 1 or less, or 0, is lossless; NaN, infinite and negative rates are taken as OpenJPEG takes them); 0 layers is one lossless layer, written back into the parameters. OpenJPEG's "rates should be strictly decreasing" warnings are not reproduced |
+| Resolutions | `numresolution` 1 to 33 as OpenJPEG; the image must be at least 2^(n-1) samples a side (OpenJPEG's check, at `nj2k_start_compress`), so at most 13 under the 4,096 limit |
+| Size cap | `max_cs_size` as OpenJPEG: written back (the codestream size the last rate implies, saturating at `INT_MAX` where OpenJPEG's cast overflows at exactly 2^31), and, when it is above 0 (a cap, or the value an earlier setup wrote into the same parameters), the layers' rates lifted to the ratio it implies |
+| Coding | RLCP (`prog_order` must be set to `NJ2K_RLCP`: the defaults are LRCP, which is refused), code-blocks 64 x 64, no precinct sizes (`csty` 0: one precinct a resolution), no mode switch (`mode` 0), no SOP, EPH, PLT or TLM, no ROI, no POC, no profile |
 | Comment | `cp_comment`, up to 65,531 bytes (Lcom is 16 bits); none gives OpenJPEG's own (`Created by OpenJPEG version 2.5.4`, so that the bytes are the same) |
-| Extra options | `PLT=NO` and `TLM=NO` (what it does) |
+| Extra options | `PLT=NO`, `TLM=NO` and `GUARD_BITS=2` (what it does) |
 
 Anything else of OpenJPEG's encoder belongs to the **j2k-extra** module and gives `NJ2K_E_UNSUPPORTED` from the
 call that sees it (`nj2k_setup_encoder` for the parameters and the image, `nj2k_encoder_set_extra_options` for
@@ -222,17 +223,24 @@ an option), with a message naming it and nothing written to the stream: tiles an
 precinct sizes, SOP and EPH markers, a progression order other than RLCP, POC, code-blocks of another size,
 mode switches (BYPASS, RESET, TERMALL, vertically causal contexts, predictable termination, segmentation
 symbols), a region of interest, profiles (cinema, IMF, broadcast, Part 2), custom colour transforms,
-`max_cs_size` and `max_comp_size`, fixed-layer and fixed-quality allocation, other precisions and signed
-samples, subsampled or offset components, components of different sizes, PLT, TLM and `GUARD_BITS`. JP2 and
+`max_comp_size`, fixed-layer and fixed-quality allocation, other precisions and signed
+samples, subsampled or offset components, components of different sizes, `PLT=YES`, `TLM=YES` and other `GUARD_BITS` (an option that is none of these, or has another value, is `NJ2K_E_ARGUMENT`). JP2 and
 JPT output (`nj2k_create_compress(NJ2K_CODEC_JP2)` returns `NULL`) belongs to the j2k-codestream module,
 `nj2k_write_tile` and `nj2k_set_MCT` (writing by tile, Part 2 matrices) to j2k-tile. A request over a limit
 (more than 8 components, 4,096 samples a side, 2^26 samples, 100 layers) gives `NJ2K_E_LIMIT`; an invalid one
 (no components, an empty image, too many resolutions for the size, the colour transform of fewer than three
-components, a comment longer than a marker segment holds, a sample outside the 8-bit range, an image that is
+components, a comment of 65,532 bytes or more, a sample outside the 8-bit range, an image that is
 not the one set up) `NJ2K_E_ARGUMENT`. Departures DP-16 to DP-19 (`doc/departures.md`) list where neo-j2k's
-answer differs from OpenJPEG's on what OpenJPEG accepts.
+answer differs from OpenJPEG's on what OpenJPEG accepts. The limits (4,096 samples a side, 8 components,
+2^26 samples, 100 layers, 8 bits) are the viewer's: OpenJPEG encodes larger images, and so will j2k-extra.
 
 ### How it runs
+
+A call that the caller can mend (an invalid or unsupported setting, an image that does not fit its limits or
+the settings, a sample out of range, a call out of order) is refused with its status and message and leaves the
+encoder where it was, with nothing written to the stream: the caller fixes it and calls again. What it cannot
+mend (out of memory, an output stream that fails, a tile that does not fit its buffer) ends the encoder: its
+status says so and every later call but `nj2k_destroy_codec` fails.
 
 `nj2k_setup_encoder` checks the parameters and the image and keeps the settings, `nj2k_start_compress` checks
 the image against them, copies the sample planes (the caller keeps its own, unchanged, and may free them at
@@ -240,7 +248,9 @@ once, where OpenJPEG takes them and nulls the caller's pointers), writes the mai
 computes OpenJPEG's rate targets in bytes from the header's size (`opj_j2k_update_rates`, in the same float
 arithmetic); `nj2k_encode` runs the tile, writes SOT, SOD and the packets in one write, `nj2k_end_compress` writes
 EOC and flushes the stream. The stream needs a write function; skip and seek are never called (the tile-part's
-length is known before it is written). The tile's memory is released when `nj2k_encode` returns.
+length is known before it is written). A stream has a buffer, as in OpenJPEG (`nj2k_stream_create(0, ...)` returns
+`NULL`, and so does a viewer-style stream of a zero size guess for an image under 4 samples a side); a write function
+may take fewer bytes than it is given, the rest is offered again, and one that takes none fails the stream (DP-17). The tile's memory is released when `nj2k_encode` returns.
 
 The stages are OpenJPEG's, ported with the same operations in the same order (`src/enc_dwt.cpp`,
 `src/enc_t1.cpp`, `src/enc_t2.cpp`, `src/encode.cpp`; the MQ coder's states and the context tables are shared
@@ -252,12 +262,15 @@ simulation for each step, `opj_tcd_rateallocate`), and Tier-2. Floating point fo
 no contraction, no fast-math, the 9/7 steps in the order of the SSE paths. The MQ coder's output is bounded
 by its code-block's buffer (OpenJPEG writes without a bound, OD-4); the buffer OpenJPEG sizes for the codestream
 (`m_encoded_tile_size`, about 1.4 times the raw size plus 500 bytes) is the room Tier-2 has, as in OpenJPEG, so an
-image whose codestream outgrows it fails there as there (`NJ2K_E_LIMIT`, "Cannot encode tile"), and an image whose
+image whose codestream outgrows it fails there as there (`NJ2K_E_LIMIT`, "Cannot encode tile"; ported, but no image of these settings has been found that reaches it), and an image whose
 code-blocks do not fit the two guard bits of their band is refused (OD-6) as the pin refuses it.
 
 The wavelet (one job a component) and Tier-1 (one job a code-block) are written as jobs run in order on the
-calling thread, with the sum of the distortions taken in the code-blocks' order afterwards: stage 6b gives them to
-the host's executor (stage 5's `parallel_for`) without a change of result. The library starts no thread.
+calling thread (`run_jobs()`), the shape stage 6b gives to the host's executor (stage 5's `parallel_for`); they are
+**not thread-safe yet**. Stage 6b's to-dos for it: a Tier-1 scratch for each worker (`EncT1` is shared), an arena (or a
+lock) for what Tier-1 commits (`enc_t1_encode` allocates from the encoder's), a status for each job (the jobs' status is
+shared), and the floating-point environment of a pool thread: `lrintf` rounds as the thread's MXCSR says, so a worker
+must round to nearest even with no flush-to-zero or denormals-are-zero. The library starts no thread.
 
 ## Versions, and a host's cache
 

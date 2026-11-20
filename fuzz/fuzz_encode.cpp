@@ -6,10 +6,11 @@
 // signedness or subsampling) and the settings of OpenJPEG's encoder (resolutions, layers and rates,
 // reversible or not, the colour transform, a comment, and now and then a setting the core encoder
 // does not take: tiles, precincts, another progression, code-block size, mode switches, tile-parts,
-// a region of interest, a size cap); the rest are the samples. neo-j2k's encoder takes it through its
-// own API: it must never crash or hang, a refusal must say why (NJ2K_E_UNSUPPORTED, NJ2K_E_LIMIT or
-// NJ2K_E_ARGUMENT) and write no byte, and a codestream it writes must decode in the oracle to the
-// image (exactly, when lossless). Where the settings are the viewer's (the supported set), the oracle's
+// a region of interest; a size cap it takes); the rest are the samples. neo-j2k's encoder takes it through its
+// own API: it must never crash or hang, a refusal must say why (NJ2K_E_UNSUPPORTED, NJ2K_E_LIMIT,
+// NJ2K_E_ARGUMENT or, for the harness's own allocations, NJ2K_E_NO_MEMORY) and a refusal of the settings or
+// the image write no byte (the stream has a one-byte buffer, so the sink sees every byte), and a
+// codestream it writes must decode in the oracle to the image (exactly, when lossless). Where the settings are the viewer's (the supported set), the oracle's
 // encoder takes the same image and the two must agree: the same bytes, or both refuse. The documented
 // departures are kept out: the oracle reads components that are not there for a colour transform of
 // fewer than three, and wraps samples outside the 8-bit range (DP-16). A failed check says why on
@@ -138,9 +139,7 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
                 v = (v & 1) ? -static_cast<std::int32_t>(1 + (k % 5)) : 256 + static_cast<std::int32_t>(k % 50);
                 in_range = false;
             }
-            if (c < comps) {
-                image->comps[c].data[i] = v;
-            }
+            image->comps[c].data[i] = v;
             input[c].push_back(v);
         }
     }
@@ -211,13 +210,39 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
 
     // the supported set the oracle can be asked the same: the viewer's settings with 8-bit unsigned
     // components of the sizes the viewer sends, in range; the oracle is kept from what it cannot take
-    const bool viewer_set = !over_limits && prec == 8 && !sgnd && dx == 1 && !offset && (toggles & 0xFF) == 0 &&
+    const bool viewer_set = !over_limits && prec == 8 && !sgnd && dx == 1 && !offset && (toggles & 0x7F) == 0 &&
                             layers >= 1 && layers <= int(kMaxLayers) && w >= 4 && h >= 4 && in_range &&
                             !(want_mct && comps < 3) && comment_kind < 4 && numres <= 32;
 
+    // what the oracle's encoder is asked, for the viewer's settings (the image's rows are the raw's bottom row first)
+    std::vector<std::uint8_t> raw;
+    nj2k::test::UploadSpec us;
+    if (viewer_set) {
+        raw.resize(std::size_t(w) * h * comps);
+        for (std::uint32_t y = 0; y < h; ++y) {
+            for (std::uint32_t x = 0; x < w; ++x) {
+                for (std::uint32_t c = 0; c < comps; ++c) {
+                    raw[(std::size_t(h - 1 - y) * w + x) * comps + c] =
+                        static_cast<std::uint8_t>(input[c][std::size_t(y) * w + x]);
+                }
+            }
+        }
+        us.raw = raw.data();
+        us.width = static_cast<int>(w);
+        us.height = static_cast<int>(h);
+        us.comps = static_cast<int>(comps);
+        us.reversible = reversible;
+        us.layers = layers;
+        us.rates = rates;
+        us.numres = numres;
+        us.mct = want_mct ? 1 : 0;
+        us.comment = comment_kind == 0 ? nullptr : p.cp_comment;
+        us.max_cs_size = (toggles & 0x80) ? 5000 : 0;
+    }
+
     Sink sink;
     nj2k_codec_t* enc = nj2k_create_compress(NJ2K_CODEC_J2K);
-    nj2k_stream_t* st = nj2k_stream_create(1 << 14, NJ2K_FALSE);
+    nj2k_stream_t* st = nj2k_stream_create(1, NJ2K_FALSE);  // every byte reaches the sink as it is written
     if (!enc || !st) {
         fail("no memory for the harness");
     }
@@ -233,13 +258,13 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
 
     if (!ok) {
         if (status != NJ2K_E_UNSUPPORTED && status != NJ2K_E_LIMIT && status != NJ2K_E_ARGUMENT &&
-            status != NJ2K_E_NO_MEMORY) {
+            status != NJ2K_E_NO_MEMORY) {  // memory: the harness's own allocations are small
             fail("a refusal with status %d (%s)", status, nj2k_status_string(status));
         }
-        // nothing is written unless the refusal came after the header: a refusal at the settings or the
-        // image writes nothing
-        if (!sink.bytes.empty() && status == NJ2K_E_UNSUPPORTED) {
-            fail("bytes written before an unsupported setting was refused");
+        // a refusal of the settings or the image writes nothing (a tile that does not fit, NJ2K_E_LIMIT after
+        // the header, is the one refusal that follows the main header)
+        if (!sink.bytes.empty() && (status == NJ2K_E_UNSUPPORTED || status == NJ2K_E_ARGUMENT || over_limits)) {
+            fail("%zu bytes written before a refusal (%s)", sink.bytes.size(), nj2k_status_string(status));
         }
         if (over_limits && status != NJ2K_E_LIMIT && status != NJ2K_E_UNSUPPORTED) {
             fail("an image over the limits (%ux%u, %u components) is refused with %s", w, h, comps,
@@ -247,27 +272,6 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
         }
         if (viewer_set) {
             // the oracle must refuse what the core encoder refuses of the supported set
-            nj2k::test::UploadSpec us;
-            std::vector<std::uint8_t> raw(std::size_t(w) * h * comps);
-            for (std::uint32_t y = 0; y < h; ++y) {
-                for (std::uint32_t x = 0; x < w; ++x) {
-                    for (std::uint32_t c = 0; c < comps; ++c) {
-                        // the image's rows are the raw's bottom row first
-                        raw[(std::size_t(h - 1 - y) * w + x) * comps + c] =
-                            static_cast<std::uint8_t>(input[c][std::size_t(y) * w + x]);
-                    }
-                }
-            }
-            us.raw = raw.data();
-            us.width = static_cast<int>(w);
-            us.height = static_cast<int>(h);
-            us.comps = static_cast<int>(comps);
-            us.reversible = reversible;
-            us.layers = layers;
-            us.rates = rates;
-            us.numres = numres;
-            us.mct = want_mct ? 1 : 0;
-            us.comment = comment_kind == 0 ? nullptr : p.cp_comment;
             std::vector<std::uint8_t> theirs;
             if (nj2k::test::oracle_upload(us, theirs)) {
                 fail("neo-j2k refuses (%s) what the oracle encodes: %ux%u, %u components, %s, %d layers, %d resolutions",
@@ -310,26 +314,6 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
         }
     }
     if (viewer_set) {
-        nj2k::test::UploadSpec us;
-        std::vector<std::uint8_t> raw(std::size_t(w) * h * comps);
-        for (std::uint32_t y = 0; y < h; ++y) {
-            for (std::uint32_t x = 0; x < w; ++x) {
-                for (std::uint32_t c = 0; c < comps; ++c) {
-                    raw[(std::size_t(h - 1 - y) * w + x) * comps + c] =
-                        static_cast<std::uint8_t>(input[c][std::size_t(y) * w + x]);
-                }
-            }
-        }
-        us.raw = raw.data();
-        us.width = static_cast<int>(w);
-        us.height = static_cast<int>(h);
-        us.comps = static_cast<int>(comps);
-        us.reversible = reversible;
-        us.layers = layers;
-        us.rates = rates;
-        us.numres = numres;
-        us.mct = want_mct ? 1 : 0;
-        us.comment = comment_kind == 0 ? nullptr : p.cp_comment;
         std::vector<std::uint8_t> theirs;
         if (!nj2k::test::oracle_upload(us, theirs)) {
             fail("the oracle refuses what neo-j2k encodes: %ux%u, %u components, %s, %d layers, %d resolutions", w, h,

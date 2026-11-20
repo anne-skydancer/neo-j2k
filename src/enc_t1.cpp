@@ -56,6 +56,7 @@
 #include "enc_luts.h"
 #include "enc_tile.h"
 #include "t1.h"
+#include "t1_flags.h"
 #include "t1_tables.h"
 
 namespace nj2k::detail {
@@ -67,60 +68,6 @@ using OPJ_INT32 = std::int32_t;
 using opj_flag_t = std::uint32_t;
 
 constexpr OPJ_UINT32 MQC_NUMCTXS = 19;
-
-// t1.h: the contexts and the flags of opj_flag_t (the decoder's t1.cpp has the same list)
-#define T1_NUMCTXS_ZC 9
-#define T1_NUMCTXS_SC 5
-#define T1_NUMCTXS_MAG 3
-#define T1_NUMCTXS_AGG 1
-#define T1_NUMCTXS_UNI 1
-#define T1_CTXNO_ZC 0
-#define T1_CTXNO_SC (T1_CTXNO_ZC + T1_NUMCTXS_ZC)
-#define T1_CTXNO_MAG (T1_CTXNO_SC + T1_NUMCTXS_SC)
-#define T1_CTXNO_AGG (T1_CTXNO_MAG + T1_NUMCTXS_MAG)
-#define T1_CTXNO_UNI (T1_CTXNO_AGG + T1_NUMCTXS_AGG)
-#define T1_SIGMA_0 (1U << 0)
-#define T1_SIGMA_1 (1U << 1)
-#define T1_SIGMA_2 (1U << 2)
-#define T1_SIGMA_3 (1U << 3)
-#define T1_SIGMA_4 (1U << 4)
-#define T1_SIGMA_5 (1U << 5)
-#define T1_SIGMA_6 (1U << 6)
-#define T1_SIGMA_7 (1U << 7)
-#define T1_SIGMA_8 (1U << 8)
-#define T1_SIGMA_10 (1U << 10)
-#define T1_SIGMA_13 (1U << 13)
-#define T1_SIGMA_15 (1U << 15)
-#define T1_SIGMA_16 (1U << 16)
-#define T1_SIGMA_17 (1U << 17)
-#define T1_CHI_0_I 18
-#define T1_CHI_1 (1U << 19)
-#define T1_CHI_1_I 19
-#define T1_MU_0 (1U << 20)
-#define T1_PI_0 (1U << 21)
-#define T1_CHI_2 (1U << 22)
-#define T1_CHI_2_I 22
-#define T1_PI_1 (1U << 24)
-#define T1_PI_2 (1U << 27)
-#define T1_PI_3 (1U << 30)
-#define T1_CHI_5_I 31
-#define T1_SIGMA_NW T1_SIGMA_0
-#define T1_SIGMA_N T1_SIGMA_1
-#define T1_SIGMA_NE T1_SIGMA_2
-#define T1_SIGMA_W T1_SIGMA_3
-#define T1_SIGMA_THIS T1_SIGMA_4
-#define T1_SIGMA_E T1_SIGMA_5
-#define T1_SIGMA_SW T1_SIGMA_6
-#define T1_SIGMA_S T1_SIGMA_7
-#define T1_SIGMA_SE T1_SIGMA_8
-#define T1_SIGMA_NEIGHBOURS \
-    (T1_SIGMA_NW | T1_SIGMA_N | T1_SIGMA_NE | T1_SIGMA_W | T1_SIGMA_E | T1_SIGMA_SW | T1_SIGMA_S | T1_SIGMA_SE)
-#define T1_CHI_THIS T1_CHI_1
-#define T1_CHI_THIS_I T1_CHI_1_I
-#define T1_MU_THIS T1_MU_0
-#define T1_PI_THIS T1_PI_0
-#define T1_NMSEDEC_BITS 7
-#define T1_NMSEDEC_FRACBITS (T1_NMSEDEC_BITS - 1)
 
 // the largest code-block of the encoder: 64 x 64
 constexpr OPJ_UINT32 kCblkW = 64, kCblkH = 64;
@@ -654,11 +601,10 @@ std::int32_t* enc_t1_data(EncT1* t1) noexcept
     return t1->data;
 }
 
-EncT1Result enc_t1_encode(EncT1* t1, Arena& arena, EncCblk& cblk, std::uint32_t orient, std::uint32_t compno,
-                          std::uint32_t level, bool reversible, double stepsize, const double* mct_norms,
-                          std::uint32_t mct_numcomps) noexcept
+bool enc_t1_encode(EncT1* t1, Arena& arena, EncCblk& cblk, std::uint32_t orient, std::uint32_t compno,
+                   std::uint32_t level, bool reversible, double stepsize, const double* mct_norms,
+                   std::uint32_t mct_numcomps) noexcept
 {
-    EncT1Result result = {0.0, true};
     double cumwmsedec = 0.0;
     MqEnc* mqc = &t1->mqc;
     OPJ_UINT32 passno;
@@ -731,7 +677,7 @@ EncT1Result enc_t1_encode(EncT1* t1, Arena& arena, EncCblk& cblk, std::uint32_t 
     cblk.numbps = max ? static_cast<OPJ_UINT32>((floorlog2(max) + 1) - T1_NMSEDEC_FRACBITS) : 0;
     if (cblk.numbps == 0) {
         cblk.totalpasses = 0;
-        return result;
+        return true;
     }
 
     bpno = static_cast<OPJ_INT32>(cblk.numbps - 1);
@@ -781,8 +727,7 @@ EncT1Result enc_t1_encode(EncT1* t1, Arena& arena, EncCblk& cblk, std::uint32_t 
     }
 
     if (mqc->overflow) {
-        result.ok = false;
-        return result;
+        return false;
     }
 
     cblk.totalpasses = passno;
@@ -817,14 +762,12 @@ EncT1Result enc_t1_encode(EncT1* t1, Arena& arena, EncCblk& cblk, std::uint32_t 
         const OPJ_UINT32 bytes = mqc->numbytes();
         cblk.data = static_cast<std::uint8_t*>(arena.allocate(bytes ? bytes : 1, 16));
         if (!cblk.passes || !cblk.data) {
-            result.ok = false;
-            return result;
+            return false;
         }
         std::memcpy(cblk.passes, t1->passes, cblk.totalpasses * sizeof(EncPass));
         std::memcpy(cblk.data, t1->out + 1, bytes);
     }
-    result.cumwmsedec = cumwmsedec;
-    return result;
+    return true;
 }
 
 }  // namespace nj2k::detail

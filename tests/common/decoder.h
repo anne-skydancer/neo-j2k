@@ -163,6 +163,7 @@ struct UploadSpec {
     std::vector<float> rates;  // empty: the viewer's (0 lossless, 8 * 4^i lossy)
     int numres = 0;            // 0: the viewer's
     int mct = -1;              // -1: the viewer's (on from three components)
+    int max_cs_size = 0;       // the codestream size cap in bytes (0: none, the viewer's)
     const char* comment = "no comment";  // nullptr: no comment given, OpenJPEG writes its own
 };
 // A codestream from each library's encoder: the oracle's, and neo-j2k's through the compatibility

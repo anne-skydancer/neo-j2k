@@ -92,7 +92,6 @@ struct EncStep {
 struct EncTile {
     std::uint32_t numcomps;
     EncComp* comps;
-    double distotile;
 };
 
 // the coding parameters of one tile, every component alike
@@ -139,22 +138,17 @@ EncT1* enc_t1_create(const Allocator& alloc) noexcept;
 void enc_t1_destroy(EncT1* t1, const Allocator& alloc) noexcept;
 // The 64 x 64 code-block's samples, in the order of the coding passes, are written by the caller
 // through enc_t1_data() (w x h, four rows at a time, column by column) and coded here: the passes
-// go to cblk->passes (from arena) and the bytes to cblk->data; returns the code-block's distortion
-// (the tile's distotile grows by it). False when the arena runs out or the code-block's output
-// does not fit its buffer.
+// go to cblk->passes (from arena) and the bytes to cblk->data. False when the arena runs out or the
+// code-block's output does not fit its buffer.
 std::int32_t* enc_t1_data(EncT1* t1) noexcept;
-struct EncT1Result {
-    double cumwmsedec;
-    bool ok;
-};
-EncT1Result enc_t1_encode(EncT1* t1, Arena& arena, EncCblk& cblk, std::uint32_t orient, std::uint32_t compno,
-                          std::uint32_t level, bool reversible, double stepsize, const double* mct_norms,
-                          std::uint32_t mct_numcomps) noexcept;
+bool enc_t1_encode(EncT1* t1, Arena& arena, EncCblk& cblk, std::uint32_t orient, std::uint32_t compno,
+                    std::uint32_t level, bool reversible, double stepsize, const double* mct_norms,
+                    std::uint32_t mct_numcomps) noexcept;
 
 // Tier-2 and the rate allocation: layers from the passes (opj_tcd_rateallocate), then the packets.
 // len is the room in dest (OpenJPEG's tile buffer after SOT and SOD); false when it does not fit
 // (messages through msg) or the arena runs out.
-bool enc_rate_allocate_and_packets(Arena& arena, const Messages& msg, EncTile& tile, const EncParams& p,
+bool enc_rate_allocate_and_packets(const Messages& msg, EncTile& tile, const EncParams& p,
                                    std::uint8_t* dest, std::uint32_t len, std::uint32_t* written) noexcept;
 
 // the tag tree of opj_tgt_create, for numleafsh x numleafsv leaves; false when the arena runs out

@@ -247,10 +247,9 @@ bool encode_packet(const Messages& msg, EncTile& tile, const EncParams& p, std::
                 if (band.numbps < static_cast<std::int32_t>(cblk.numbps)) {
                     msg.emit(Messages::Error,
                              "opj_t2_encode_packet(): a code-block of component %u, resolution %u "
-                             "needs %u bit planes, its band holds %d with %u guard bits: "
-                             "the image does not fit, use at least %u guard bits (GUARD_BITS=)\n",
-                             compno, resno, cblk.numbps, band.numbps, p.numgbits,
-                             p.numgbits + static_cast<std::uint32_t>(static_cast<std::int32_t>(cblk.numbps) - band.numbps));
+                             "needs %u bit planes, its band holds %d with the core encoder's %u guard bits: "
+                             "the image does not fit (more guard bits, GUARD_BITS, belong to the j2k-extra module)\n",
+                             compno, resno, cblk.numbps, band.numbps, p.numgbits);
                     return false;
                 }
                 tgt_setvalue(band.imsbtree, cblkno, band.numbps - static_cast<std::int32_t>(cblk.numbps));
@@ -531,7 +530,7 @@ bool makelayer(EncTile& tile, std::uint32_t layno, double thresh, std::uint32_t 
 }
 
 // opj_tcd_rateallocate for m_quality_layer_alloc_strategy == RATE_DISTORTION_RATIO
-bool rateallocate(const Messages& msg, EncTile& tile, const EncParams& p, std::uint8_t* dest, std::uint32_t len,
+void rateallocate(const Messages& msg, EncTile& tile, const EncParams& p, std::uint8_t* dest, std::uint32_t len,
                   std::uint32_t* p_data_written) noexcept
 {
     double min = DBL_MAX;
@@ -642,8 +641,6 @@ bool rateallocate(const Messages& msg, EncTile& tile, const EncParams& p, std::u
 
         makelayer(tile, layno, goodthresh, 1);
     }
-
-    return true;
 }
 
 }  // namespace
@@ -712,14 +709,11 @@ bool enc_tgt_create(Arena& arena, TagTree& tree, std::uint32_t numleafsh, std::u
     return true;
 }
 
-bool enc_rate_allocate_and_packets(Arena& arena, const Messages& msg, EncTile& tile, const EncParams& p,
+bool enc_rate_allocate_and_packets(const Messages& msg, EncTile& tile, const EncParams& p,
                                    std::uint8_t* dest, std::uint32_t len, std::uint32_t* written) noexcept
 {
-    (void)arena;
     std::uint32_t scratch_written = 0;
-    if (!rateallocate(msg, tile, p, dest, len, &scratch_written)) {
-        return false;
-    }
+    rateallocate(msg, tile, p, dest, len, &scratch_written);
     return encode_packets(msg, tile, p, p.numlayers, dest, written, len, true);
 }
 

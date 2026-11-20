@@ -28,9 +28,9 @@ nj2k_test_program(nj2k_api_unit unit/api_unit.cpp)
 nj2k_test_program(nj2k_header_unit unit/header_unit.cpp)
 # stage 1c: the decode core's departures, kernels, memory decode and zero-heap gate
 nj2k_test_program(nj2k_decode_unit unit/decode_unit.cpp)
+nj2k_simd(nj2k_decode_unit)  # the AVX2 kernels' declarations, compared with their scalar references
 # stage 6a: the encoder against the oracle's, byte for byte, at the viewer's settings
 nj2k_test_program(nj2k_encode_unit unit/encode_unit.cpp)
-nj2k_simd(nj2k_decode_unit)  # the AVX2 kernels' declarations, compared with their scalar references
 # the local gate on a viewer's texture cache (private: run where it is, doc/testing.md)
 nj2k_test_program(nj2k_cache_check tools/nj2k_cache_check.cpp)
 if(NJ2K_PROFILE_OPENSIM)
