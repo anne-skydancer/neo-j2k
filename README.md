@@ -35,12 +35,18 @@ every cut point (the stage 1a semantics: every complete codeword segment kept), 
 memory into the caller's buffers (`nj2k_read_header_memory`, `nj2k_decode_memory`: one decoder per thread, the
 main header parsed once, the caller's bytes read in place and never written, no heap call once warmed up for
 images up to 256 x 256). Large images decode too, on one thread as fast as OpenJPEG or faster (`doc/bench.md`).
-Decoding by tile and decode areas come later, the encoder in 6a (`doc/stages.md`).
+Decoding by tile and decode areas come later.
 
 Stages 2-4, speed on one thread with the same output: the colour transform, DC shift and copy into the
 caller's buffers fused into one pass (the viewer's 8-bit image in registers); the inverse wavelet row-wise on
 large levels, its vertical steps in one sweep; the MQ decoder's renormalisation by count-leading-zeros; no
 heap call once warmed up, from the first repeat of a request on (`doc/bench.md`).
+
+Stage 6a, the encoder: the settings the Second Life viewer encodes with (RLCP, 64 x 64 code-blocks, 5/3 lossless or
+9/7 with rate layers, the colour transform, 8-bit components of up to 4,096 samples a side), through OpenJPEG's
+encoder API, with codestreams byte for byte OpenJPEG's (`encode_unit`, the encode fuzz target); the rest of
+OpenJPEG's encoder gives `NJ2K_E_UNSUPPORTED` (the j2k-extra module). One thread, correctness first: speed is
+stage 6b's (`doc/api.md`, `doc/bench.md`).
 
 ## Build and test
 
