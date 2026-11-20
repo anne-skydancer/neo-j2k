@@ -59,6 +59,12 @@
       "cacheVariables": { "NJ2K_SANITIZE": "address;undefined", "NJ2K_BUILD_BENCH": "OFF" }
     },
     {
+      "name": "linux-clang-tsan",
+      "displayName": "Linux, Clang, ThreadSanitizer (threads in one image)",
+      "inherits": "linux-clang",
+      "cacheVariables": { "NJ2K_SANITIZE": "thread", "NJ2K_BUILD_BENCH": "OFF", "NJ2K_BUILD_TOOLS": "OFF" }
+    },
+    {
       "name": "linux-clang-fuzz",
       "displayName": "Linux, Clang, libFuzzer targets with ASan and UBSan",
       "inherits": "linux-clang",
@@ -82,6 +88,7 @@
     { "name": "linux-gcc-scalar", "configurePreset": "linux-gcc-scalar" },
     { "name": "linux-clang", "configurePreset": "linux-clang" },
     { "name": "linux-clang-asan-ubsan", "configurePreset": "linux-clang-asan-ubsan" },
+    { "name": "linux-clang-tsan", "configurePreset": "linux-clang-tsan" },
     { "name": "linux-clang-fuzz", "configurePreset": "linux-clang-fuzz" }
   ],
   "testPresets": [
@@ -98,6 +105,12 @@
     { "name": "linux-gcc", "inherits": "test-base", "configurePreset": "linux-gcc" },
     { "name": "linux-gcc-scalar", "inherits": "test-base", "configurePreset": "linux-gcc-scalar" },
     { "name": "linux-clang", "inherits": "test-base", "configurePreset": "linux-clang" },
-    { "name": "linux-clang-asan-ubsan", "inherits": "test-base", "configurePreset": "linux-clang-asan-ubsan" }
+    { "name": "linux-clang-asan-ubsan", "inherits": "test-base", "configurePreset": "linux-clang-asan-ubsan" },
+    {
+      "name": "linux-clang-tsan",
+      "inherits": "test-base",
+      "configurePreset": "linux-clang-tsan",
+      "filter": { "include": { "name": "threads" } }
+    }
   ]
 }

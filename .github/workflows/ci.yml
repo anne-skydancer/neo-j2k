@@ -3,7 +3,8 @@
 #
 # Build and test on every pull request and on main: Windows (MSVC, clang-cl, MSVC and clang-cl with
 # AddressSanitizer), Linux (GCC 15, Clang, the scalar build, Clang with AddressSanitizer and
-# UndefinedBehaviorSanitizer) and Ubuntu 24.04 (GCC 14). Every job runs the oracle against its
+# UndefinedBehaviorSanitizer, Clang with ThreadSanitizer over the threaded tests and the threaded
+# fuzz replay) and Ubuntu 24.04 (GCC 14). Every job runs the oracle against its
 # reference tables, so the oracle's output is checked to be the same on every compiler and
 # platform. The lint job checks the workflows, the generated compatibility header, the licence
 # headers and the vendored oracle against its pinned commit.
@@ -101,6 +102,10 @@ jobs:
           - { preset: linux-gcc-scalar, cc: gcc-15, cxx: g++-15, packages: g++-15 }
           - { preset: linux-clang, cc: clang, cxx: clang++, packages: clang lld }
           - { preset: linux-clang-asan-ubsan, cc: clang, cxx: clang++, packages: clang lld }
+          # stage 5: the test preset runs the tests named threads (decode_threads: one thread against
+          # 2-16 parts of a shared pool; fuzz_replay.decode_threads: the decode target's seeds and
+          # regressions through a pool) under ThreadSanitizer
+          - { preset: linux-clang-tsan, cc: clang, cxx: clang++, packages: clang lld }
     env:
       CC: ${{ matrix.cc }}
       CXX: ${{ matrix.cxx }}
