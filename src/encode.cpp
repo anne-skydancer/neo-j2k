@@ -54,6 +54,7 @@
 #include <cmath>
 #include <climits>
 #include <cstdarg>
+#include <cstdlib>
 #include <cstring>
 #include <new>
 
