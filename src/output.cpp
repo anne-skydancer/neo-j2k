@@ -106,7 +106,9 @@ void store_scalar(const std::int32_t* row, std::size_t n, std::uint32_t sample_t
         break;
     default:
         if (sample_stride == sizeof(std::int32_t)) {
-            std::memcpy(dst, row, n * sizeof(std::int32_t));
+            if (n) {  // an empty row may come with null pointers, which memcpy may not take
+                std::memcpy(dst, row, n * sizeof(std::int32_t));
+            }
         } else {
             for (std::size_t i = 0; i < n; ++i) {
                 std::memcpy(dst + i * sample_stride, row + i, sizeof(std::int32_t));
