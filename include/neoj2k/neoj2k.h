@@ -2159,10 +2159,10 @@ NJ2K_API NJ2K_BOOL NJ2K_CALLCONV nj2k_decoder_set_retained_bytes(nj2k_codec_t *p
  * plane of 4 MiB or more that the first tile written into it does not cover (a multi-tile image):
  * small tiles stay on the calling thread.
  *
- * Busy or idle is the host's decision (owner, 2026-11-20): lend the executor only when the host has
- * idle cores, for example when its decode queue holds fewer jobs than it has workers, and lend nothing
- * when the queue is backed up. Never lend it to every decode on a saturated pool: splitting a decode
- * there costs throughput (doc/bench.md, stage 5).
+ * Busy or idle is the host's decision: lend the executor only when the host has idle cores, for
+ * example when its decode queue holds fewer jobs than it has workers, and lend nothing when the queue
+ * is backed up. Never lend it to every decode on a saturated pool: splitting a decode
+ * there gains nothing and costs about 3 % more CPU (doc/bench.md, stage 5).
  *
  * A codec decodes the same samples, and gives the same status and the same messages in the same order,
  * whatever the executor and its concurrency.

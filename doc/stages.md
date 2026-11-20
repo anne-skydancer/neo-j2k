@@ -83,9 +83,10 @@ large image with no higher peak from memory (the stream API's multi-tile peaks a
 OpenJPEG's: a known exception for j2k-core, accepted by the owner on 2026-11-20; the j2k-tile module's
 low-memory stream closes it, and the memory-buffer API is not affected); ThreadSanitizer in CI, and the decode fuzz target's executor
 under ClusterFuzzLite's sanitizers; small images within what moving `main`'s own code by a few bytes does
-(the one-thread Tier-1 walker has no counters since the owner's call of 2026-11-20), and the host lends the
-executor only when it has idle cores, and nothing when its decode queue is backed up (owner, 2026-11-20,
-superseding the first round's image-level guard of 2^22 samples; `doc/api.md`, `doc/bench.md`). Two departures from the plan's section 2.7, both measured: whole
+(the one-thread Tier-1 walker has no counters since the owner's call of 2026-11-20). Host guidance (owner,
+2026-11-20, superseding the first round's image-level guard of 2^22 samples; `doc/api.md`,
+`doc/bench.md`): the host lends the executor only when it has idle cores, and nothing when its decode queue
+is backed up. Two departures from the plan's section 2.7, both measured: whole
 decodes split from tiles of 2^18 samples in the largest component (the plan had 256^2, and at 256^2 RGB 8 threads
 used the cores at 43 % efficiency, `doc/bench.md`), and Tier-1 cut into contiguous runs of about
 equal estimated cost rather than handed out largest first (contiguous runs keep each part's walk to its

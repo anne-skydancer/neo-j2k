@@ -202,7 +202,8 @@ struct Walk {
     // The current tile through the executor (stage 5), when the host lent one (it does that only when
     // it has idle cores) and the tile's largest component has parallel_tile samples or more: the
     // code-blocks' costs and Tier-1's runs (plan_t1), a Tier-1 scratch a run, and the wavelet's larger
-    // scratch. When any of that cannot be had, what was had for it is given back and the tile runs on this thread, which decodes it the same.
+    // scratch. When any of that cannot be had, what was had for it is given back and the tile runs on
+    // this thread, which decodes it the same.
     // Its working memory is outside the decoder limits' estimate (so that the limits refuse the same
     // images with or without an executor): per run a Tier-1 scratch (28 KiB) with room for the
     // largest code-block of its run (over all runs at most the tile's coded bytes, which the decoder
