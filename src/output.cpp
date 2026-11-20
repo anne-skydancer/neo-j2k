@@ -197,6 +197,161 @@ void store_u8_packed_avx2(const std::int32_t* const* rows, std::uint32_t k, std:
     store_u8_packed_scalar(rest, k, n - i, dst + i * k);
 }
 
+bool u8_fusable(const Finish& f) noexcept
+{
+    return f.lo >= 0 && f.hi <= 255 && f.lo <= f.hi && f.shift >= 0 && f.shift <= 32767;
+}
+
+namespace {
+
+// The 16 samples of a component from its two 8-lane halves to int16 in pixel order, DC-shifted
+inline __m256i shift_u8_16(__m256i a, __m256i b, __m256i shift, __m256i lo, __m256i hi) noexcept
+{
+    const __m256i p = _mm256_packs_epi32(a, b);  // pixels 0-3, 8-11 | 4-7, 12-15
+    return _mm256_permute4x64_epi64(_mm256_min_epi16(_mm256_max_epi16(_mm256_adds_epi16(p, shift), lo), hi), 0xD8);
+}
+
+// K components, the colour transform M on the first three, every component reversible (5/3) or
+// none (9/7): fused_u8_supported picks the instance
+template <std::uint32_t K, Mct M, bool R>
+std::size_t fused_u8(const std::int32_t* const* src, const Finish* f, std::size_t n, std::uint8_t* dst) noexcept
+{
+    const __m256 vrv = _mm256_set1_ps(1.402f), vgu = _mm256_set1_ps(0.34413f), vgv = _mm256_set1_ps(0.71414f),
+                 vbu = _mm256_set1_ps(1.772f);
+    const __m256 cap = _mm256_set1_ps(1073741824.0f);
+    __m256i shift[K], lo[K], hi[K];
+    for (std::uint32_t c = 0; c < K; ++c) {
+        shift[c] = _mm256_set1_epi16(static_cast<std::int16_t>(f[c].shift));
+        lo[c] = _mm256_set1_epi16(static_cast<std::int16_t>(f[c].lo));
+        hi[c] = _mm256_set1_epi16(static_cast<std::int16_t>(f[c].hi));
+    }
+    auto load = [&](std::uint32_t c, std::size_t at) {
+        return _mm256_loadu_si256(reinterpret_cast<const __m256i*>(src[c] + at));
+    };
+    // the eight samples of every component at column at, as the DC shift takes them: int32, the 9/7
+    // ones rounded
+    auto eight = [&](std::size_t at, __m256i* v) {
+        std::uint32_t c = 0;
+        if constexpr (M == Mct::kIct) {
+            const __m256 y = _mm256_castsi256_ps(load(0, at)), u = _mm256_castsi256_ps(load(1, at)),
+                         w = _mm256_castsi256_ps(load(2, at));
+            v[0] = _mm256_castps_si256(_mm256_add_ps(y, _mm256_mul_ps(w, vrv)));
+            v[1] = _mm256_castps_si256(_mm256_sub_ps(_mm256_sub_ps(y, _mm256_mul_ps(u, vgu)), _mm256_mul_ps(w, vgv)));
+            v[2] = _mm256_castps_si256(_mm256_add_ps(y, _mm256_mul_ps(u, vbu)));
+            c = 3;
+        } else if constexpr (M == Mct::kRct) {
+            const __m256i y = load(0, at), u = load(1, at), w = load(2, at);
+            const __m256i g = _mm256_sub_epi32(y, _mm256_srai_epi32(_mm256_add_epi32(u, w), 2));
+            v[0] = _mm256_add_epi32(w, g);
+            v[1] = g;
+            v[2] = _mm256_add_epi32(u, g);
+            c = 3;
+        }
+        for (; c < K; ++c) {
+            v[c] = load(c, at);
+        }
+        if constexpr (!R) {
+            for (c = 0; c < K; ++c) {
+                v[c] = _mm256_cvtps_epi32(_mm256_min_ps(cap, _mm256_castsi256_ps(v[c])));
+            }
+        }
+    };
+    std::size_t i = 0;
+    for (; i + 16 <= n; i += 16) {
+        __m256i a[K], b[K], s[K];
+        eight(i, a);
+        eight(i + 8, b);
+        for (std::uint32_t c = 0; c < K; ++c) {
+            s[c] = shift_u8_16(a[c], b[c], shift[c], lo[c], hi[c]);
+        }
+        std::uint8_t* d = dst + i * K;
+        if constexpr (K == 1) {
+            const __m256i p = _mm256_permute4x64_epi64(_mm256_packus_epi16(s[0], s[0]), 0x08);
+            _mm_storeu_si128(reinterpret_cast<__m128i*>(d), _mm256_castsi256_si128(p));
+        } else if constexpr (K == 2) {
+            _mm256_storeu_si256(reinterpret_cast<__m256i*>(d), _mm256_or_si256(s[0], _mm256_slli_epi16(s[1], 8)));
+        } else if constexpr (K == 3) {
+            const __m256i rg = _mm256_or_si256(s[0], _mm256_slli_epi16(s[1], 8));
+            const __m256i lo32 = _mm256_unpacklo_epi16(rg, s[2]);  // pixels 0-3 | 8-11, a pixel a lane
+            const __m256i hi32 = _mm256_unpackhi_epi16(rg, s[2]);  // pixels 4-7 | 12-15
+            const __m256i pick = _mm256_setr_epi8(0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14, -1, -1, -1, -1, 0, 1, 2, 4, 5,
+                                                  6, 8, 9, 10, 12, 13, 14, -1, -1, -1, -1);
+            const __m256i p = _mm256_shuffle_epi8(lo32, pick), q = _mm256_shuffle_epi8(hi32, pick);
+            // 12 bytes each; the first three stores write 4 bytes beyond theirs, which the next one
+            // writes again; the last writes its 12 alone
+            _mm_storeu_si128(reinterpret_cast<__m128i*>(d), _mm256_castsi256_si128(p));
+            _mm_storeu_si128(reinterpret_cast<__m128i*>(d + 12), _mm256_castsi256_si128(q));
+            _mm_storeu_si128(reinterpret_cast<__m128i*>(d + 24), _mm256_extracti128_si256(p, 1));
+            const __m128i last = _mm256_extracti128_si256(q, 1);
+            _mm_storel_epi64(reinterpret_cast<__m128i*>(d + 36), last);
+            const std::int32_t tail = _mm_extract_epi32(last, 2);
+            std::memcpy(d + 44, &tail, sizeof tail);
+        } else {
+            const __m256i rg = _mm256_or_si256(s[0], _mm256_slli_epi16(s[1], 8));
+            const __m256i ba = _mm256_or_si256(s[2], _mm256_slli_epi16(s[3], 8));
+            const __m256i lo32 = _mm256_unpacklo_epi16(rg, ba);  // pixels 0-3 | 8-11
+            const __m256i hi32 = _mm256_unpackhi_epi16(rg, ba);  // pixels 4-7 | 12-15
+            _mm256_storeu_si256(reinterpret_cast<__m256i*>(d), _mm256_permute2x128_si256(lo32, hi32, 0x20));
+            _mm256_storeu_si256(reinterpret_cast<__m256i*>(d + 32), _mm256_permute2x128_si256(lo32, hi32, 0x31));
+        }
+    }
+    return i;
+}
+
+template <Mct M, bool R>
+FusedU8Fn fused_for(std::uint32_t k) noexcept
+{
+    if constexpr (M == Mct::kNone) {
+        switch (k) {
+        case 1:
+            return fused_u8<1, M, R>;
+        case 2:
+            return fused_u8<2, M, R>;
+        default:
+            break;
+        }
+    }
+    return k == 3 ? fused_u8<3, M, R> : k == 4 ? fused_u8<4, M, R> : nullptr;
+}
+
+}  // namespace
+
+// Sixteen pixels at a time, each sample in registers from its source to its byte: the colour
+// transform as mct_rows does it, then the DC shift in 16-bit lanes: for a component whose result
+// lies in [0, 255] (u8_fusable: 0 <= lo <= hi <= 255, 0 <= shift < 2^15) the 64-bit add and clamp
+// of dc_shift_53 / dc_shift_97 equal a saturating pack to int16, a saturating add of the shift and a
+// clamp to [lo, hi] (a sample beyond int16 saturates to the same side of the range as its true sum).
+// The 9/7 rounding is cvtps (ties to even, as finish_row's); min(2^30, v) first sends 2^31 and above
+// to hi, as dc_shift_97's blend does (2^30 is above every hi - shift), and keeps NaN, which cvtps
+// turns into INT_MIN, then lo. The bytes are the samples themselves, which is the low byte the
+// other stores keep. Every component 5/3 or every one 9/7, the colour transform the one that goes
+// with them (the RCT with the 5/3, the ICT with the 9/7); else nothing is written and 0 returned.
+std::size_t store_u8_fused_avx2(Mct mct, const std::int32_t* const* src, const Finish* f, std::uint32_t k, std::size_t n,
+                                std::uint8_t* dst) noexcept
+{
+    const FusedU8Fn fn = fused_u8_function(mct, f, k);
+    return fn ? fn(src, f, n, dst) : 0;
+}
+
+FusedU8Fn fused_u8_function(Mct mct, const Finish* f, std::uint32_t k) noexcept
+{
+    if (k < 1 || k > 4 || (mct != Mct::kNone && k < 3)) {
+        return nullptr;
+    }
+    const bool r = f[0].reversible;
+    for (std::uint32_t c = 0; c < k; ++c) {
+        if (f[c].reversible != r || !u8_fusable(f[c])) {
+            return nullptr;
+        }
+    }
+    if (mct == Mct::kNone) {
+        return r ? fused_for<Mct::kNone, true>(k) : fused_for<Mct::kNone, false>(k);
+    }
+    if ((mct == Mct::kRct) != r) {
+        return nullptr;
+    }
+    return r ? fused_for<Mct::kRct, true>(k) : fused_for<Mct::kIct, false>(k);
+}
 #endif
 
 }  // namespace kernels
@@ -299,11 +454,32 @@ void write_group(const CopyComp* comps, std::uint32_t k, Mct mct, std::uint32_t 
         write_tiny_packed(comps, k, mct, packed_base, only[0]->row_stride);
         return;
     }
+    std::uint32_t x_from = 0;  // the columns the fused 8-bit pass leaves to the chunks below
+#if defined(__AVX2__)
+    bool finished = packed && c0.w >= 16;
+    Finish f[4];
+    for (std::uint32_t c = 0; c < k && finished; ++c) {
+        finished = comps[c].finish;
+        f[c] = comps[c].f;
+    }
+    if (const kernels::FusedU8Fn fused = finished ? kernels::fused_u8_function(mct, f, k) : nullptr) {
+        for (std::uint32_t j = 0; j < c0.h; ++j) {
+            const std::int32_t* src[4];
+            for (std::uint32_t c = 0; c < k; ++c) {
+                src[c] = comps[c].src + std::size_t(j) * comps[c].src_stride;
+            }
+            x_from = static_cast<std::uint32_t>(fused(src, f, c0.w, packed_base + static_cast<std::int64_t>(j) * only[0]->row_stride));
+        }
+        if (x_from == c0.w) {
+            return;
+        }
+    }
+#endif
     // A region of at most kChunk samples whose rows follow one another in every source (a small
     // tile's whole buffer) is finished as one run, so the row kernels see full vectors and are called
     // once, not once a row; its rows are then stored one by one.
     std::uint32_t run_rows = 1;
-    if (c0.h > 1 && std::size_t(c0.w) * c0.h <= kChunk) {
+    if (x_from == 0 && c0.h > 1 && std::size_t(c0.w) * c0.h <= kChunk) {
         bool contiguous = true;
         for (std::uint32_t c = 0; c < k; ++c) {
             contiguous = contiguous && comps[c].src_stride == c0.w;
@@ -312,7 +488,7 @@ void write_group(const CopyComp* comps, std::uint32_t k, Mct mct, std::uint32_t 
     }
     alignas(32) std::int32_t tmp[4][kChunk];
     for (std::uint32_t j = 0; j < c0.h; j += run_rows) {
-        for (std::uint32_t x = 0; x < c0.w; x += static_cast<std::uint32_t>(kChunk)) {
+        for (std::uint32_t x = x_from; x < c0.w; x += static_cast<std::uint32_t>(kChunk)) {
             const std::size_t row_n = c0.w - x < kChunk ? c0.w - x : kChunk;
             const std::size_t n = row_n * run_rows;
             std::uint32_t c = 0;

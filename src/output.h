@@ -75,6 +75,18 @@ void finish_row_avx2(std::int32_t* p, std::size_t n, const Finish& f) noexcept;
 void store_u8_packed_avx2(const std::int32_t* const* rows, std::uint32_t k, std::size_t n, std::uint8_t* dst) noexcept;
 void store_avx2(const std::int32_t* row, std::size_t n, std::uint32_t sample_type, std::uint8_t* dst,
                 std::uint32_t sample_stride) noexcept;
+// The fused 8-bit pass of the viewer's image: k (1 to 4) components interleaved into k-byte pixels,
+// read straight from their rows (src), the colour transform (mct: the first three), the DC shift
+// (f) and the store in registers, sixteen pixels at a time, for components whose finished samples
+// lie in [0, 255] (u8_fusable). Returns the pixels written: n rounded down to 16.
+// Every component must be 5/3 or every one 9/7, with the colour transform that goes with them;
+// otherwise nothing is written and 0 returned. fused_u8_function gives the instance for a group
+// (nullptr when it has none), for callers that write many rows.
+bool u8_fusable(const Finish& f) noexcept;
+using FusedU8Fn = std::size_t (*)(const std::int32_t* const* src, const Finish* f, std::size_t n, std::uint8_t* dst) noexcept;
+FusedU8Fn fused_u8_function(Mct mct, const Finish* f, std::uint32_t k) noexcept;
+std::size_t store_u8_fused_avx2(Mct mct, const std::int32_t* const* src, const Finish* f, std::uint32_t k, std::size_t n,
+                                std::uint8_t* dst) noexcept;
 #endif
 }  // namespace kernels
 
