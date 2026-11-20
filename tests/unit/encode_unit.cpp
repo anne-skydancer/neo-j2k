@@ -933,6 +933,65 @@ void test_limits_and_states()
         b.p = a.p;
         CHECK(b.run());
     }
+    // a size cap cuts the 5/3 too, as OpenJPEG's: no layers asked is one layer at rate 0, written back,
+    // and the cap lifts that rate (3 x 64 x 64 x 8 bits in 5,000 bytes: 2.4576), written back as well.
+    // The encode fuzz target took such a stream for a lossless one (fuzz/regressions/encode-size-cap-lossless.bin)
+    {
+        const auto columns = [](nj2k_image_t* image) {
+            for (std::uint32_t c = 0; c < image->numcomps; ++c) {
+                for (int i = 0; i < 64 * 64; ++i) {
+                    image->comps[c].data[i] = (i & 1) ? 5 : 206;
+                }
+            }
+        };
+        Job none(64, 64, 3);
+        columns(none.image);
+        none.p.irreversible = 0;
+        none.p.tcp_numlayers = 0;
+        none.p.max_cs_size = 5000;
+        CHECK(none.run());
+        CHECK_MSG(none.p.tcp_numlayers == 1, "%d layers", none.p.tcp_numlayers);
+        CHECK_MSG(none.p.tcp_rates[0] > 2.4575f && none.p.tcp_rates[0] < 2.4577f, "rate %g", none.p.tcp_rates[0]);
+        Job one(64, 64, 3);
+        columns(one.image);
+        one.p.irreversible = 0;
+        one.p.max_cs_size = 5000;
+        CHECK(one.run());
+        CHECK(one.sink.bytes == none.sink.bytes);
+        // the oracle's encoder writes the same bytes, and its decoder gives other samples than the image's
+        Raw raw(std::size_t(64) * 64 * 3);
+        for (std::size_t i = 0; i < raw.size(); ++i) {
+            raw[i] = ((i / 3) & 1) ? 5 : 206;
+        }
+        UploadSpec us;
+        us.raw = raw.data();
+        us.width = us.height = 64;
+        us.comps = 3;
+        us.reversible = true;
+        us.numres = 1;  // the fuzz input's settings: one resolution, no colour transform
+        us.mct = 0;
+        us.max_cs_size = 5000;
+        CHECK(same_codestream(us, "max_cs_size lossless"));
+        Bytes cs;
+        CHECK(oracle_upload(us, cs));
+        Request rq;
+        rq.data = cs.data();
+        rq.size = cs.size();
+        rq.mode = Mode::Plain;
+        rq.capture = true;
+        const Outcome o = make_oracle_backend()->decode(rq);
+        CHECK(o.ok && o.planes.size() == 3);
+        bool same = o.ok && o.planes.size() == 3;
+        for (std::size_t c = 0; same && c < 3; ++c) {
+            for (std::size_t i = 0; i < std::size_t(64) * 64; ++i) {
+                if (o.planes[c][i] != ((i & 1) ? 5 : 206)) {
+                    same = false;
+                    break;
+                }
+            }
+        }
+        CHECK_MSG(!same, "the capped 5/3 stream of %zu bytes decodes to the image", cs.size());
+    }
     // DP-16: samples outside the 8-bit range are refused where OpenJPEG's arithmetic would wrap
     {
         Job j;

@@ -300,8 +300,10 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
              o.comps.empty() ? 0 : o.comps[0].w, o.comps.empty() ? 0 : o.comps[0].h, comps, w, h);
     }
     // lossless: the 5/3 wavelet with a last layer that is not cut by a rate (0 or at most 1, which
-    // OpenJPEG takes as lossless), or no layers asked, which is one lossless layer
-    const bool exact = reversible && (layers == 0 || p.tcp_rates[layers - 1] <= 1.0f);
+    // OpenJPEG takes as lossless). The setup wrote its layers and rates back into the parameters: no
+    // layers asked is one layer at rate 0, and a size cap lifts the rates to the ratio it implies,
+    // which cuts that layer too
+    const bool exact = reversible && p.tcp_rates[p.tcp_numlayers - 1] <= 1.0f;
     if (exact) {
         for (std::uint32_t c = 0; c < comps; ++c) {
             // the planes are the image's own

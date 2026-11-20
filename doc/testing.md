@@ -238,7 +238,8 @@ Targets (`fuzz/`):
   interest; a size cap it takes and compares); the rest are the samples, some of them out of the 8-bit range. neo-j2k's encoder takes it
   through its own API: it must not crash or hang, a refusal must be `NJ2K_E_UNSUPPORTED`, `NJ2K_E_LIMIT`,
   `NJ2K_E_ARGUMENT` or `NJ2K_E_NO_MEMORY`, writing nothing for an unsupported setting, and a codestream it writes
-  must decode in the oracle to the image (the samples, when lossless). Where the settings are the viewer's, the
+  must decode in the oracle to the image (the samples, when lossless: the 5/3 with a last rate of at most 1 as
+  the setup writes it back, after a size cap has lifted it). Where the settings are the viewer's, the
   oracle's encoder takes the same image and the two must write the same bytes or both refuse (departures DP-16 and
   DP-18 are kept from the oracle). Seeds: `fuzz/seeds/encode` (`make_inputs.py --encode-seeds`). Local runs of 15,000
   random inputs (about 3,000 of them encoded) found nothing.
