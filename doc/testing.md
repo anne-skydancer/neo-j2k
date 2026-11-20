@@ -74,9 +74,10 @@ new pin, are byte for byte the committed ones.
 Stage 6a's results on 2026-11-20 (Windows: MSVC 14.51, clang-cl, MSVC with AddressSanitizer, and the scalar MSVC
 build; the oracle at the hotfix head): every test passes (109 of 109, the two class 1 conformance tests aside, which
 need the fetched data); `encode_unit` writes 3,172 + 100 + 156 codestreams (and the cases below) byte for byte the oracle's and
-refuses what the oracle refuses, in each build; the encode fuzz target replays its 30 seeds and 15,000 random inputs
-(about 3,000 of them encoded, each decoded by the oracle and, in the viewer's settings, compared with the
-oracle's encoder) with no difference, under AddressSanitizer too. The decoder's reference tables and
+refuses what the oracle refuses, in each build; the encode fuzz target replays its 36 inputs (30 seeds and 6 regressions; 13 reach the code under test)
+with no difference, and its local runs of 15,000 random inputs (about 3,000 of them encoded, each decoded by the
+oracle and, in the viewer's settings, compared with the oracle's encoder) found no difference, under
+AddressSanitizer too. The decoder's reference tables and
 `corpus_regenerates` are unchanged (the Tier-1 tables moved to a shared header, `src/t1_tables.h`).
 
 ## The runner: `nj2k_diff`
