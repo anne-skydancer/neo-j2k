@@ -2,7 +2,8 @@
 // Copyright (c) 2026, Anne Skydancer (neo-j2k)
 //
 // The fused end of a tile's decode (output.h): the colour transform, the DC shift and the copy into
-// the image in one pass. The per-sample operations are those of mct.cpp, in the same order.
+// the image in one pass. The per-sample operations are mct.cpp's row kernels (OpenJPEG's, with its
+// notice there), called in OpenJPEG's order; this file adds the row loop and the stores.
 #include "output.h"
 
 #include <cstring>
@@ -19,30 +20,6 @@ namespace nj2k::detail {
 
 namespace {
 
-inline float as_float(std::int32_t v) noexcept
-{
-    float f;
-    std::memcpy(&f, &v, sizeof f);
-    return f;
-}
-
-inline std::int32_t as_int(float f) noexcept
-{
-    std::int32_t v;
-    std::memcpy(&v, &f, sizeof v);
-    return v;
-}
-
-inline std::int32_t wrap_add(std::int32_t a, std::int32_t b) noexcept
-{
-    return static_cast<std::int32_t>(static_cast<std::uint32_t>(a) + static_cast<std::uint32_t>(b));
-}
-
-inline std::int32_t wrap_sub(std::int32_t a, std::int32_t b) noexcept
-{
-    return static_cast<std::int32_t>(static_cast<std::uint32_t>(a) - static_cast<std::uint32_t>(b));
-}
-
 // a row is finished and stored this many samples at a time (stack buffers of 4 x 512 bytes)
 constexpr std::size_t kChunk = 128;
 
@@ -50,39 +27,21 @@ constexpr std::size_t kChunk = 128;
 
 namespace kernels {
 
-// mct.cpp's rct_scalar and ict_scalar, out of place (an output may be its input)
+// mct.cpp's row kernels (the one copy of OpenJPEG's per-sample operations), chosen per call
 void mct_rows_scalar(Mct mct, const std::int32_t* a, const std::int32_t* b, const std::int32_t* c, std::int32_t* oa,
                      std::int32_t* ob, std::int32_t* oc, std::size_t n) noexcept
 {
     if (mct == Mct::kRct) {
-        for (std::size_t i = 0; i < n; ++i) {
-            const std::int32_t y = a[i], u = b[i], v = c[i];
-            const std::int32_t g = wrap_sub(y, wrap_add(u, v) >> 2);
-            oa[i] = wrap_add(v, g);
-            ob[i] = g;
-            oc[i] = wrap_add(u, g);
-        }
+        rct_scalar(a, b, c, oa, ob, oc, n);
     } else {
-        for (std::size_t i = 0; i < n; ++i) {
-            const float y = as_float(a[i]), u = as_float(b[i]), v = as_float(c[i]);
-            const float r = y + (v * 1.402f);
-            const float g = y - (u * 0.34413f) - (v * (0.71414f));
-            const float bl = y + (u * 1.772f);
-            oa[i] = as_int(r);
-            ob[i] = as_int(g);
-            oc[i] = as_int(bl);
-        }
+        ict_scalar(a, b, c, oa, ob, oc, n);
     }
 }
 
-// mct.cpp's dc_shift_53 and dc_shift_97 on one row
 void finish_row_scalar(std::int32_t* p, std::size_t n, const Finish& f) noexcept
 {
     if (f.reversible) {
-        for (std::size_t i = 0; i < n; ++i) {
-            const std::int64_t v = std::int64_t(p[i]) + f.shift;
-            p[i] = v < f.lo ? f.lo : (v > f.hi ? f.hi : static_cast<std::int32_t>(v));
-        }
+        dc_shift_53_scalar(p, n, f.shift, f.lo, f.hi);
     } else {
         dc_shift_97_scalar(p, n, f.shift, f.lo, f.hi);
     }
@@ -132,56 +91,20 @@ void store_u8_packed_scalar(const std::int32_t* const* rows, std::uint32_t k, st
 void mct_rows_avx2(Mct mct, const std::int32_t* a, const std::int32_t* b, const std::int32_t* c, std::int32_t* oa,
                    std::int32_t* ob, std::int32_t* oc, std::size_t n) noexcept
 {
-    std::size_t i = 0;
     if (mct == Mct::kRct) {
-        for (; i + 8 <= n; i += 8) {
-            const __m256i y = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(a + i));
-            const __m256i u = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(b + i));
-            const __m256i v = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(c + i));
-            const __m256i g = _mm256_sub_epi32(y, _mm256_srai_epi32(_mm256_add_epi32(u, v), 2));
-            _mm256_storeu_si256(reinterpret_cast<__m256i*>(oa + i), _mm256_add_epi32(v, g));
-            _mm256_storeu_si256(reinterpret_cast<__m256i*>(ob + i), g);
-            _mm256_storeu_si256(reinterpret_cast<__m256i*>(oc + i), _mm256_add_epi32(u, g));
-        }
+        rct_avx2(a, b, c, oa, ob, oc, n);
     } else {
-        const __m256 vrv = _mm256_set1_ps(1.402f), vgu = _mm256_set1_ps(0.34413f), vgv = _mm256_set1_ps(0.71414f),
-                     vbu = _mm256_set1_ps(1.772f);
-        for (; i + 8 <= n; i += 8) {
-            const __m256 y = _mm256_castsi256_ps(_mm256_loadu_si256(reinterpret_cast<const __m256i*>(a + i)));
-            const __m256 u = _mm256_castsi256_ps(_mm256_loadu_si256(reinterpret_cast<const __m256i*>(b + i)));
-            const __m256 v = _mm256_castsi256_ps(_mm256_loadu_si256(reinterpret_cast<const __m256i*>(c + i)));
-            const __m256 r = _mm256_add_ps(y, _mm256_mul_ps(v, vrv));
-            const __m256 g = _mm256_sub_ps(_mm256_sub_ps(y, _mm256_mul_ps(u, vgu)), _mm256_mul_ps(v, vgv));
-            const __m256 bl = _mm256_add_ps(y, _mm256_mul_ps(u, vbu));
-            _mm256_storeu_si256(reinterpret_cast<__m256i*>(oa + i), _mm256_castps_si256(r));
-            _mm256_storeu_si256(reinterpret_cast<__m256i*>(ob + i), _mm256_castps_si256(g));
-            _mm256_storeu_si256(reinterpret_cast<__m256i*>(oc + i), _mm256_castps_si256(bl));
-        }
+        ict_avx2(a, b, c, oa, ob, oc, n);
     }
-    mct_rows_scalar(mct, a + i, b + i, c + i, oa + i, ob + i, oc + i, n - i);
 }
 
-// The 5/3 shift as a clamp to [lo - shift, hi - shift] then the add: the same result as the 64-bit
-// add and clamp, in int32 lanes (OpenJPEG's shifts keep both bounds in range: prec <= 31)
 void finish_row_avx2(std::int32_t* p, std::size_t n, const Finish& f) noexcept
 {
-    if (!f.reversible) {
+    if (f.reversible) {
+        dc_shift_53_avx2(p, n, f.shift, f.lo, f.hi);
+    } else {
         dc_shift_97_avx2(p, n, f.shift, f.lo, f.hi);
-        return;
     }
-    const std::int64_t lo = std::int64_t(f.lo) - f.shift, hi = std::int64_t(f.hi) - f.shift;
-    std::size_t i = 0;
-    if (lo >= INT32_MIN && hi <= INT32_MAX) {
-        const __m256i vlo = _mm256_set1_epi32(static_cast<std::int32_t>(lo));
-        const __m256i vhi = _mm256_set1_epi32(static_cast<std::int32_t>(hi));
-        const __m256i vs = _mm256_set1_epi32(f.shift);
-        for (; i + 8 <= n; i += 8) {
-            __m256i v = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(p + i));
-            v = _mm256_add_epi32(_mm256_min_epi32(_mm256_max_epi32(v, vlo), vhi), vs);
-            _mm256_storeu_si256(reinterpret_cast<__m256i*>(p + i), v);
-        }
-    }
-    finish_row_scalar(p + i, n - i, f);
 }
 
 void store_avx2(const std::int32_t* row, std::size_t n, std::uint32_t sample_type, std::uint8_t* dst,

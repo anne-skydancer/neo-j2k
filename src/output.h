@@ -60,8 +60,8 @@ void write_group(const CopyComp* comps, std::uint32_t k, Mct mct, std::uint32_t 
 
 namespace kernels {
 // The row kernels, scalar references and AVX2 versions, for the kernel tests: the colour transform
-// out of place, the DC shift in place, the stores (stride in bytes between samples; packed: k
-// components interleaved, k = 1 to 4).
+// out of place and the DC shift in place (each picks mct.cpp's row kernel), the
+// stores (stride in bytes between samples; packed: k components interleaved, k = 1 to 4).
 void mct_rows_scalar(Mct mct, const std::int32_t* a, const std::int32_t* b, const std::int32_t* c, std::int32_t* oa,
                      std::int32_t* ob, std::int32_t* oc, std::size_t n) noexcept;
 void finish_row_scalar(std::int32_t* p, std::size_t n, const Finish& f) noexcept;

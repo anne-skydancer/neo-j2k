@@ -825,9 +825,11 @@ void test_output_fused()
         }
         // the unfused reference: the transform over the whole buffers, then the shift per row
         if (mct == Mct::kRct) {
-            nj2k::detail::kernels::rct_scalar(ref[0].data(), ref[1].data(), ref[2].data(), ref[0].size());
+            nj2k::detail::kernels::rct_scalar(ref[0].data(), ref[1].data(), ref[2].data(), ref[0].data(),
+                                              ref[1].data(), ref[2].data(), ref[0].size());
         } else if (mct == Mct::kIct) {
-            nj2k::detail::kernels::ict_scalar(ref[0].data(), ref[1].data(), ref[2].data(), ref[0].size());
+            nj2k::detail::kernels::ict_scalar(ref[0].data(), ref[1].data(), ref[2].data(), ref[0].data(),
+                                              ref[1].data(), ref[2].data(), ref[0].size());
         }
         for (std::uint32_t c = 0; c < k; ++c) {
             if (f[c].reversible) {
@@ -973,8 +975,8 @@ void test_kernels_colour()
             a2[i] = random_sample(wide);
         }
         auto b0 = a0, b1 = a1, b2 = a2;
-        nj2k::detail::kernels::rct_scalar(a0.data(), a1.data(), a2.data(), n);
-        nj2k::detail::kernels::rct_avx2(b0.data(), b1.data(), b2.data(), n);
+        nj2k::detail::kernels::rct_scalar(a0.data(), a1.data(), a2.data(), a0.data(), a1.data(), a2.data(), n);
+        nj2k::detail::kernels::rct_avx2(b0.data(), b1.data(), b2.data(), b0.data(), b1.data(), b2.data(), n);
         CHECK(a0 == b0 && a1 == b1 && a2 == b2);
     }
     for (std::size_t i = 0; i < n; ++i) {
@@ -984,8 +986,8 @@ void test_kernels_colour()
     }
     {
         auto b0 = a0, b1 = a1, b2 = a2;
-        nj2k::detail::kernels::ict_scalar(a0.data(), a1.data(), a2.data(), n);
-        nj2k::detail::kernels::ict_avx2(b0.data(), b1.data(), b2.data(), n);
+        nj2k::detail::kernels::ict_scalar(a0.data(), a1.data(), a2.data(), a0.data(), a1.data(), a2.data(), n);
+        nj2k::detail::kernels::ict_avx2(b0.data(), b1.data(), b2.data(), b0.data(), b1.data(), b2.data(), n);
         std::size_t bad = 0;
         for (std::size_t i = 0; i < n; ++i) {
             bad += !same_float_bits(a0[i], b0[i]) || !same_float_bits(a1[i], b1[i]) || !same_float_bits(a2[i], b2[i]);

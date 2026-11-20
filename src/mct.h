@@ -14,6 +14,8 @@
 
 namespace nj2k::detail {
 
+// The whole-buffer forms, in place, as OpenJPEG runs them: the unfused reference of the output
+// pass's tests and kernel bench (the library runs the row kernels below, from output.cpp).
 // opj_mct_decode: n samples of three int32 components, in place
 void mct_decode_rct(std::int32_t* c0, std::int32_t* c1, std::int32_t* c2, std::size_t n) noexcept;
 // opj_mct_decode_real: n samples of three float components (their bits in int32 buffers), in place
@@ -27,13 +29,22 @@ void dc_shift_53(std::int32_t* p, std::uint32_t w, std::uint32_t h, std::size_t 
 void dc_shift_97(std::int32_t* p, std::uint32_t w, std::uint32_t h, std::size_t stride, std::int32_t shift,
                  std::int32_t lo, std::int32_t hi) noexcept;
 
+// The row kernels, the only copy of the per-sample operations: the scalar references and their
+// AVX2 versions (the kernel tests compare them bit for bit). The colour transforms read c0-c2 and
+// write o0-o2, which may be c0-c2 (in place); the DC shifts work on one row in place.
 namespace kernels {
-void rct_scalar(std::int32_t* c0, std::int32_t* c1, std::int32_t* c2, std::size_t n) noexcept;
-void ict_scalar(std::int32_t* c0, std::int32_t* c1, std::int32_t* c2, std::size_t n) noexcept;
+void rct_scalar(const std::int32_t* c0, const std::int32_t* c1, const std::int32_t* c2, std::int32_t* o0,
+                std::int32_t* o1, std::int32_t* o2, std::size_t n) noexcept;
+void ict_scalar(const std::int32_t* c0, const std::int32_t* c1, const std::int32_t* c2, std::int32_t* o0,
+                std::int32_t* o1, std::int32_t* o2, std::size_t n) noexcept;
+void dc_shift_53_scalar(std::int32_t* p, std::size_t n, std::int32_t shift, std::int32_t lo, std::int32_t hi) noexcept;
 void dc_shift_97_scalar(std::int32_t* p, std::size_t n, std::int32_t shift, std::int32_t lo, std::int32_t hi) noexcept;
 #if defined(__AVX2__)
-void rct_avx2(std::int32_t* c0, std::int32_t* c1, std::int32_t* c2, std::size_t n) noexcept;
-void ict_avx2(std::int32_t* c0, std::int32_t* c1, std::int32_t* c2, std::size_t n) noexcept;
+void rct_avx2(const std::int32_t* c0, const std::int32_t* c1, const std::int32_t* c2, std::int32_t* o0,
+              std::int32_t* o1, std::int32_t* o2, std::size_t n) noexcept;
+void ict_avx2(const std::int32_t* c0, const std::int32_t* c1, const std::int32_t* c2, std::int32_t* o0,
+              std::int32_t* o1, std::int32_t* o2, std::size_t n) noexcept;
+void dc_shift_53_avx2(std::int32_t* p, std::size_t n, std::int32_t shift, std::int32_t lo, std::int32_t hi) noexcept;
 void dc_shift_97_avx2(std::int32_t* p, std::size_t n, std::int32_t shift, std::int32_t lo, std::int32_t hi) noexcept;
 #endif
 }  // namespace kernels
