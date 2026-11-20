@@ -32,11 +32,16 @@
     X(opj_set_default_encoder_parameters) X(opj_create_compress) X(opj_setup_encoder)               \
     X(opj_start_compress) X(opj_encode) X(opj_end_compress) X(opj_image_create)
 
+// The decoder limits API of the fork's 1a hotfix, which OpenJPEG 2.5.4 as released lacks: a library
+// loaded at run time may not have it, and then takes no request with limits.
+#define REPLAY_LIMIT_FUNCS(X) X(opj_decoder_limits_init) X(opj_decoder_set_limits)
+
 namespace REPLAY_NS {
 
 struct Api {
 #define REPLAY_DECL(f) decltype(&::f) f = nullptr;
     REPLAY_FUNCS(REPLAY_DECL)
+    REPLAY_LIMIT_FUNCS(REPLAY_DECL)
 #undef REPLAY_DECL
 };
 
@@ -45,6 +50,7 @@ inline Api linked_api()
     Api a;
 #define REPLAY_LINK(f) a.f = &::f;
     REPLAY_FUNCS(REPLAY_LINK)
+    REPLAY_LIMIT_FUNCS(REPLAY_LINK)
 #undef REPLAY_LINK
     return a;
 }
@@ -188,6 +194,20 @@ struct Session {
         A.opj_set_error_handler(codec, on_error, user);
         if (!A.opj_setup_decoder(codec, &params)) {
             return false;
+        }
+        if (rq.limits) {
+            // before the header: opj_decoder_set_limits refuses them after it
+            opj_decoder_limits_t limits;
+            if (!A.opj_decoder_limits_init || !A.opj_decoder_set_limits ||
+                !A.opj_decoder_limits_init(&limits, OPJ_DECODER_LIMITS_SL_TEXTURE)) {
+                return false;
+            }
+            if (rq.max_memory) {
+                limits.max_memory = static_cast<OPJ_UINT64>(rq.max_memory);
+            }
+            if (!A.opj_decoder_set_limits(codec, &limits)) {
+                return false;
+            }
         }
         stream = A.opj_stream_create(static_cast<OPJ_SIZE_T>(rq.size), OPJ_TRUE);
         if (!stream) {

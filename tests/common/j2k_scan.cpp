@@ -3,7 +3,6 @@
 #include "j2k_scan.h"
 
 #include <algorithm>
-#include <cmath>
 
 namespace nj2k::test {
 
@@ -85,36 +84,6 @@ bool read_coc(std::span<const std::uint8_t> body, std::uint16_t csiz, Coding& c)
         c.precincts.assign(body.begin() + static_cast<std::ptrdiff_t>(at + 6), body.end());
     }
     return true;
-}
-
-// Precincts and code-blocks one coding makes in one tile-component of tw x th, over every
-// resolution (an estimate that only errs high).
-struct Structures {
-    double precincts = 0, codeblocks = 0;
-};
-
-Structures structures(const Coding& c, std::uint64_t tw, std::uint64_t th)
-{
-    Structures s;
-    for (int res = 0; res <= c.levels; ++res) {
-        const int shift = std::min(c.levels - res, 62);
-        const double rw = double(ceil_div(tw, 1ull << shift)), rh = double(ceil_div(th, 1ull << shift));
-        int ppx = 15, ppy = 15;
-        if (std::size_t(res) < c.precincts.size()) {
-            ppx = c.precincts[std::size_t(res)] & 15;
-            ppy = c.precincts[std::size_t(res)] >> 4;
-        }
-        s.precincts += (std::ceil(rw / std::ldexp(1.0, ppx)) + 1) * (std::ceil(rh / std::ldexp(1.0, ppy)) + 1);
-        // A code-block never crosses a precinct, so its size is clipped to the precinct's in the
-        // band, which above resolution 0 is half the resolution's. The bands of a resolution:
-        // LL at resolution 0, HL, LH and HH above it, each about half its size.
-        const int bx = std::max(0, std::min(c.xcb + 2, res ? ppx - 1 : ppx));
-        const int by = std::max(0, std::min(c.ycb + 2, res ? ppy - 1 : ppy));
-        const double bw = res ? std::ceil(rw / 2) : rw, bh = res ? std::ceil(rh / 2) : rh;
-        s.codeblocks += (res ? 3.0 : 1.0) * (std::ceil(bw / std::ldexp(1.0, bx)) + 1) *
-                        (std::ceil(bh / std::ldexp(1.0, by)) + 1);
-    }
-    return s;
 }
 
 }  // namespace
@@ -368,65 +337,6 @@ std::optional<std::vector<std::size_t>> layer_boundaries(std::span<const std::ui
         out.push_back((*starts)[k * per_layer]);
     }
     return out;
-}
-
-bool within_limits(const MainHeader& mh, std::span<const TilePart> tile_parts, int reduce, const Limits& limits,
-                   std::string* why)
-{
-    if (reduce < 0 || reduce > 31) {
-        return fail(why, "reduce out of range");
-    }
-    const std::uint64_t tiles = mh.tiles_x() * mh.tiles_y();
-    if (tiles == 0 || tiles > limits.max_tiles) {
-        return fail(why, "too many tiles");
-    }
-    if (mh.csiz > limits.max_components) {
-        return fail(why, "too many components");
-    }
-    const std::uint64_t w = ceil_div(mh.width(), 1ull << reduce), h = ceil_div(mh.height(), 1ull << reduce);
-    if (w > limits.max_side || h > limits.max_side) {
-        return fail(why, "too large at the decoded level");
-    }
-    if (w * h * mh.csiz > limits.max_samples) {
-        return fail(why, "too many samples at the decoded level");
-    }
-    // The worst of every COD and COC, wherever it stands, as if it applied to every tile and
-    // component: the layers of any COD, the structures of any coding in a tile of full size.
-    std::vector<const Coding*> codings;
-    for (const auto& c : mh.codings) {
-        codings.push_back(&c);
-    }
-    for (const auto& tp : tile_parts) {
-        for (const auto& c : tp.codings) {
-            codings.push_back(&c);
-        }
-    }
-    std::uint32_t layers = 0;
-    Structures worst;
-    const std::uint64_t tw = std::min<std::uint64_t>(mh.xtsiz, mh.width());
-    const std::uint64_t th = std::min<std::uint64_t>(mh.ytsiz, mh.height());
-    for (const Coding* c : codings) {
-        if (c->is_cod) {
-            if (c->layers == 0) {
-                return fail(why, "no layers");
-            }
-            layers = std::max<std::uint32_t>(layers, c->layers);
-        }
-        const Structures s = structures(*c, tw, th);
-        worst.precincts = std::max(worst.precincts, s.precincts);
-        worst.codeblocks = std::max(worst.codeblocks, s.codeblocks);
-    }
-    if (layers == 0 || layers > limits.max_layers) {
-        return fail(why, "too many layers");
-    }
-    const double per_tile = double(mh.csiz) * double(tiles);
-    if (worst.precincts * layers * per_tile > double(limits.max_packets)) {
-        return fail(why, "too many packets");
-    }
-    if (worst.codeblocks * per_tile > double(limits.max_codeblocks)) {
-        return fail(why, "too many code-blocks");
-    }
-    return true;
 }
 
 }  // namespace nj2k::test

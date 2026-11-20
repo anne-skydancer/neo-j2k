@@ -40,6 +40,12 @@ struct Request {
     // Plain and Strict: the reduce factor set after the header (opj_set_decoded_resolution_factor),
     // not in the parameters before it. OpenJPEG then sizes the image differently at odd origins.
     bool reduce_after_header = false;
+    // Decoder limits on every codec of the request, set before its header (opj_decoder_set_limits,
+    // the fork's 1a API, which neo-j2k has too): the Second Life texture profile, with max_memory in
+    // place of the profile's own when it is not 0. A backend without the API (OpenJPEG 2.5.4 as
+    // released) cannot take such a request: it fails at its first codec.
+    bool limits = false;
+    std::uint64_t max_memory = 0;
 };
 
 // Whether bytes start with the JP2 signature box.

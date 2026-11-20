@@ -44,7 +44,7 @@ and tests both presets.
 | `conformance_class1` | ISO/IEC 15444-4 class 1, profiles 0 and 1, with the T.803 (2024) peak and MSE limits; skipped without the data |
 | `corpus_regenerates` | the oracle's encoder writes the committed corpus byte for byte on this compiler and platform: the encoder oracle that stage 6a's byte identity relies on |
 | `fuzz_replay.*` | the fuzz targets run over their seeds (the corpus; the JP2 header seeds, made by `fuzz_seeds.header`; the decode seeds with option bytes, made by `fuzz_seeds.decode`; `fuzz/seeds/roundtrip`) and `fuzz/regressions` on every platform; a replay fails when no input gets past the target's filters and guards, and the header target's when a header read differs from the oracle's without a departure to explain it |
-| `fuzz_filters` | the fuzz filters keep every bomb of `fuzz/bombs` from the oracle and let the Second Life sized corpus files through |
+| `fuzz_filters` | the fuzz targets' guards of the oracle: every decode bomb of `fuzz/bombs` kept from it (OD-3) or refused by it under the decode target's limits, with a limit's message; every header bomb refused by the header filter; the Second Life sized corpus files through both, decoding under the limits |
 | `exports` | `neoj2k.dll` / `libneoj2k.so` export exactly the functions `neoj2k.h` declares, all `nj2k_*`, as `abi/exports.txt` lists |
 | `global_state` | the static library's objects hold no writable globals, no thread-local storage, no static initialisers and no LTO objects (MSVC `/GL`, LLVM bitcode, GCC `.gnu.lto_*`); `nj2k_cpu_supported()`'s object needs nothing beyond baseline x86-64, and in the scalar build (`NJ2K_SIMD=SCALAR`) no object of the library does |
 | header checks (build) | `neoj2k.h` and the compatibility header compile as strict C99 (MSVC: C11) and C++20 with warnings as errors |
@@ -122,7 +122,8 @@ prefixes): 4 files differ, every one refused by neo-j2k where OpenJPEG reads it,
 nj2k_diff compare --a oracle --b neoj2k --files <mutant list> --reduce 0,5 --modes plain,viewer \
     --kinds full --allow-diff --csv damaged.csv
 # the same files through the decode fuzz target: the memory path under the Second Life limits, its
-# memory bound, its guard bytes and its balance checked, and the oracle comparison behind the filter
+# memory bound, its guard bytes and its balance checked, and the comparison with the oracle under the
+# same limits
 nj2k_fuzz_decode_replay <mutant folder>
 ```
 
@@ -196,27 +197,30 @@ Targets (`fuzz/`):
   (a header it refuses must be refused by the decode too, with the same status); its allocations go
   through a counting hook, and the target aborts when the codec holds more than twice the
   working-memory limit plus its header state, or does not give everything back, or writes a guard
-  byte. Behind the oracle's filter the oracle decodes the same request, and neo-j2k's decode of it
-  through the same request code must agree (outcome, image, the viewer's 8-bit copy), unless the
-  codestream shows DP-3, DP-5 to DP-8, DP-12 or DP-14 (`fuzz/departures.h`, shared with the header
-  target, each check as narrow as its departure), or the images differ only in samples one decoder
-  clamps to the minimum and the other to the maximum (DP-2). Both targets replay OpenJPEG's
-  conformance and non-regression data (318 files) without an unexplained difference.
+  byte. Then the oracle decodes the same request under the same limits (the Second Life profile with
+  `max_memory` at 64 MiB, through the fork's `opj_decoder_set_limits`), and so does neo-j2k through the
+  same request code. The two must agree (outcome, image, the viewer's 8-bit copy), unless one of them
+  refused for memory (each library counts its own structures against `max_memory`; their other limits
+  are the same and must refuse alike), the codestream shows DP-3, DP-5 to DP-8, DP-12 or DP-14
+  (`fuzz/departures.h`, shared with the header target, each check as narrow as its departure), or the
+  images differ only in samples one decoder clamps to the minimum and the other to the maximum (DP-2).
+  Both targets replay OpenJPEG's conformance and non-regression data (318 files) without an
+  unexplained difference.
 - `roundtrip`: a small image and its coding from the input, encoded losslessly and decoded: every sample
   of every stream the encoder writes must come back. Nothing is skipped: the oracle's encoder refuses an
   image its guard bits cannot hold (OD-6) and keeps terminated passes inside its buffers (OD-4), both
   fixed at the pin. Seeds: `fuzz/seeds/roundtrip`.
 
 The round-trip target drives the oracle (until the encoder, stage 6a), and the header and decode targets
-run the oracle beside neo-j2k behind filters (`fuzz/fuzz_common.h`; for a JP2 file, applied to the
-codestream OpenJPEG reaches through its boxes) that keep OpenJPEG's known bombs out of the way (fork
-audit S2, S3; OD-3, OD-5). The header filter bounds the tiles and components of SIZ, which must follow
-SOC. The decode filter fails closed: it refuses a stream whose main header it cannot parse, or that
-holds a marker OpenJPEG skips by scanning (its reading would then differ from OpenJPEG's), and bounds
-the worst of every COD and COC, of the main header and of every tile-part header: layers, packets, and
-the code-blocks of every resolution at full size (OpenJPEG builds them whatever the reduce factor), plus
-the samples at the decoded level and each tile-part's declared length. `fuzz_filters` checks the filters
-against `fuzz/bombs`.
+run the oracle beside neo-j2k, guarded against OpenJPEG's known bombs (fork audit S2, S3; OD-3, OD-5;
+`fuzz/fuzz_common.h`). The header target reads with no limits behind a filter (for a JP2 file, applied
+to the codestream OpenJPEG reaches through its boxes) that bounds the tiles and components of SIZ,
+which must follow SOC. The decode target has no filter: the oracle decodes under the limits above, which
+it checks from the headers before it allocates what they bound (tiles, components and layers, the
+decoded side, and through `max_memory` the structures of every resolution, OD-5). The one bomb they
+leave, a tile-part's declared length (OD-3), is kept from it in the non-strict modes by a scan of the
+bytes for any SOT that declares more than 64 MiB. `fuzz_filters` checks the guards against
+`fuzz/bombs`.
 
 Pull requests: ClusterFuzzLite, five minutes each with ASan, UBSan and MSan, from the corpus batch
 fuzzing stores and on the code the change touches. ClusterFuzzLite batch fuzzing runs an hour a day with

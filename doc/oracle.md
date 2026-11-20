@@ -20,7 +20,8 @@ audit B4: one definition), built into the tests.
   - decoder limits, `opj_decoder_limits_init` and `opj_decoder_set_limits` (`f7a8f43d`, refused after the
     header since `6bad83c0`, a whole decode counted against the memory limit since `19c04f26`, a JP2
     palette's components against the component limit since `ed7727f8`): opt-in, and no viewer code sets
-    them yet, so the oracle decodes without them; tile parameters allocated only for tiles that appear;
+    them yet, so the reference tables are recorded without them; the decode fuzz target sets them
+    (`doc/testing.md`); tile parameters allocated only for tiles that appear;
   - the packet walk stopped once a tile's data is exhausted (`5b0ac326`);
   - cut codestreams with EPH markers (`1666206e`);
   - the last bytes of a cut `Psot = 0` tile-part kept (plan W5), and 9/7 tiles that vanish at the decoded
@@ -151,8 +152,10 @@ audit's findings O1-O3.
   limits do not bound (`max_memory` covers the tile parameters and the tile's structures, not the data
   buffer). Found by ClusterFuzzLite on the stage-0 pull request (an out-of-memory at `j2k.c`), measured
   with `nj2k_diff decode`. Input: `tests/known-defects/od3-psot-1g.j2k` (`Psot` = 1 GiB; its request asks
-  the heap for 1,024 MiB). Fix for the fork: in non-strict mode allocate at most the bytes left. The fuzz
-  filter keeps tile-parts above 64 MB from the oracle meanwhile; neo-j2k never allocates from `Psot`.
+  the heap for 1,024 MiB). Fix for the fork: in non-strict mode allocate at most the bytes left. The
+  decode fuzz target keeps from the oracle meanwhile, in the non-strict modes, any stream in which a SOT
+  declares more than 64 MiB (a scan of every byte: the one bomb its limits leave); neo-j2k never
+  allocates from `Psot`.
 - **OD-4 (fixed at the pin): the MQ encoder wrote past the code-block buffer** (fork audit S5). The lossless
   round-trip fuzzer (ClusterFuzzLite, ASan) found a one-byte heap write past an 83-byte code-block buffer
   (`opj_mqc_byteout`, `mqc.c:494`, from `opj_mqc_flush`, allocated in
@@ -180,7 +183,7 @@ audit's findings O1-O3.
   decode guard bounds only the samples after the reduce, and 1a's `max_memory` would bound it but is not
   set by the viewer. Input: `tests/known-defects/od5-fullres-cblk4-2048-rgba.j2k`. neo-j2k keeps
   header-only state for the resolutions it drops (plan section 2.11) and its limits bound the rest
-  (stage 1b); the fuzz filter bounds the full-resolution code-blocks meanwhile.
+  (stage 1b); the decode fuzz target sets the oracle's `max_memory` (64 MiB), which bounds them.
 - **OD-6 (fixed at the pin): the encoder's two guard bits overflowed unchecked.** OpenJPEG's encoder
   gives every component two guard bits (`opj_j2k_setup_encoder`, `j2k.c:8435-8438` at the pin; only the
   `GUARD_BITS=` option of `opj_encoder_set_extra_options` changes it) and never checks that a code-block fits its band. A

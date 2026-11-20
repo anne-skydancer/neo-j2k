@@ -5,8 +5,8 @@
 # where CI fuzzes; MSVC with /fsanitize=fuzzer for local runs on Windows). With the tests they also
 # build against a plain driver, nj2k_fuzz_<target>_replay, and CTest replays the seeds (the corpus,
 # the option-prefixed decode seeds and the JP2 header seeds of make_inputs.py, the round-trip seeds)
-# and fuzz/regressions through them on every compiler and platform. The filters' own test checks
-# that the bombs of fuzz/bombs stay away from the oracle.
+# and fuzz/regressions through them on every compiler and platform. The guards' own test checks
+# the bombs of fuzz/bombs against the guards the targets give the oracle.
 set(NJ2K_FUZZ_TARGETS header decode roundtrip)
 
 if(NJ2K_BUILD_FUZZERS)

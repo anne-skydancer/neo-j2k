@@ -358,7 +358,6 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
             (void)nj2k::test::packet_starts(bytes, *mh, tp);
         }
         (void)nj2k::test::layer_boundaries(bytes);
-        (void)nj2k::test::within_limits(*mh, tps, 0, nj2k::test::Limits{});
     }
     const bool jp2 = nj2k::test::is_jp2_file(data, size);
     const std::span<const std::uint8_t> codestream = jp2 ? jp2_codestream(bytes) : bytes;

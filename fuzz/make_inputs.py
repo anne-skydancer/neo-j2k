@@ -13,8 +13,8 @@ usage: make_inputs.py --decode-seeds OUT [--corpus DIR]
        make_inputs.py --roundtrip-seeds OUT
            coding parameters and samples for the round-trip target (committed: fuzz/seeds/roundtrip)
        make_inputs.py --bombs OUT [--corpus DIR]
-           resource bombs the fuzz filters must keep from the oracle (committed: fuzz/bombs); they
-           are scanned by the filters' test, never decoded
+           resource bombs the fuzz targets' guards must keep from the oracle (committed:
+           fuzz/bombs); the guards' test checks them (fuzz/filter_check.cpp)
        make_inputs.py --known-defects OUT [--corpus DIR]
            the inputs of the oracle's open resource defects (committed: tests/known-defects; OD-3
            and OD-5 in doc/oracle.md)

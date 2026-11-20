@@ -3,7 +3,7 @@
 //
 // Shared by the fuzz targets. An input that starts with SOC (FF 4F) is a codestream decoded with
 // the default options, so the corpus files are seeds as they are; any other input carries four
-// option bytes in front of the codestream (fuzz/make_seeds.py writes seeds with them):
+// option bytes in front of the codestream (fuzz/make_inputs.py --decode-seeds writes seeds with them):
 //   byte 0  reduce level (0-7: past the coarsest level too)
 //   byte 1  mode: plain, strict or viewer
 //   byte 2  layers to decode (0 for all)
@@ -16,7 +16,6 @@
 
 #include "common.h"
 #include "decoder.h"
-#include "j2k_scan.h"
 
 namespace nj2k::fuzz {
 
@@ -55,6 +54,25 @@ inline void fuzz_setup()
     (void)once;
 }
 
+// The decode target's working memory: neo-j2k's own decode has it as its max_memory, and the
+// comparison of the two decoders as theirs (decode_request).
+inline constexpr std::uint64_t kDecodeWorkingMemory = 64ull << 20;
+
+// The request both decoders get in the decode target's comparison: the input's options under the
+// Second Life profile with kDecodeWorkingMemory, the limits neo-j2k's own decode has.
+inline test::Request decode_request(const Input& in)
+{
+    test::Request rq;
+    rq.data = in.codestream.data();
+    rq.size = in.codestream.size();
+    rq.reduce = in.reduce;
+    rq.layers = in.mode == test::Mode::Viewer ? 0 : in.layers;
+    rq.mode = in.mode;
+    rq.limits = true;
+    rq.max_memory = kDecodeWorkingMemory;
+    return rq;
+}
+
 // Inputs that reached the code under test (past the filters and guards). The replay driver
 // (standalone_main.cpp) reports it and fails when no input did, so a replay cannot pass having
 // tested nothing; libFuzzer builds never read it.
@@ -65,8 +83,10 @@ inline std::size_t& exercised() noexcept
 }
 
 // OpenJPEG allocates and loops by what a header declares (fork audit S2, S3; doc/oracle.md OD-3
-// and OD-5): the oracle only sees streams within these limits, so the fuzzer finds bugs rather
-// than known resource bombs. neo-j2k enforces its own limits and gets no such filter.
+// and OD-5). The fuzzer is to find bugs rather than these known resource bombs, so the oracle is
+// guarded: the header target filters what it gives the oracle, and the decode target decodes under
+// the oracle's own limits (the fork's opj_decoder_set_limits) and keeps from it only what those do
+// not bound. neo-j2k enforces its own limits and is never guarded.
 
 // The header target. opj_read_header reads the main header, which allocates by the tiles and
 // components SIZ declares (fork audit S2: 779 MB from 102 bytes with 65,535 tiles in OpenJPEG
@@ -99,41 +119,26 @@ inline bool oracle_may_read_header(std::span<const std::uint8_t> cs)
     return tiles <= 4096 && tiles * csiz <= 16384;
 }
 
-// The decode target. It fails closed: a stream whose main header this filter cannot follow
-// exactly as OpenJPEG does (a header it cannot parse, or a marker OpenJPEG skips by scanning) is
-// kept away, since what OpenJPEG then reads is unknown here.
-inline bool oracle_may_decode(std::span<const std::uint8_t> cs, int reduce)
+// The decode target's one guard (OD-3, doc/oracle.md): in non-strict mode OpenJPEG allocates a
+// tile-part's declared length (Psot) before it reads it, whatever is left of the stream, and its
+// limits do not count that buffer, so a 782-byte stream that declares 4 GB commits 4 GB. True when
+// any SOT marker segment of the bytes declares more than 64 MiB. Every byte is scanned, not the
+// marker segments in turn: OpenJPEG reads only SOT segments of 10 bytes, and it may reach one by
+// scanning past an unknown marker, so a scan for FF 90 00 0A finds every SOT it could read (and some
+// it would not, which only keeps more inputs from the oracle). Strict mode refuses a tile-part longer
+// than the bytes left before it allocates, so it needs no guard.
+inline bool oracle_psot_bomb(std::span<const std::uint8_t> cs)
 {
-    if (!oracle_may_read_header(cs)) {
-        return false;
-    }
-    const auto mh = test::parse_main_header(cs);
-    if (!mh || mh->unknown_marker) {
-        return false;
-    }
-    const auto tps = test::scan_tile_parts(cs, *mh);
-    // small enough that a decode stays well under a second with sanitizers, so the fuzzer explores
-    // structure rather than waiting on large images
-    test::Limits limits;
-    limits.max_tiles = 1024;
-    limits.max_components = 16;
-    limits.max_layers = 64;
-    limits.max_side = 4096;
-    limits.max_samples = 1ull << 20;
-    limits.max_packets = 1ull << 16;
-    limits.max_codeblocks = 1ull << 16;
-    if (!test::within_limits(*mh, tps, reduce, limits)) {
-        return false;
-    }
-    // In non-strict mode OpenJPEG allocates every tile-part's declared length (Psot) before it
-    // reads, whatever is left of the stream: a 782-byte stream that declares 4 GB commits 4 GB
-    // (oracle defect OD-3, doc/oracle.md)
-    for (const auto& tp : tps) {
-        if (tp.psot > (1u << 26)) {
-            return false;
+    for (std::size_t i = 0; cs.size() >= 10 && i <= cs.size() - 10; ++i) {
+        if (cs[i] == 0xFF && cs[i + 1] == 0x90 && cs[i + 2] == 0x00 && cs[i + 3] == 0x0A) {
+            const std::uint32_t psot = std::uint32_t(cs[i + 6]) << 24 | std::uint32_t(cs[i + 7]) << 16 |
+                                       std::uint32_t(cs[i + 8]) << 8 | cs[i + 9];
+            if (psot > (1u << 26)) {
+                return true;
+            }
         }
     }
-    return true;
+    return false;
 }
 
 }  // namespace nj2k::fuzz

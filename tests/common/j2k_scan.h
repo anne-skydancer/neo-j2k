@@ -3,8 +3,8 @@
 //
 // A minimal codestream reader for the tests and tools: the main header's SIZ and COD facts, the
 // tile-parts, the coding parameters of every COD and COC marker, and packet boundaries from SOP
-// markers or PLT. It never decodes; it lets the tests pick cut points and keep known resource bombs
-// away from the oracle.
+// markers or PLT. It never decodes; it lets the tests pick cut points, and the fuzz targets name the
+// departures that explain a difference from the oracle.
 #pragma once
 
 #include <cstddef>
@@ -82,24 +82,5 @@ std::optional<std::vector<std::size_t>> packet_starts(std::span<const std::uint8
 // Offsets where layer k (1..layers-1) starts, for a one-tile, one-tile-part LRCP stream whose
 // packets can be located: every prefix that ends there holds exactly the first k layers.
 std::optional<std::vector<std::size_t>> layer_boundaries(std::span<const std::uint8_t> bytes);
-
-// Resource limits the tests apply before they hand a stream to the oracle, which has none of its
-// own (a 102-byte header commits 779 MB in OpenJPEG 2.5.4: fork audit S2, S3). Stage 1b's profiles
-// replace it. Every count takes the worst case of every COD and COC, of the main header and of
-// every tile-part header, as if it applied to every tile and component.
-struct Limits {
-    std::uint64_t max_tiles = 1024;
-    std::uint32_t max_components = 8;
-    std::uint32_t max_layers = 64;
-    std::uint64_t max_side = 16384;          // at the decoded level
-    std::uint64_t max_samples = 1ull << 28;  // all components at the decoded level
-    std::uint64_t max_packets = 1ull << 20;  // layers x precincts x components x tiles
-    // code-blocks of every resolution: OpenJPEG builds the code-block and precinct structures of
-    // the full resolution whatever the reduce factor (tcd.c), so a 119-byte header asks for 416 MB
-    // at a 64 x 64 output
-    std::uint64_t max_codeblocks = 1ull << 22;
-};
-bool within_limits(const MainHeader& mh, std::span<const TilePart> tile_parts, int reduce, const Limits& limits,
-                   std::string* why = nullptr);
 
 }  // namespace nj2k::test
