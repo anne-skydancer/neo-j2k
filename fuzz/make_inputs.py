@@ -12,6 +12,8 @@ usage: make_inputs.py --decode-seeds OUT [--corpus DIR]
            seeds its codestream reading). Made at fuzz and test time.
        make_inputs.py --roundtrip-seeds OUT
            coding parameters and samples for the round-trip target (committed: fuzz/seeds/roundtrip)
+       make_inputs.py --encode-seeds OUT
+           encoder settings and samples for the encode target (committed: fuzz/seeds/encode)
        make_inputs.py --bombs OUT [--corpus DIR]
            resource bombs the fuzz targets' guards must keep from the oracle (committed:
            fuzz/bombs); the guards' test checks them (fuzz/filter_check.cpp)
@@ -180,6 +182,75 @@ def roundtrip_seeds(out):
     return len(ROUNDTRIP)
 
 
+# ---- encode seeds ------------------------------------------------------------------------------------
+
+def encode_seed(w, h, comps, prec=8, reversible=True, mct=False, numres=6, layers=1, base=0, weird=False, toggles=0,
+                comment=2, comment_len=0, out_of_range=False, sgnd=False, dx2=False, offset=False, seed=1,
+                samples=256):
+    """The 18 parameter bytes fuzz_encode.cpp reads, then pseudo-random sample bytes."""
+    def side(v):
+        # small sides from the low byte, large ones (past the encoder's limits) from both
+        return bytes([v - 1, 0]) if v <= 80 else bytes([(v - 1) & 0xFF, 0x80 | ((v - 1) >> 8)])
+    bases = [0.0, 1.0, 2.0, 4.0, 8.0, 16.0, 100.0, 1e5]
+    b5 = 0x80 | 0x08 if prec == 8 else prec - 1
+    b6 = (1 if reversible else 0) | (2 if mct else 0) | (0x80 if sgnd else 0) | (0x40 if dx2 else 0) |         (0x20 if offset else 0)
+    b7 = numres - 1 if numres <= 9 else 0x80 | (numres - 1)
+    p = side(w) + side(h) + bytes([comps - 1, b5, b6, b7, layers if layers < 200 else 200, bases.index(base),
+                                   1 if weird else 0, toggles, comment, comment_len, 1 if out_of_range else 0, 3])
+    x = seed * 2654435761 % (1 << 32) or 1
+    data = bytearray()
+    for _ in range(samples):
+        x ^= (x << 13) & 0xFFFFFFFF
+        x ^= x >> 17
+        x ^= (x << 5) & 0xFFFFFFFF
+        data.append(x & 0xFF)
+    return p + bytes(data)
+
+
+ENCODE = [
+    # (name, parameters): the viewer's uploads and bakes, lossless and lossy, the settings it varies, then
+    # what the core encoder refuses (tiles, precincts, progression, code-blocks, modes, tile-parts, ROI,
+    # size cap, precision, signedness, subsampling, offset, limits) and samples out of range
+    ("upload_64_rgb_lossless", dict(w=64, h=64, comps=3, mct=True, numres=7, layers=1)),
+    ("upload_64_rgb_lossy", dict(w=64, h=64, comps=3, reversible=False, mct=True, numres=7, layers=3, base=8)),
+    ("upload_33x17_rgba_lossy", dict(w=33, h=17, comps=4, reversible=False, mct=True, numres=5, layers=2, base=8)),
+    ("bake_40_rgbhm", dict(w=40, h=40, comps=5, reversible=False, mct=True, numres=6, layers=2, base=8, comment=3,
+                           comment_len=18)),
+    ("grey_17x80_lossless", dict(w=17, h=80, comps=1, numres=4, layers=1)),
+    ("layers_lossy_4", dict(w=48, h=32, comps=3, reversible=False, mct=True, numres=5, layers=4, base=4)),
+    ("rates_weird", dict(w=48, h=32, comps=3, reversible=False, mct=True, numres=5, layers=5, base=2, weird=True)),
+    ("rates_last_lossless", dict(w=40, h=40, comps=3, reversible=False, mct=True, numres=5, layers=2, base=1)),
+    ("no_comment", dict(w=24, h=24, comps=3, mct=True, numres=4, comment=0)),
+    ("no_mct_rgb", dict(w=24, h=24, comps=3, numres=4)),
+    ("one_resolution", dict(w=20, h=20, comps=3, mct=True, numres=1)),
+    ("too_many_resolutions", dict(w=10, h=10, comps=1, numres=9)),
+    ("tall_4x80", dict(w=4, h=80, comps=1, numres=3)),
+    ("unsupported_tiles", dict(w=64, h=64, comps=3, toggles=1)),
+    ("unsupported_precincts", dict(w=64, h=64, comps=3, toggles=2)),
+    ("unsupported_lrcp", dict(w=64, h=64, comps=3, toggles=4)),
+    ("unsupported_cblk32", dict(w=64, h=64, comps=3, toggles=8)),
+    ("unsupported_modes", dict(w=64, h=64, comps=3, toggles=0x10)),
+    ("unsupported_tileparts", dict(w=64, h=64, comps=3, toggles=0x20)),
+    ("unsupported_roi", dict(w=64, h=64, comps=3, toggles=0x40)),
+    ("unsupported_size_cap", dict(w=64, h=64, comps=3, reversible=False, base=8, toggles=0x80)),
+    ("unsupported_prec12", dict(w=32, h=32, comps=3, prec=12)),
+    ("unsupported_signed", dict(w=32, h=32, comps=1, sgnd=True)),
+    ("unsupported_subsampled", dict(w=32, h=32, comps=3, dx2=True)),
+    ("unsupported_offset", dict(w=32, h=32, comps=1, offset=True)),
+    ("limit_side_5000", dict(w=4900, h=3, comps=1, numres=2)),
+    ("limit_components_9", dict(w=16, h=16, comps=9, numres=3)),
+    ("limit_layers_101", dict(w=16, h=16, comps=1, numres=3, layers=200)),
+    ("comment_too_long", dict(w=16, h=16, comps=1, numres=3, comment=4, comment_len=10)),
+    ("samples_out_of_range", dict(w=32, h=32, comps=3, mct=True, out_of_range=True)),
+]
+
+
+def encode_seeds(out):
+    for i, (name, params) in enumerate(ENCODE):
+        write(out, "encode-%s.bin" % name, encode_seed(seed=i + 1, **params))
+    return len(ENCODE)
+
+
 # ---- bombs and known defects -------------------------------------------------------------------------
 
 def set_psot(cs, psot):
@@ -279,15 +350,18 @@ def main():
     ap.add_argument("--decode-seeds")
     ap.add_argument("--header-seeds")
     ap.add_argument("--roundtrip-seeds")
+    ap.add_argument("--encode-seeds")
     ap.add_argument("--bombs")
     ap.add_argument("--known-defects")
     a = ap.parse_args()
-    if not (a.decode_seeds or a.header_seeds or a.roundtrip_seeds or a.bombs or a.known_defects):
+    if not (a.decode_seeds or a.header_seeds or a.roundtrip_seeds or a.encode_seeds or a.bombs or a.known_defects):
         ap.error("nothing to make")
     if a.decode_seeds:
         print("make_inputs: %d decode seeds in %s" % (decode_seeds(a.corpus, a.decode_seeds), a.decode_seeds))
     if a.header_seeds:
         print("make_inputs: %d header seeds in %s" % (header_seeds(a.corpus, a.header_seeds), a.header_seeds))
+    if a.encode_seeds:
+        print("make_inputs: %d encode seeds in %s" % (encode_seeds(a.encode_seeds), a.encode_seeds))
     if a.roundtrip_seeds:
         print("make_inputs: %d round-trip seeds in %s" % (roundtrip_seeds(a.roundtrip_seeds), a.roundtrip_seeds))
     if a.bombs:

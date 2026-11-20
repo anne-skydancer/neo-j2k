@@ -14,8 +14,9 @@
  * Stage 0 implements the version, CPU check, parameter defaults and image functions; stage 1b the
  * streams, the decoder up to the decode (codec, handlers, settings, limits, the header read, the
  * reduce factor, component selection, the decoded dimensions, the codestream information) and the
- * statuses. Decoding follows in stage 1c, encoding in stage 6a; until then their functions fail
- * cleanly (NULL or NJ2K_FALSE, and NJ2K_E_UNSUPPORTED from nj2k_get_status for a decoder).
+ * statuses; stage 1c the decode; stage 6a the encoder, for the settings the Second Life viewer
+ * uses (doc/api.md, "The encoder"). What the core does not implement fails cleanly (NULL or
+ * NJ2K_FALSE, and NJ2K_E_UNSUPPORTED from nj2k_get_status).
  *
  * The declarations below are derived from OpenJPEG's openjpeg.h, whose notice follows.
  */
@@ -1669,7 +1670,8 @@ NJ2K_API NJ2K_BOOL NJ2K_CALLCONV nj2k_decode_tile_data(nj2k_codec_t *p_codec,
 
 /**
  * Creates a J2K/JP2 compression structure
- * @param   format      Coder to select
+ * @param   format      Coder to select. The core encoder writes J2K codestreams only: the other
+ *                      formats give NULL (the j2k-codestream module).
  * @return              Returns a handle to a compressor if successful, returns NULL otherwise
  */
 NJ2K_API nj2k_codec_t* NJ2K_CALLCONV nj2k_create_compress(NJ2K_CODEC_FORMAT format);
@@ -1700,6 +1702,11 @@ NJ2K_API void NJ2K_CALLCONV nj2k_set_default_encoder_parameters(
 
 /**
  * Setup the encoder parameters using the current image and using user parameters.
+ *
+ * The core encoder takes the settings of the Second Life viewer's upload encode and refuses the
+ * rest with NJ2K_E_UNSUPPORTED (nj2k_get_status): see doc/api.md, "The encoder". The caller's
+ * parameters are written back where OpenJPEG writes them (no layers asked: one lossless layer; the
+ * codestream size the last rate gives in max_cs_size).
  * @param p_codec       Compressor handle
  * @param parameters    Compression parameters
  * @param image         Input filled image
@@ -1717,7 +1724,8 @@ NJ2K_API NJ2K_BOOL NJ2K_CALLCONV nj2k_setup_encoder(nj2k_codec_t *p_codec,
  * This is the way to add new options in a fully ABI compatible way, without
  * extending the nj2k_cparameters_t structure.
  *
- * Currently supported options are:
+ * The core encoder takes PLT=NO and TLM=NO (what it does); the other options belong to the j2k-extra
+ * module (NJ2K_E_UNSUPPORTED). OpenJPEG's own are:
  * <ul>
  * <li>PLT=YES/NO. Defaults to NO. If set to YES, PLT marker segments,
  *     indicating the length of each packet in the tile-part header, will be
@@ -1742,10 +1750,11 @@ NJ2K_API NJ2K_BOOL NJ2K_CALLCONV nj2k_encoder_set_extra_options(
     const char* const* p_options);
 
 /**
- * Start to compress the current image.
+ * Start to compress the current image: writes the main header to the stream. neo-j2k copies the
+ * image's sample planes here and leaves them to the caller, where OpenJPEG takes them.
  * @param p_codec       Compressor handle
  * @param p_image       Input filled image
- * @param p_stream      Input stgream
+ * @param p_stream      Output stream (a write function; skip and seek are not called)
  */
 NJ2K_API NJ2K_BOOL NJ2K_CALLCONV nj2k_start_compress(nj2k_codec_t *p_codec,
         nj2k_image_t * p_image,

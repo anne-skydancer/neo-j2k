@@ -4,14 +4,14 @@
 # Fuzz targets. With NJ2K_BUILD_FUZZERS they link libFuzzer: nj2k_fuzz_<target> (Clang on Linux,
 # where CI fuzzes; MSVC with /fsanitize=fuzzer for local runs on Windows). With the tests they also
 # build against a plain driver, nj2k_fuzz_<target>_replay, and CTest replays the seeds (the corpus,
-# the option-prefixed decode seeds and the JP2 header seeds of make_inputs.py, the round-trip seeds)
-# and fuzz/regressions through them on every compiler and platform. The guards' own test checks
+# the option-prefixed decode seeds and the JP2 header seeds of make_inputs.py, the round-trip and
+# encode seeds) and fuzz/regressions through them on every compiler and platform. The guards' own test checks
 # the bombs of fuzz/bombs against the guards the targets give the oracle. Stage 5: the decode
 # target decodes each input again with every stage split, through an executor that runs the parts
 # one after the other (so the sanitizers see the threaded path), and compares; and
 # nj2k_fuzz_decode_threads_replay, the decode target built with NJ2K_FUZZ_THREADS, does the same
 # through a pool of threads (the ThreadSanitizer job replays the seeds and regressions through it).
-set(NJ2K_FUZZ_TARGETS header decode roundtrip)
+set(NJ2K_FUZZ_TARGETS header decode roundtrip encode)
 
 if(NJ2K_BUILD_FUZZERS)
   if(NJ2K_CL)
@@ -89,9 +89,11 @@ if(NJ2K_BUILD_TESTS)
   if(_nj2k_decode_seeds)
     set_tests_properties(fuzz_replay.decode_threads PROPERTIES FIXTURES_REQUIRED nj2k_decode_seeds)
   endif()
-  # the round-trip target reads coding parameters, not codestreams: its own seeds
+  # the round-trip and encode targets read coding parameters, not codestreams: their own seeds
   add_test(NAME fuzz_replay.roundtrip
            COMMAND nj2k_fuzz_roundtrip_replay "${CMAKE_CURRENT_SOURCE_DIR}/seeds/roundtrip" "${_nj2k_regressions}")
+  add_test(NAME fuzz_replay.encode
+           COMMAND nj2k_fuzz_encode_replay "${CMAKE_CURRENT_SOURCE_DIR}/seeds/encode" "${_nj2k_regressions}")
 
   add_executable(nj2k_fuzz_filter_check filter_check.cpp)
   target_link_libraries(nj2k_fuzz_filter_check PRIVATE nj2k_test_common)

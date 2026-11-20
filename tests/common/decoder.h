@@ -150,6 +150,27 @@ struct EncodeSpec {
 };
 bool oracle_encode(const EncodeSpec& spec, std::vector<std::uint8_t>& out);
 
+// The viewer's upload encode (JPEG2KEncode::encode) with every setting the core encoder takes
+// exposed, for the stage 6a differential: raw is the viewer's LLImageRaw (interleaved, bottom row
+// first). The defaults are the viewer's rules: lossy rates by surface, fewer resolutions for images
+// under 128 px, the colour transform from three components, the "no comment" comment; a field set
+// overrides its rule.
+struct UploadSpec {
+    const std::uint8_t* raw = nullptr;
+    int width = 0, height = 0, comps = 0;
+    bool reversible = false;
+    int layers = 0;            // 0: the viewer's (1 lossless, by surface lossy)
+    std::vector<float> rates;  // empty: the viewer's (0 lossless, 8 * 4^i lossy)
+    int numres = 0;            // 0: the viewer's
+    int mct = -1;              // -1: the viewer's (on from three components)
+    int max_cs_size = 0;       // the codestream size cap in bytes (0: none, the viewer's)
+    const char* comment = "no comment";  // nullptr: no comment given, OpenJPEG writes its own
+};
+// A codestream from each library's encoder: the oracle's, and neo-j2k's through the compatibility
+// header. false when the library refuses (where it refused is not compared).
+bool oracle_upload(const UploadSpec& spec, std::vector<std::uint8_t>& out);
+bool neoj2k_upload(const UploadSpec& spec, std::vector<std::uint8_t>& out);
+
 // Viewer behaviour shared by every backend (indra/llimage, llimagej2coj, release line).
 namespace viewer {
 constexpr std::uint64_t kMaxComponents = 8;      // MAX_IMAGE_COMPONENTS (llimage.h)

@@ -5,12 +5,12 @@
 # ClusterFuzzLite build: the sanitizer and coverage flags come in CFLAGS/CXXFLAGS and the engine in
 # LIB_FUZZING_ENGINE (fuzz/CMakeLists.txt reads it). Seeds: the generated corpus, for the header
 # target also in JP2 files and for the decode target also with option bytes in front
-# (fuzz/make_inputs.py), and fuzz/seeds/roundtrip; dictionary: fuzz/j2k.dict.
+# (fuzz/make_inputs.py), fuzz/seeds/roundtrip and fuzz/seeds/encode; dictionary: fuzz/j2k.dict.
 cmake -S "$SRC/neo-j2k" -B "$WORK/build" -G Ninja -DCMAKE_BUILD_TYPE=Release \
   -DNJ2K_BUILD_FUZZERS=ON -DNJ2K_BUILD_TESTS=OFF -DNJ2K_BUILD_TOOLS=OFF -DNJ2K_BUILD_BENCH=OFF \
   -DNJ2K_BUILD_SHARED=OFF -DNJ2K_INSTALL=OFF
 cmake --build "$WORK/build" --parallel
-for t in header decode roundtrip; do
+for t in header decode roundtrip encode; do
   cp "$WORK/build/fuzz/nj2k_fuzz_$t" "$OUT/"
   cp "$SRC/neo-j2k/fuzz/j2k.dict" "$OUT/nj2k_fuzz_$t.dict"
 done
@@ -19,3 +19,4 @@ python3 -I "$SRC/neo-j2k/fuzz/make_inputs.py" --decode-seeds "$WORK/seeds-decode
 zip -j -q "$OUT/nj2k_fuzz_header_seed_corpus.zip" "$SRC"/neo-j2k/corpus/generated/*.j2k "$WORK"/seeds-header/*.bin
 zip -j -q "$OUT/nj2k_fuzz_decode_seed_corpus.zip" "$SRC"/neo-j2k/corpus/generated/*.j2k "$WORK"/seeds-decode/*.bin
 zip -j -q "$OUT/nj2k_fuzz_roundtrip_seed_corpus.zip" "$SRC"/neo-j2k/fuzz/seeds/roundtrip/*.bin
+zip -j -q "$OUT/nj2k_fuzz_encode_seed_corpus.zip" "$SRC"/neo-j2k/fuzz/seeds/encode/*.bin

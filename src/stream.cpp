@@ -99,6 +99,53 @@ std::size_t Stream::read(std::uint8_t* dst, std::size_t n) noexcept
     return done;
 }
 
+bool Stream::flush() noexcept
+{
+    if (input || !write_fn) {
+        return false;
+    }
+    std::size_t done = 0;
+    while (done < filled) {
+        const std::size_t got = write_fn(buffer + done, filled - done, user);
+        if (got == kEnd || got == 0) {
+            // keep what was not taken, so that a retry does not lose it
+            std::memmove(buffer, buffer + done, filled - done);
+            filled -= done;
+            return false;
+        }
+        done += got < filled - done ? got : filled - done;
+    }
+    filled = 0;
+    return true;
+}
+
+bool Stream::write(const std::uint8_t* src, std::size_t n) noexcept
+{
+    if (input || !write_fn) {
+        return false;
+    }
+    while (n > 0) {
+        const std::size_t room = buffer_size - filled;
+        if (n <= room) {
+            std::memcpy(buffer + filled, src, n);
+            filled += n;
+            offset += n;
+            return true;
+        }
+        if (room) {
+            std::memcpy(buffer + filled, src, room);
+            filled += room;
+            src += room;
+            n -= room;
+            offset += room;
+        }
+        if (!flush()) {
+            return false;
+        }
+    }
+    return true;
+}
+
 bool Stream::skip(std::uint64_t n) noexcept
 {
     const std::size_t in_buffer = filled - pos;
@@ -147,6 +194,9 @@ namespace {
 
 Stream* new_stream(NJ2K_SIZE_T buffer_size, NJ2K_BOOL is_input) noexcept
 {
+    if (buffer_size == 0) {
+        return nullptr;  // as OpenJPEG: opj_malloc(0) gives no buffer and no stream
+    }
     void* mem = nj2k::detail::heap_calloc(1, sizeof(Stream));
     if (!mem) {
         return nullptr;

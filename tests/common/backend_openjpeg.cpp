@@ -138,6 +138,11 @@ private:
 
 }  // namespace
 
+bool oracle_upload(const UploadSpec& spec, std::vector<std::uint8_t>& out)
+{
+    return REPLAY_NS::replay_upload_ex(REPLAY_NS::linked_api(), spec, out);
+}
+
 bool oracle_encode(const EncodeSpec& spec, std::vector<std::uint8_t>& out)
 {
     return REPLAY_NS::replay_encode(REPLAY_NS::linked_api(), spec, out);

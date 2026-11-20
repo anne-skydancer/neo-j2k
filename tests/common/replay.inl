@@ -609,12 +609,14 @@ inline OPJ_BOOL grow_seek(OPJ_OFF_T to, void* user)
     return OPJ_TRUE;
 }
 
-// raw: the viewer's LLImageRaw, interleaved, bottom row first. Lossy: RLCP 9/7 with rate layers by
-// surface (estimate_num_layers, rates 8 * 4^i); lossless: 5/3, one layer. MCT from 3 components;
-// fewer resolutions for images below 64 px a side; the "no comment" comment.
-inline bool replay_upload(const Api& A, const std::uint8_t* raw, int width, int height, int comps, bool reversible,
-                          std::vector<std::uint8_t>& out)
+// The viewer's upload encode (UploadSpec, decoder.h). Lossy: RLCP 9/7 with rate layers by surface
+// (estimate_num_layers, rates 8 * 4^i); lossless: 5/3, one layer. MCT from 3 components; fewer
+// resolutions for images below 128 px a side; the "no comment" comment; the spec's fields override.
+inline bool replay_upload_ex(const Api& A, const nj2k::test::UploadSpec& us, std::vector<std::uint8_t>& out)
 {
+    const std::uint8_t* raw = us.raw;
+    const int width = us.width, height = us.height, comps = us.comps;
+    const bool reversible = us.reversible;
     out.clear();
     opj_cparameters_t p;
     std::memset(&p, 0, sizeof(p));
@@ -622,7 +624,7 @@ inline bool replay_upload(const Api& A, const std::uint8_t* raw, int width, int 
     p.cod_format = OPJ_CODEC_J2K;
     p.prog_order = OPJ_RLCP;
     p.cp_disto_alloc = 1;
-    p.max_cs_size = 0;
+    p.max_cs_size = us.max_cs_size;
     if (reversible) {
         p.irreversible = 0;
         p.tcp_numlayers = 1;
@@ -630,8 +632,8 @@ inline bool replay_upload(const Api& A, const std::uint8_t* raw, int width, int 
     } else {
         p.irreversible = 1;
     }
-    char comment[] = "no comment";
-    p.cp_comment = comment;
+    std::string comment_text = us.comment ? us.comment : "";
+    p.cp_comment = us.comment ? &comment_text[0] : nullptr;
 
     std::vector<opj_image_cmptparm_t> cp(static_cast<std::size_t>(comps));
     for (auto& c : cp) {
@@ -665,7 +667,7 @@ inline bool replay_upload(const Api& A, const std::uint8_t* raw, int width, int 
     A.opj_set_error_handler(enc, on_info, nullptr);
     A.opj_set_warning_handler(enc, on_info, nullptr);
     A.opj_set_info_handler(enc, on_info, nullptr);
-    p.tcp_mct = static_cast<char>(image->numcomps >= 3 ? 1 : 0);
+    p.tcp_mct = static_cast<char>(us.mct >= 0 ? us.mct : (image->numcomps >= 3 ? 1 : 0));
     if (p.irreversible) {
         const std::uint32_t surface = static_cast<std::uint32_t>(width) * static_cast<std::uint32_t>(height);
         const int layers = surface <= 1024 ? 2 : surface <= 16384 ? 3 : surface <= 262144 ? 4 : surface <= 1048576 ? 5 : 6;
@@ -673,6 +675,12 @@ inline bool replay_upload(const Api& A, const std::uint8_t* raw, int width, int 
         for (int k = layers - 1; k >= 0; --k) {
             p.tcp_rates[layers - 1 - k] = 8.0f * static_cast<float>(1 << (k << 1));
         }
+    }
+    if (us.layers > 0) {
+        p.tcp_numlayers = us.layers;
+    }
+    for (std::size_t k = 0; k < us.rates.size() && k < 100; ++k) {
+        p.tcp_rates[k] = us.rates[k];
     }
     std::uint32_t wt = static_cast<std::uint32_t>(width) >> 6, ht = static_cast<std::uint32_t>(height) >> 6;
     if (wt == 0 && width >= 4) {
@@ -688,6 +696,9 @@ inline bool replay_upload(const Api& A, const std::uint8_t* raw, int width, int 
             ++levels;  // floor(log2(min_dim))
         }
         p.numresolution = 1 + levels;
+    }
+    if (us.numres > 0) {
+        p.numresolution = us.numres;
     }
     bool ok = A.opj_setup_encoder(enc, &p, image) != 0;
     opj_stream_t* st = nullptr;
@@ -715,6 +726,18 @@ inline bool replay_upload(const Api& A, const std::uint8_t* raw, int width, int 
     A.opj_destroy_codec(enc);
     A.opj_image_destroy(image);
     return ok;
+}
+
+inline bool replay_upload(const Api& A, const std::uint8_t* raw, int width, int height, int comps, bool reversible,
+                          std::vector<std::uint8_t>& out)
+{
+    nj2k::test::UploadSpec us;
+    us.raw = raw;
+    us.width = width;
+    us.height = height;
+    us.comps = comps;
+    us.reversible = reversible;
+    return replay_upload_ex(A, us, out);
 }
 
 // EncodeSpec's codestream (decoder.h)

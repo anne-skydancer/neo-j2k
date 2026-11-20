@@ -798,3 +798,46 @@ What it shows:
 - The encoder (stage 6b uses the same executor).
 - A Linux build's large-image times (CI runs the identity gate and ThreadSanitizer there; `nj2k_large`
   builds there too).
+
+## Stage 6a: the upload encode (2026-11-20)
+
+Correctness first: the encoder is OpenJPEG's operations on one thread, scalar, and stage 6b does its speed. This
+is the baseline 6b starts from. `nj2k_encode_bench` (`bench/encode_bench.py` runs it, a fresh process for each
+encoder and size so the peak is each one's own) times the viewer's upload encode, `JPEG2KEncode::encode`, of a
+synthetic texture of three components (gradients, a few edges and noise): the oracle (OpenJPEG at the pinned
+fork commit, MSVC 14.51 RelWithDebInfo, the same flags as neo-j2k) against neo-j2k through the compatibility
+API, each timed over a first encode and then at least three, up to 1.5 to 2.5 seconds of them. One thread each;
+a Ryzen 9 9950X3D, **not quiet**: other processes took 28 % of the CPUs on average while the sizes up to 512²
+ran (the 1024² and 2048² runs under the same kind of load), so read the ratios, not the milliseconds. Every
+codestream is identical to the oracle's (the checksum of the bytes is compared in the table).
+
+| Size | Mode | Bytes | Oracle ms | neo-j2k ms | neo-j2k / oracle | Oracle peak MB | neo-j2k peak MB |
+|---|---|---|---|---|---|---|---|
+| 64² x 3 | lossy | 1,515 | 1.2 | 1.2 | 0.97 | 0.6 | 0.3 |
+| 64² x 3 | lossless | 8,521 | 1.0 | 1.1 | 1.08 | 0.7 | 0.3 |
+| 128² x 3 | lossy | 5,756 | 3.7 | 4.1 | 1.11 | 1.1 | 0.7 |
+| 128² x 3 | lossless | 32,798 | 3.6 | 4.1 | 1.14 | 1.1 | 0.7 |
+| 256² x 3 | lossy | 24,385 | 13.2 | 15.1 | 1.14 | 2.7 | 2.4 |
+| 256² x 3 | lossless | 129,529 | 14.0 | 16.1 | 1.15 | 3.0 | 2.4 |
+| 512² x 3 | lossy | 98,295 | 60.6 | 69.4 | 1.15 | 9.9 | 9.4 |
+| 512² x 3 | lossless | 595,252 | 63.9 | 73.0 | 1.14 | 9.9 | 9.5 |
+| 1,024² x 3 | lossy | 393,225 | 250.0 | 284.5 | 1.14 | 38.9 | 37.2 |
+| 1,024² x 3 | lossless | 2,398,977 | 262.8 | 295.9 | 1.13 | 38.8 | 37.5 |
+| 2,048² x 3 | lossy | 1,572,812 | 1,007.1 | 1,176.3 | 1.17 | 153.9 | 148.0 |
+| 2,048² x 3 | lossless | 9,493,774 | 1,301.4 | 1,267.5 | 0.97 | 153.9 | 149.2 |
+| 512² x 1 | lossy | 32,769 | 21.6 | 24.7 | 1.14 | 4.4 | 4.2 |
+| 1,024² x 1 | lossless | 731,742 | 83.0 | 95.5 | 1.15 | 17.0 | 16.5 |
+
+What the numbers say: neo-j2k takes 0.97 to 1.17 of OpenJPEG's time on one thread (most rows 1.11 to 1.17; 64² lossy 0.97, 64² lossless
+1.08, and 2,048² lossless 0.97, a noisy median whose best times, 1,098 and 1,192 ms, give 1.09), as expected of the same algorithm written
+straight, without 6b's work. Peak memory is the viewer's own buffers (for 2,048² x 3: the raw image 12.6 MB, the image of int32 planes
+50 MB and the output's size guess 12.6 MB, 75 MB, which both encoders share) plus the encoder's: OpenJPEG's
+is about 80 MB there (each code-block's output buffer of four bytes a sample, 50 MB, and the 100 passes and
+100 layers it allocates for every one of them, 25 MB, the transform being done in the image's own planes);
+neo-j2k's is about 73 MB (its own copy of the samples, 50 MB, which the transform works on, the code-blocks'
+bytes as they come out, and the codestream buffer), so its peak is 0.3 to 6 MB lower, the copy being the price
+of leaving the caller's planes alone (DP-19). Stage 6b can drop the copy for a caller that gives its planes up.
+Stage 6b's levers, in the order the profile will say: Tier-1 (OpenJPEG's own runs the
+code-blocks on its thread pool when it has one; here they are jobs for the host's executor), the vertical
+wavelet pass, the rate allocation's Tier-2 simulations (each bisection step walks every packet header), and
+the 9/7 quantization.

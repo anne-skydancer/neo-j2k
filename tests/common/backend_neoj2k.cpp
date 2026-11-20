@@ -232,6 +232,11 @@ private:
 
 }  // namespace
 
+bool neoj2k_upload(const UploadSpec& spec, std::vector<std::uint8_t>& out)
+{
+    return REPLAY_NS::replay_upload_ex(REPLAY_NS::linked_api(), spec, out);
+}
+
 std::unique_ptr<Backend> make_neoj2k_backend()
 {
     return std::make_unique<NeoBackend>();
