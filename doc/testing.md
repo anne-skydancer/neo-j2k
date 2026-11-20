@@ -57,13 +57,15 @@ reference test can pass having checked nothing. The tests, tools, fuzz targets a
 Nightly (`NJ2K_TEST_NIGHTLY=ON`): `oracle_cuts_nightly` and `neoj2k_cuts_nightly`, every cut point of the
 generated files from 4 to 16 KB, in plain and in viewer mode.
 
-Stage 1c's results on 2026-11-19 (Windows, MSVC 14.51 and clang-cl, RelWithDebInfo; MSVC with
-AddressSanitizer): every test passes. neo-j2k reproduces the reference table's 1,812 lines (756 whole-file
-lines and 1,056 cut digests over 1,028,088 decodes) but for the 30 of its DP-3 file, and the nightly table's
-204 digests over 1,239,348 decodes; the layer-boundary oracle's 198 checks; class 1 conformance 23 of 23 in
-plain mode (18 of 23 in viewer mode, as the oracle); every conformance codestream and JP2 file in plain,
-strict and viewer mode at reduce 0-5 (342 of 342 identical); OpenJPEG's non-regression data, 894 decodes,
-identical but for the three DP-6 files.
+Stage 1c's results on 2026-11-19, again on 2026-11-20 with the oracle at the hotfix head (Windows, MSVC
+14.51 and clang-cl, RelWithDebInfo; the scalar MSVC build; MSVC with AddressSanitizer): every test passes (110
+of 110, and 107 of 107 under AddressSanitizer, which has no bench tests). neo-j2k reproduces the reference
+table's 1,812 lines (756 whole-file lines and 1,056 cut digests over 1,028,088 decodes) but for the 30 of its
+DP-3 file, and the nightly table's 204 digests over 1,239,348 decodes; the layer-boundary oracle's 198 checks;
+class 1 conformance 23 of 23 in plain mode (18 of 23 in viewer mode, as the oracle); every conformance
+codestream and JP2 file in plain, strict and viewer mode at reduce 0-5 (342 of 342 identical); OpenJPEG's
+non-regression data, 894 decodes, identical but for the three DP-6 files. Both tables, recorded again at the
+new pin, are byte for byte the committed ones.
 
 ## The runner: `nj2k_diff`
 
@@ -127,15 +129,18 @@ nj2k_diff compare --a oracle --b neoj2k --files <mutant list> --reduce 0,5 --mod
 nj2k_fuzz_decode_replay <mutant folder>
 ```
 
-Results on 2026-11-19 (Windows, MSVC 14.51, RelWithDebInfo and AddressSanitizer), stage 1c's review round:
-8,272 damaged decodes (the plan's 4,136 at reduce 0 and 5, in plain and in viewer mode), the same outcome
-table from both builds, no crash, hang or sanitizer report (51 s, and 3 min 56 s under AddressSanitizer).
-Both decoders refuse 4,165 requests and decode 3,695 to the same image; in 412 (103 files) OpenJPEG
-decodes what neo-j2k refuses at the header, every one a recorded departure: a reserved quantization style
-(DP-8, 71 files) or fewer step sizes than sub-bands (DP-6, 32 files). neo-j2k decodes nothing OpenJPEG
-refuses. The decode fuzz target took all 2,068 files without a stop (no memory beyond its bound, no byte
-written outside the planes, every allocation given back, no difference the departures do not explain).
-The outcome table names private textures, so it stays off the repository.
+Results on 2026-11-19 (Windows, MSVC 14.51, RelWithDebInfo and AddressSanitizer), stage 1c's review round,
+and the same on 2026-11-20 with the oracle at the hotfix head: 8,272 damaged decodes (the plan's 4,136 at
+reduce 0 and 5, in plain and in viewer mode), the same outcome table from both builds and from both pins,
+row for row, no crash, hang or sanitizer report (50 s, and 3 min 57 s under AddressSanitizer). Both
+decoders refuse 4,165 requests and decode 3,695 to the same image; in 412 (103 files) OpenJPEG decodes
+what neo-j2k refuses at the header, every one a recorded departure: a reserved quantization style (DP-8,
+71 files) or fewer step sizes than sub-bands (DP-6, 32 files). neo-j2k decodes nothing OpenJPEG refuses.
+The decode fuzz target took all 2,068 files without a stop (no memory beyond its bound, no byte written
+outside the planes, every allocation given back, no difference the departures do not explain), since
+2026-11-20 comparing each with the oracle under the same limits, with no filter: the OD-3 guard kept one
+file (a SOT declaring more than 64 MiB) from the oracle. The outcome table names private textures, so it
+stays off the repository.
 
 ## The corpora
 
