@@ -204,29 +204,50 @@ bool u8_fusable(const Finish& f) noexcept
 
 namespace {
 
-// The 16 samples of a component from its two 8-lane halves to int16 in pixel order, DC-shifted
-inline __m256i shift_u8_16(__m256i a, __m256i b, __m256i shift, __m256i lo, __m256i hi) noexcept
+// Two components' bytes as the packs below put them: in each 128-bit lane eight of the first,
+// then eight of the second
+inline __m256i bytes_of_two(std::int32_t a, std::int32_t b) noexcept
 {
-    const __m256i p = _mm256_packs_epi32(a, b);  // pixels 0-3, 8-11 | 4-7, 12-15
-    return _mm256_permute4x64_epi64(_mm256_min_epi16(_mm256_max_epi16(_mm256_adds_epi16(p, shift), lo), hi), 0xD8);
+    const auto spread = [](std::int32_t v) { return static_cast<long long>(0x0101010101010101ull * std::uint8_t(v)); };
+    return _mm256_set_epi64x(spread(b), spread(a), spread(b), spread(a));
 }
 
 // K components, the colour transform M on the first three, every component reversible (5/3) or
-// none (9/7): fused_u8_supported picks the instance
-template <std::uint32_t K, Mct M, bool R>
-std::size_t fused_u8(const std::int32_t* const* src, const Finish* f, std::size_t n, std::uint8_t* dst) noexcept
+// none (9/7), C: some component's range narrower than [0, 255]: fused_u8_function picks the instance
+template <std::uint32_t K, Mct M, bool R, bool C>
+std::size_t fused_u8(const std::int32_t* const* src, const std::size_t* src_stride, const Finish* f, std::size_t n,
+                     std::uint32_t h, std::uint8_t* dst, std::int64_t dst_stride) noexcept
 {
     const __m256 vrv = _mm256_set1_ps(1.402f), vgu = _mm256_set1_ps(0.34413f), vgv = _mm256_set1_ps(0.71414f),
                  vbu = _mm256_set1_ps(1.772f);
     const __m256 cap = _mm256_set1_ps(1073741824.0f);
-    __m256i shift[K], lo[K], hi[K];
+    __m256i shift[K];
     for (std::uint32_t c = 0; c < K; ++c) {
         shift[c] = _mm256_set1_epi16(static_cast<std::int16_t>(f[c].shift));
-        lo[c] = _mm256_set1_epi16(static_cast<std::int16_t>(f[c].lo));
-        hi[c] = _mm256_set1_epi16(static_cast<std::int16_t>(f[c].hi));
+    }
+    // the byte registers' ranges: x holds components 0 and 2 (0 alone for K = 1, 0 and 1 for K = 2),
+    // y components 1 and 3 (1 twice for K = 3)
+    const std::uint32_t xb = K == 2 ? 1 : (K == 1 ? 0 : 2), yb = K == 4 ? 3 : (K >= 2 ? 1 : 0), ya = K >= 2 ? 1 : 0;
+    const __m256i xlo = bytes_of_two(f[0].lo, f[xb].lo), xhi = bytes_of_two(f[0].hi, f[xb].hi);
+    [[maybe_unused]] const __m256i ylo = bytes_of_two(f[ya].lo, f[yb].lo), yhi = bytes_of_two(f[ya].hi, f[yb].hi);
+    // to bytes: the saturating pack to [0, 255], then, when a range is narrower, the clamp to it
+    auto to_bytes = [&](__m256i p, __m256i q, __m256i lo, __m256i hi) {
+        const __m256i v = _mm256_packus_epi16(p, q);
+        if constexpr (C) {
+            return _mm256_min_epu8(_mm256_max_epu8(v, lo), hi);
+        } else {
+            (void)lo;
+            (void)hi;
+            return v;
+        }
+    };
+    // the rows in locals: the byte stores could alias src[], which would reload it every step
+    const std::int32_t* rows[K];
+    for (std::uint32_t c = 0; c < K; ++c) {
+        rows[c] = src[c];
     }
     auto load = [&](std::uint32_t c, std::size_t at) {
-        return _mm256_loadu_si256(reinterpret_cast<const __m256i*>(src[c] + at));
+        return _mm256_loadu_si256(reinterpret_cast<const __m256i*>(rows[c] + at));
     };
     // the eight samples of every component at column at, as the DC shift takes them: int32, the 9/7
     // ones rounded
@@ -256,62 +277,86 @@ std::size_t fused_u8(const std::int32_t* const* src, const Finish* f, std::size_
             }
         }
     };
-    std::size_t i = 0;
-    for (; i + 16 <= n; i += 16) {
-        __m256i a[K], b[K], s[K];
-        eight(i, a);
-        eight(i + 8, b);
-        for (std::uint32_t c = 0; c < K; ++c) {
-            s[c] = shift_u8_16(a[c], b[c], shift[c], lo[c], hi[c]);
+    const std::size_t end = n & ~std::size_t(15);
+    std::uint8_t* out = dst;
+    for (std::uint32_t j = 0; j < h; ++j) {
+        if (j > 0) {  // the next row; never a pointer beyond the last
+            out += dst_stride;
+            for (std::uint32_t c = 0; c < K; ++c) {
+                rows[c] += src_stride[c];
+            }
         }
-        std::uint8_t* d = dst + i * K;
-        if constexpr (K == 1) {
-            const __m256i p = _mm256_permute4x64_epi64(_mm256_packus_epi16(s[0], s[0]), 0x08);
-            _mm_storeu_si128(reinterpret_cast<__m128i*>(d), _mm256_castsi256_si128(p));
-        } else if constexpr (K == 2) {
-            _mm256_storeu_si256(reinterpret_cast<__m256i*>(d), _mm256_or_si256(s[0], _mm256_slli_epi16(s[1], 8)));
-        } else if constexpr (K == 3) {
-            const __m256i rg = _mm256_or_si256(s[0], _mm256_slli_epi16(s[1], 8));
-            const __m256i lo32 = _mm256_unpacklo_epi16(rg, s[2]);  // pixels 0-3 | 8-11, a pixel a lane
-            const __m256i hi32 = _mm256_unpackhi_epi16(rg, s[2]);  // pixels 4-7 | 12-15
-            const __m256i pick = _mm256_setr_epi8(0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14, -1, -1, -1, -1, 0, 1, 2, 4, 5,
-                                                  6, 8, 9, 10, 12, 13, 14, -1, -1, -1, -1);
-            const __m256i p = _mm256_shuffle_epi8(lo32, pick), q = _mm256_shuffle_epi8(hi32, pick);
-            // 12 bytes each; the first three stores write 4 bytes beyond theirs, which the next one
-            // writes again; the last writes its 12 alone
-            _mm_storeu_si128(reinterpret_cast<__m128i*>(d), _mm256_castsi256_si128(p));
-            _mm_storeu_si128(reinterpret_cast<__m128i*>(d + 12), _mm256_castsi256_si128(q));
-            _mm_storeu_si128(reinterpret_cast<__m128i*>(d + 24), _mm256_extracti128_si256(p, 1));
-            const __m128i last = _mm256_extracti128_si256(q, 1);
-            _mm_storel_epi64(reinterpret_cast<__m128i*>(d + 36), last);
-            const std::int32_t tail = _mm_extract_epi32(last, 2);
-            std::memcpy(d + 44, &tail, sizeof tail);
-        } else {
-            const __m256i rg = _mm256_or_si256(s[0], _mm256_slli_epi16(s[1], 8));
-            const __m256i ba = _mm256_or_si256(s[2], _mm256_slli_epi16(s[3], 8));
-            const __m256i lo32 = _mm256_unpacklo_epi16(rg, ba);  // pixels 0-3 | 8-11
-            const __m256i hi32 = _mm256_unpackhi_epi16(rg, ba);  // pixels 4-7 | 12-15
-            _mm256_storeu_si256(reinterpret_cast<__m256i*>(d), _mm256_permute2x128_si256(lo32, hi32, 0x20));
-            _mm256_storeu_si256(reinterpret_cast<__m256i*>(d + 32), _mm256_permute2x128_si256(lo32, hi32, 0x31));
+        for (std::size_t i = 0; i < end; i += 16) {
+            __m256i a[K], b[K], s[K];
+            eight(i, a);
+            eight(i + 8, b);
+            // int16, DC-shifted, in the pack's order: pixels 0-3, 8-11 | 4-7, 12-15
+            for (std::uint32_t c = 0; c < K; ++c) {
+                s[c] = _mm256_adds_epi16(_mm256_packs_epi32(a[c], b[c]), shift[c]);
+            }
+            std::uint8_t* d = out + i * K;
+            if constexpr (K == 1) {
+                // the pack's dwords: pixels 0-3, 8-11 (twice) | 4-7, 12-15 (twice)
+                const __m256i p = _mm256_permutevar8x32_epi32(to_bytes(s[0], s[0], xlo, xhi),
+                                                              _mm256_setr_epi32(0, 4, 1, 5, 0, 0, 0, 0));
+                _mm_storeu_si128(reinterpret_cast<__m128i*>(d), _mm256_castsi256_si128(p));
+            } else if constexpr (K == 2) {
+                // a lane's eight pixels of component 0, then of 1, into pairs: pixels 0-3, 8-11 | 4-7, 12-15
+                const __m256i pair = _mm256_setr_epi8(0, 8, 1, 9, 2, 10, 3, 11, 4, 12, 5, 13, 6, 14, 7, 15, 0, 8, 1, 9, 2, 10,
+                                                      3, 11, 4, 12, 5, 13, 6, 14, 7, 15);
+                const __m256i rg = _mm256_shuffle_epi8(to_bytes(s[0], s[1], xlo, xhi), pair);
+                _mm256_storeu_si256(reinterpret_cast<__m256i*>(d), _mm256_permute4x64_epi64(rg, 0xD8));
+            } else if constexpr (K == 3) {
+                const __m256i x = to_bytes(s[0], s[2], xlo, xhi), y = to_bytes(s[1], s[1], ylo, yhi);
+                const __m256i rg = _mm256_unpacklo_epi8(x, y), bg = _mm256_unpackhi_epi8(x, y);
+                const __m256i lo32 = _mm256_unpacklo_epi16(rg, bg);  // pixels 0-3 | 4-7: R, G, B, G
+                const __m256i hi32 = _mm256_unpackhi_epi16(rg, bg);  // pixels 8-11 | 12-15
+                const __m256i pick = _mm256_setr_epi8(0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14, -1, -1, -1, -1, 0, 1, 2, 4, 5,
+                                                      6, 8, 9, 10, 12, 13, 14, -1, -1, -1, -1);
+                const __m256i p = _mm256_shuffle_epi8(lo32, pick), q = _mm256_shuffle_epi8(hi32, pick);
+                // 12 bytes each; the first three stores write 4 bytes beyond theirs, which the next one
+                // writes again; the last writes its 12 alone
+                _mm_storeu_si128(reinterpret_cast<__m128i*>(d), _mm256_castsi256_si128(p));
+                _mm_storeu_si128(reinterpret_cast<__m128i*>(d + 12), _mm256_extracti128_si256(p, 1));
+                _mm_storeu_si128(reinterpret_cast<__m128i*>(d + 24), _mm256_castsi256_si128(q));
+                const __m128i last = _mm256_extracti128_si256(q, 1);
+                _mm_storel_epi64(reinterpret_cast<__m128i*>(d + 36), last);
+                const std::int32_t tail = _mm_extract_epi32(last, 2);
+                std::memcpy(d + 44, &tail, sizeof tail);
+            } else {
+                const __m256i x = to_bytes(s[0], s[2], xlo, xhi), y = to_bytes(s[1], s[3], ylo, yhi);
+                const __m256i rg = _mm256_unpacklo_epi8(x, y), ba = _mm256_unpackhi_epi8(x, y);
+                _mm256_storeu_si256(reinterpret_cast<__m256i*>(d), _mm256_unpacklo_epi16(rg, ba));       // pixels 0-7
+                _mm256_storeu_si256(reinterpret_cast<__m256i*>(d + 32), _mm256_unpackhi_epi16(rg, ba));  // 8-15
+            }
         }
     }
-    return i;
+    return end;
 }
 
-template <Mct M, bool R>
+template <Mct M, bool R, bool C>
 FusedU8Fn fused_for(std::uint32_t k) noexcept
 {
     if constexpr (M == Mct::kNone) {
         switch (k) {
         case 1:
-            return fused_u8<1, M, R>;
+            return fused_u8<1, M, R, C>;
         case 2:
-            return fused_u8<2, M, R>;
+            return fused_u8<2, M, R, C>;
         default:
             break;
         }
     }
-    return k == 3 ? fused_u8<3, M, R> : k == 4 ? fused_u8<4, M, R> : nullptr;
+    return k == 3 ? fused_u8<3, M, R, C> : k == 4 ? fused_u8<4, M, R, C> : nullptr;
+}
+
+template <bool C>
+FusedU8Fn fused_pick(Mct mct, bool r, std::uint32_t k) noexcept
+{
+    if (mct == Mct::kNone) {
+        return r ? fused_for<Mct::kNone, true, C>(k) : fused_for<Mct::kNone, false, C>(k);
+    }
+    return r ? fused_for<Mct::kRct, true, C>(k) : fused_for<Mct::kIct, false, C>(k);
 }
 
 }  // namespace
@@ -319,8 +364,9 @@ FusedU8Fn fused_for(std::uint32_t k) noexcept
 // Sixteen pixels at a time, each sample in registers from its source to its byte: the colour
 // transform as mct_rows does it, then the DC shift in 16-bit lanes: for a component whose result
 // lies in [0, 255] (u8_fusable: 0 <= lo <= hi <= 255, 0 <= shift < 2^15) the 64-bit add and clamp
-// of dc_shift_53 / dc_shift_97 equal a saturating pack to int16, a saturating add of the shift and a
-// clamp to [lo, hi] (a sample beyond int16 saturates to the same side of the range as its true sum).
+// of dc_shift_53 / dc_shift_97 equal a saturating pack to int16, a saturating add of the shift, a
+// saturating pack to [0, 255] and, when [lo, hi] is narrower, a clamp to it (a sample beyond int16
+// saturates to the same side of the range as its true sum).
 // The 9/7 rounding is cvtps (ties to even, as finish_row's); min(2^30, v) first sends 2^31 and above
 // to hi, as dc_shift_97's blend does (2^30 is above every hi - shift), and keeps NaN, which cvtps
 // turns into INT_MIN, then lo. The bytes are the samples themselves, which is the low byte the
@@ -332,18 +378,17 @@ FusedU8Fn fused_u8_function(Mct mct, const Finish* f, std::uint32_t k) noexcept
         return nullptr;
     }
     const bool r = f[0].reversible;
+    bool narrow = false;
     for (std::uint32_t c = 0; c < k; ++c) {
         if (f[c].reversible != r || !u8_fusable(f[c])) {
             return nullptr;
         }
+        narrow = narrow || f[c].lo != 0 || f[c].hi != 255;
     }
-    if (mct == Mct::kNone) {
-        return r ? fused_for<Mct::kNone, true>(k) : fused_for<Mct::kNone, false>(k);
-    }
-    if ((mct == Mct::kRct) != r) {
+    if (mct != Mct::kNone && (mct == Mct::kRct) != r) {
         return nullptr;
     }
-    return r ? fused_for<Mct::kRct, true>(k) : fused_for<Mct::kIct, false>(k);
+    return narrow ? fused_pick<true>(mct, r, k) : fused_pick<false>(mct, r, k);
 }
 #endif
 
@@ -456,13 +501,13 @@ void write_group(const CopyComp* comps, std::uint32_t k, Mct mct, std::uint32_t 
         f[c] = comps[c].f;
     }
     if (const kernels::FusedU8Fn fused = finished ? kernels::fused_u8_function(mct, f, k) : nullptr) {
-        for (std::uint32_t j = 0; j < c0.h; ++j) {
-            const std::int32_t* src[4];
-            for (std::uint32_t c = 0; c < k; ++c) {
-                src[c] = comps[c].src + std::size_t(j) * comps[c].src_stride;
-            }
-            x_from = static_cast<std::uint32_t>(fused(src, f, c0.w, packed_base + static_cast<std::int64_t>(j) * only[0]->row_stride));
+        const std::int32_t* src[4];
+        std::size_t stride[4];
+        for (std::uint32_t c = 0; c < k; ++c) {
+            src[c] = comps[c].src;
+            stride[c] = comps[c].src_stride;
         }
+        x_from = static_cast<std::uint32_t>(fused(src, stride, f, c0.w, c0.h, packed_base, only[0]->row_stride));
         if (x_from == c0.w) {
             return;
         }
