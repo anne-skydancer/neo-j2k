@@ -78,37 +78,9 @@ NJ2K_API nj2k_jp2_index_t* NJ2K_CALLCONV nj2k_get_jp2_index(nj2k_codec_t*)
     return nullptr;
 }
 
-// ---- encoding (stage 6a) ------------------------------------------------------------------------
+// ---- encoding ----------------------------------------------------------------------------------
 
-NJ2K_API nj2k_codec_t* NJ2K_CALLCONV nj2k_create_compress(NJ2K_CODEC_FORMAT)
-{
-    return nullptr;
-}
-
-NJ2K_API NJ2K_BOOL NJ2K_CALLCONV nj2k_setup_encoder(nj2k_codec_t*, nj2k_cparameters_t*, nj2k_image_t*)
-{
-    return NJ2K_FALSE;
-}
-
-NJ2K_API NJ2K_BOOL NJ2K_CALLCONV nj2k_encoder_set_extra_options(nj2k_codec_t*, const char* const*)
-{
-    return NJ2K_FALSE;
-}
-
-NJ2K_API NJ2K_BOOL NJ2K_CALLCONV nj2k_start_compress(nj2k_codec_t*, nj2k_image_t*, nj2k_stream_t*)
-{
-    return NJ2K_FALSE;
-}
-
-NJ2K_API NJ2K_BOOL NJ2K_CALLCONV nj2k_encode(nj2k_codec_t*, nj2k_stream_t*)
-{
-    return NJ2K_FALSE;
-}
-
-NJ2K_API NJ2K_BOOL NJ2K_CALLCONV nj2k_end_compress(nj2k_codec_t*, nj2k_stream_t*)
-{
-    return NJ2K_FALSE;
-}
+// The encoder is in encode.cpp (stage 6a). Writing a tile at a time belongs to the j2k-tile module.
 
 NJ2K_API NJ2K_BOOL NJ2K_CALLCONV nj2k_write_tile(nj2k_codec_t*, NJ2K_UINT32, NJ2K_BYTE*, NJ2K_UINT32, nj2k_stream_t*)
 {

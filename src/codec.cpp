@@ -59,10 +59,12 @@
 #include <new>
 
 #include "decode.h"
+#include "encode.h"
 #include "limit_profiles.h"
 
 using nj2k::detail::Allocator;
 using nj2k::detail::Decoder;
+using nj2k::detail::Encoder;
 using nj2k::detail::Messages;
 using nj2k::detail::Stream;
 
@@ -346,6 +348,10 @@ void describe_image(const Decoder& d, nj2k_image_t& image) noexcept
 
 NJ2K_BOOL set_handler(nj2k_codec_t* p_codec, Messages::Kind kind, nj2k_msg_callback callback, void* user) noexcept
 {
+    if (Encoder* e = Encoder::from(p_codec)) {
+        e->messages.set(kind, callback, user);
+        return NJ2K_TRUE;
+    }
     Decoder* d = Decoder::from(p_codec);
     if (!d) {
         return NJ2K_FALSE;
@@ -527,6 +533,14 @@ NJ2K_API nj2k_codec_t* NJ2K_CALLCONV nj2k_create_decompress_with_allocator(NJ2K_
 
 NJ2K_API void NJ2K_CALLCONV nj2k_destroy_codec(nj2k_codec_t* p_codec)
 {
+    if (Encoder* e = Encoder::from(p_codec)) {
+        const Allocator allocator = e->allocator;
+        e->release_all();
+        e->magic = 0;
+        e->~Encoder();
+        allocator.release(e, sizeof(Encoder));
+        return;
+    }
     Decoder* d = Decoder::from(p_codec);
     if (!d) {
         return;
@@ -865,6 +879,9 @@ NJ2K_API void NJ2K_CALLCONV nj2k_destroy_cstr_info(nj2k_codestream_info_v2_t** c
 
 NJ2K_API nj2k_status_t NJ2K_CALLCONV nj2k_get_status(nj2k_codec_t* p_codec)
 {
+    if (const Encoder* e = Encoder::from(p_codec)) {
+        return e->status;
+    }
     const Decoder* d = Decoder::from(p_codec);
     return d ? d->status : NJ2K_E_ARGUMENT;
 }
