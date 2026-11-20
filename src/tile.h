@@ -18,6 +18,7 @@
 #include "header.h"
 #include "messages.h"
 #include "output.h"
+#include "parallel.h"
 #include "t1.h"
 #include "work_arena.h"
 
@@ -108,17 +109,22 @@ struct PackedCursor {
     std::uint32_t len;
 };
 
-struct Jobs;
-
-// What a tile's decode needs to run through the host's executor (stage 5, parallel.h): Tier-1 cut
-// into t1_count parts (each with its own Tier-1 scratch, ready and with room for the tile's largest
-// code-block), the wavelet's large levels into jobs->width parts (the wavelet scratch sized by
-// dwt_scratch_bytes_needed(jobs->width)), and room for its code-blocks' costs (cblk_costs_bytes()).
+// What a tile's decode needs to run through the host's executor (stage 5, parallel.h). Tier-1: the
+// code-blocks in OpenJPEG's order cut into runs of about equal cost (Tile::plan_t1, on the calling
+// thread, before anything is decoded), run p being blocks [bounds[p], bounds[p + 1]) and decoded with
+// t1[p], a scratch ready and with room for run_bytes[p], the largest block of that run (so the parts'
+// room for code-block bytes adds up to at most the tile's coded bytes); refused says that the walk
+// stopped at a block OpenJPEG refuses (refused_block), whose warning follows the runs. The wavelet's
+// large levels are cut into jobs->width parts (the scratch sized by dwt_scratch_bytes_needed(width)).
 struct TileJobs {
-    const Jobs* jobs;
-    T1* t1;
-    std::uint32_t t1_count;
-    void* blocks;
+    const Jobs* jobs = nullptr;
+    T1* t1 = nullptr;
+    std::uint32_t runs = 0;
+    // (left unset until plan_t1 fills them: a tile on one thread never touches them)
+    std::uint32_t bounds[2 * kMaxJobs + 1];
+    std::size_t run_bytes[2 * kMaxJobs];
+    bool refused = false;
+    T1Block refused_block{};
 };
 
 // What a tile's decode needs from the codestream and the codec.
@@ -167,10 +173,13 @@ public:
     std::size_t samples_bytes(std::uint32_t c) const noexcept;
     // parts: the wavelet's threaded levels' parts (0: one thread)
     std::size_t dwt_scratch_bytes_needed(std::uint32_t parts = 0) const noexcept;
-    // The room a threaded decode's code-block costs need (TileJobs::blocks), and the decoded
+    // The room a threaded decode's code-block costs need (plan_t1's cost), and the decoded
     // samples of the components decoded, which say whether the tile is large enough to split.
     std::size_t cblk_costs_bytes() const noexcept;
     std::uint64_t decoded_samples() const noexcept;
+    // Tier-1's runs for at most max_runs parts (tj.runs, bounds, run_bytes, refused), from the
+    // packet headers alone; cost has room for cblk_costs_bytes().
+    void plan_t1(TileJobs& tj, std::uint32_t max_runs, void* cost) noexcept;
     // The largest code-block data of the tile, for t1.reserve().
     std::size_t largest_cblk_bytes() const noexcept;
 

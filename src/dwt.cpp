@@ -1718,9 +1718,12 @@ void decode_97(std::int32_t* data, std::uint32_t w, const ResRect* res, std::uin
 // ---- stage 5: a level through the host's executor ----------------------------------------------------
 //
 // A large level cut into parts, in three steps, each joined before the next: the horizontal lifting
-// of every row (bands of rows), the vertical lifting (stripes of whole groups of 16 columns: 64-byte
-// multiples, so two parts never write one cache line, and the 5/3's SIMD-formula columns stay
-// OpenJPEG's groups), and the rows put in their interleaved order (the permutation's cycles, found
+// of every row (bands of rows), the vertical lifting (stripes of whole groups of 16 columns, 64
+// bytes: two parts share a cache line only where a row's start is not 64-byte aligned, which for a
+// tile whose width is not a multiple of 16 is one line a row at each stripe's edge, too few to
+// measure: 4,095 x 4,097 and 8,191 x 8,193 scaled as 4,096^2 and 8,192^2 did at 8 threads, doc/bench.md;
+// and the 5/3's SIMD-formula columns stay OpenJPEG's groups), and the rows put in their interleaved
+// order (the permutation's cycles, found
 // on the calling thread first and shared out by rows). Every sample takes the operations of the
 // one-thread transform in the same order: a row's horizontal lifting before any vertical step reads
 // it (the one-thread row-wise transform lifts a row just before its first vertical step; OpenJPEG

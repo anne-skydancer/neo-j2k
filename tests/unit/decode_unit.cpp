@@ -30,6 +30,8 @@
 #include <malloc.h>
 #endif
 
+#include <neoj2k/neoj2k.hpp>
+
 #include "common.h"
 #include "decoder.h"
 #include "j2k_scan.h"
@@ -2340,7 +2342,7 @@ nj2k_codec_t* threaded_codec(int reduce, nj2k::test::ThreadPool* pool, std::uint
             return nullptr;
         }
     }
-    if (forced && !nj2k::detail::set_parallel_thresholds(codec, 0, 0, 0)) {
+    if (forced && !nj2k::detail::set_parallel_thresholds(codec, 0, 0, 0, 0)) {
         nj2k_destroy_codec(codec);
         return nullptr;
     }
@@ -2382,7 +2384,8 @@ bool same_outcome(const ThreadedOutcome& a, const ThreadedOutcome& b, std::strin
     return true;
 }
 
-constexpr std::uint32_t kThreadCounts[] = {2, 4, 8, 16};
+// 64: the most parts a stage is cut into (kMaxJobs), and 128 Tier-1 runs
+constexpr std::uint32_t kThreadCounts[] = {2, 4, 8, 16, 64};
 
 // One file at every reduce level, whole and cut, in the int32 planes and the viewer's 8-bit image:
 // one thread against each count of kThreadCounts (forced: every stage through the executor, however
@@ -2435,6 +2438,187 @@ std::size_t threads_file(nj2k::test::ThreadPool& pool, const std::string& name, 
         }
     }
     return decodes;
+}
+
+// The same through the stream API (nj2k_decode into the image's own planes, the compatibility API's
+// way): one thread against every count, the planes, the status and every message the same.
+ThreadedOutcome stream_decode(const Bytes& data, std::size_t size, int reduce, nj2k::test::ThreadPool* pool,
+                              std::uint32_t concurrency, bool forced)
+{
+    ThreadedOutcome o;
+    nj2k_codec_t* codec = nj2k_create_decompress(NJ2K_CODEC_J2K);
+    if (!codec) {
+        return o;
+    }
+    nj2k_set_info_handler(codec, collect_info, &o.messages);
+    nj2k_set_warning_handler(codec, collect_warning, &o.messages);
+    nj2k_set_error_handler(codec, collect_error, &o.messages);
+    nj2k_dparameters_t p;
+    nj2k_set_default_decoder_parameters(&p);
+    p.cp_reduce = static_cast<NJ2K_UINT32>(reduce);
+    bool ready = nj2k_setup_decoder(codec, &p) && nj2k_decoder_set_strict_mode(codec, NJ2K_FALSE);
+    if (ready && pool && concurrency >= 2) {
+        const nj2k_executor_t ex = pool->executor(concurrency);
+        ready = nj2k_decoder_set_executor(codec, &ex) &&
+                (!forced || nj2k::detail::set_parallel_thresholds(codec, 0, 0, 0, 0));
+    }
+    CHECK(ready);
+    nj2k::MemoryReader reader(std::span<const std::uint8_t>(data.data(), size));
+    auto stream = reader.make_stream();
+    nj2k_image_t* image = nullptr;
+    o.ok = ready && stream && nj2k_read_header(stream.get(), codec, &image) &&
+           nj2k_decode(codec, stream.get(), image) && nj2k_end_decompress(codec, stream.get());
+    o.status = nj2k_get_status(codec);
+    Fnv64 h;
+    for (std::uint32_t c = 0; image && c < image->numcomps; ++c) {
+        const nj2k_image_comp_t& ic = image->comps[c];
+        if (ic.data) {
+            h.bytes(ic.data, std::size_t(ic.w) * ic.h * sizeof(std::int32_t));
+        }
+    }
+    o.hash = h.value();
+    nj2k_image_destroy(image);
+    nj2k_destroy_codec(codec);
+    return o;
+}
+
+std::size_t threads_stream_file(nj2k::test::ThreadPool& pool, const std::string& name, const Bytes& data, bool forced,
+                                int max_reduce)
+{
+    std::size_t decodes = 0;
+    for (int r = 0; r <= max_reduce; ++r) {
+        for (const std::size_t size : {data.size(), data.size() * 2 / 3}) {
+            if (size == 0) {
+                continue;
+            }
+            const ThreadedOutcome ref = stream_decode(data, size, r, nullptr, 1, false);
+            for (const std::uint32_t n : kThreadCounts) {
+                const ThreadedOutcome o = stream_decode(data, size, r, &pool, n, forced);
+                std::string why;
+                CHECK_MSG(same_outcome(ref, o, why),
+                          "%s through the stream API, reduce %d, %zu of %zu bytes, %u threads: %s", name.c_str(), r,
+                          size, data.size(), n, why.c_str());
+                ++decodes;
+            }
+        }
+    }
+    return decodes;
+}
+
+// An allocator hook that refuses what would take its live bytes above cap.
+struct Capped {
+    std::size_t cap = SIZE_MAX, live = 0;
+    Counting counting;
+
+    static void* alloc(void* user, NJ2K_SIZE_T size, NJ2K_SIZE_T alignment)
+    {
+        auto* c = static_cast<Capped*>(user);
+        if (size > c->cap - c->live) {
+            return nullptr;
+        }
+        void* p = Counting::alloc(&c->counting, size, alignment);
+        if (p) {
+            c->live += size;
+        }
+        return p;
+    }
+    static void release(void* user, void* ptr, NJ2K_SIZE_T size)
+    {
+        auto* c = static_cast<Capped*>(user);
+        c->live -= size;
+        Counting::release(&c->counting, ptr, size);
+    }
+    nj2k_allocator_t hook() { return nj2k_allocator_t{sizeof(nj2k_allocator_t), alloc, release, this}; }
+};
+
+// One decode under an allocator capped at cap bytes, on one thread or through pool (every stage
+// forced); peak: the most it held.
+ThreadedOutcome capped_decode(const Bytes& data, std::size_t cap, nj2k::test::ThreadPool* pool, std::size_t* peak)
+{
+    Capped capped;
+    capped.cap = cap;
+    const nj2k_allocator_t hook = capped.hook();
+    std::string messages;
+    ThreadedOutcome o;
+    nj2k_codec_t* codec = memory_codec(0, &hook);
+    if (!codec) {
+        o.status = NJ2K_E_NO_MEMORY;  // the codec itself did not fit
+        return o;
+    }
+    nj2k_set_info_handler(codec, collect_info, &messages);
+    nj2k_set_warning_handler(codec, collect_warning, &messages);
+    nj2k_set_error_handler(codec, collect_error, &messages);
+    if (pool) {
+        const nj2k_executor_t ex = pool->executor(4);
+        CHECK(nj2k_decoder_set_executor(codec, &ex) && nj2k::detail::set_parallel_thresholds(codec, 0, 0, 0, 0));
+    }
+    o = threaded_decode(codec, data, data.size(), NJ2K_SAMPLE_I32, Layout::Guarded, messages, true);
+    nj2k_destroy_codec(codec);
+    if (peak) {
+        *peak = capped.counting.peak;
+    }
+    return o;
+}
+
+// A decode through the executor needs memory one thread does not (a Tier-1 scratch a run, the
+// code-blocks' costs, a wavelet line a part); when the allocator refuses it, the tile falls back to
+// one thread with that memory given back, so the outcome is one thread's at every cap: below the
+// least one thread decodes with, at it, and up past what the threads need.
+std::size_t threads_capped(nj2k::test::ThreadPool& pool, const std::string& name, const Bytes& data)
+{
+    std::size_t one_peak = 0, many_peak = 0;
+    const ThreadedOutcome free_one = capped_decode(data, SIZE_MAX, nullptr, &one_peak);
+    (void)capped_decode(data, SIZE_MAX, &pool, &many_peak);
+    if (!free_one.ok) {
+        return 0;  // a file that does not decode: no least memory to find
+    }
+    // the least cap one thread decodes with
+    std::size_t lo = 0, hi = one_peak;
+    while (lo + 1 < hi) {
+        const std::size_t mid = lo + (hi - lo) / 2;
+        (capped_decode(data, mid, nullptr, nullptr).ok ? hi : lo) = mid;
+    }
+    const std::size_t least = hi;
+    std::vector<std::size_t> caps{least - 1, least - least / 64, least};
+    const std::size_t extra = many_peak > least ? many_peak - least : 0;
+    for (std::size_t k = 1; k <= 16; ++k) {
+        caps.push_back(least + extra * k / 16);
+    }
+    caps.push_back(least + extra + 4096);
+    std::size_t decodes = 0;
+    for (const std::size_t cap : caps) {
+        const ThreadedOutcome one = capped_decode(data, cap, nullptr, nullptr);
+        const ThreadedOutcome many = capped_decode(data, cap, &pool, nullptr);
+        std::string why;
+        CHECK_MSG(same_outcome(one, many, why), "%s under a cap of %zu bytes (one thread decodes from %zu): %s",
+                  name.c_str(), cap, least, why.c_str());
+        decodes += 2;
+    }
+    return decodes;
+}
+
+// A grey image of side x side in tiles of tile x tile (the oracle's encoder): no tile reaches the
+// tile threshold, so only a plane clear of kParallelClearBytes or more may call the executor.
+Bytes small_tiles_image(std::uint32_t side, std::uint32_t tile)
+{
+    EncodeSpec e;
+    e.width = side;
+    e.height = side;
+    e.dx = {1};
+    e.dy = {1};
+    e.tile = tile;
+    e.reversible = true;
+    e.numres = 4;
+    std::vector<std::uint8_t> plane(std::size_t(side) * side);
+    for (std::uint32_t y = 0; y < side; ++y) {
+        for (std::uint32_t x = 0; x < side; ++x) {
+            plane[std::size_t(y) * side + x] = static_cast<std::uint8_t>(x * 3 + y * 5 + ((x / 11 + y / 7) & 1) * 70);
+        }
+    }
+    e.planes.push_back(std::move(plane));
+    Bytes data;
+    CHECK_MSG(oracle_encode(e, data), "the oracle's encoder refused %ux%u in %u tiles", side, side, tile);
+    return data;
 }
 
 // The images of test_large_generated, made by the oracle's encoder: large enough for the library's
@@ -2498,29 +2682,129 @@ void test_threads(const std::string& files)
     std::printf("threads: %zu large generated images, %zu threaded decodes equal to one thread's\n", large.size(),
                 large_decodes);
 
-    // the executor is used for them, and only for them
+    // the executor is used for them, and only for them: not for an image whose tiles are below the
+    // tile threshold and whose planes are below the clear threshold (the corpus, decoded into the
+    // viewer's 8-bit image and into int32 planes, and 512 x 512 grey in 4 and in 16 tiles, whose plane
+    // clears were split before), but for 1,024 x 1,024 grey in 256 tiles of 64 x 64 into int32 planes
+    // (a 4 MiB clear) and for a 1,024 x 1,024 RGB image in one tile
+    const Bytes tiles512_4 = small_tiles_image(512, 256), tiles512_16 = small_tiles_image(512, 128);
+    const Bytes tiles1024 = small_tiles_image(1024, 64);
     {
         std::string m;
         nj2k_codec_t* codec = threaded_codec(0, &pool, 8, false, m);
         CHECK(codec != nullptr);
         const std::uint64_t before = pool.batches();
-        for (const auto& path : expand_inputs(g_corpus)) {
-            const auto data = read_file(path);
-            const auto mh = data ? parse_main_header(*data) : std::nullopt;
-            if (!codec || !mh ||
-                std::uint64_t(mh->width()) * mh->height() * mh->csiz >= nj2k::detail::kParallelTileSamples) {
-                continue;
+        std::size_t below = 0;
+        auto small = [&](const Bytes& data) {
+            const auto mh = parse_main_header(data);
+            if (!codec || !mh) {
+                return;
             }
-            (void)threaded_decode(codec, *data, data->size(), NJ2K_SAMPLE_U8, Layout::BottomUpInterleaved, m, false);
+            const std::uint64_t tile = std::min<std::uint64_t>(mh->xtsiz, mh->width()) *
+                                       std::min<std::uint64_t>(mh->ytsiz, mh->height()) * mh->csiz;
+            const std::uint64_t plane = mh->width() * mh->height() * sizeof(std::int32_t);
+            if (tile >= nj2k::detail::kParallelTileSamples || plane >= nj2k::detail::kParallelClearBytes) {
+                return;
+            }
+            (void)threaded_decode(codec, data, data.size(), NJ2K_SAMPLE_U8, Layout::BottomUpInterleaved, m, false);
+            (void)threaded_decode(codec, data, data.size(), NJ2K_SAMPLE_I32, Layout::Guarded, m, false);
+            ++below;
+        };
+        for (const auto& path : expand_inputs(g_corpus)) {
+            if (const auto data = read_file(path)) {
+                small(*data);
+            }
         }
-        CHECK_MSG(pool.batches() == before, "the executor ran %llu batches for images below the threshold",
-                  static_cast<unsigned long long>(pool.batches() - before));
+        small(tiles512_4);
+        small(tiles512_16);
+        CHECK_MSG(pool.batches() == before, "the executor ran %llu batches for %zu images below the thresholds",
+                  static_cast<unsigned long long>(pool.batches() - before), below);
+        (void)threaded_decode(codec, tiles1024, tiles1024.size(), NJ2K_SAMPLE_I32, Layout::Guarded, m, false);
+        const std::uint64_t clear = pool.batches() - before;
+        CHECK_MSG(clear > 0, "the executor did not clear the plane of a 1024 x 1024 image in 64 x 64 tiles");
         (void)threaded_decode(codec, large[0].second, large[0].second.size(), NJ2K_SAMPLE_U8,
                               Layout::BottomUpInterleaved, m, false);
-        CHECK_MSG(pool.batches() > before, "the executor was not used for a 1024 x 1024 RGB image");
+        CHECK_MSG(pool.batches() > before + clear, "the executor was not used for a 1024 x 1024 RGB image");
         if (codec) {
             nj2k_destroy_codec(codec);
         }
+        std::printf("threads: %zu images below the thresholds, no batch; a 4 MiB plane clear, %llu batches\n", below,
+                    static_cast<unsigned long long>(clear));
+    }
+    // planes that share bytes (every component into one plane's bytes, and rows that overlap): such a
+    // decode keeps to one thread (no batch) and writes what one thread writes
+    {
+        const Bytes& data = large[0].second;  // 1024 x 1024 RGB, one tile
+        auto shared = [&](nj2k::test::ThreadPool* p, std::int64_t row, std::vector<std::uint8_t>& buf) {
+            std::string m;
+            nj2k_codec_t* codec = threaded_codec(0, p, 8, false, m);
+            nj2k_image_t image;
+            bool ok = codec && nj2k_read_header_memory(codec, data.data(), data.size(), &image);
+            const std::uint32_t w = ok ? image.comps[0].w : 0, h = ok ? image.comps[0].h : 0;
+            buf.assign(std::size_t(w) * 4 * h + 64, 0);
+            std::vector<nj2k_plane_t> planes;
+            for (std::uint32_t c = 0; ok && c < image.numcomps; ++c) {
+                planes.push_back(nj2k_plane_t{buf.data(), row, 4, c});
+            }
+            const nj2k_output_t out{sizeof(nj2k_output_t), NJ2K_SAMPLE_I32, std::uint32_t(planes.size()), planes.data()};
+            ok = ok && nj2k_decode_memory(codec, data.data(), data.size(), &out);
+            if (codec) {
+                nj2k_destroy_codec(codec);
+            }
+            return ok;
+        };
+        for (const std::int64_t row : {std::int64_t(1024 * 4), std::int64_t(1024 * 2)}) {
+            std::vector<std::uint8_t> ref, got;
+            CHECK(shared(nullptr, row, ref));
+            const std::uint64_t before = pool.batches();
+            CHECK(shared(&pool, row, got));
+            CHECK_MSG(pool.batches() == before, "the executor ran for planes that share bytes (row stride %lld)",
+                      static_cast<long long>(row));
+            CHECK_MSG(ref == got, "planes that share bytes (row stride %lld): not one thread's bytes",
+                      static_cast<long long>(row));
+        }
+    }
+
+    // the plane clears' bands and the small tiles through the executor: one thread's outcome
+    {
+        const std::size_t n = threads_file(pool, "1024x1024 in 64 x 64 tiles", tiles1024, false, 1, true) +
+                              threads_file(pool, "512x512 in 128 x 128 tiles", tiles512_16, true, 1, false);
+        std::printf("threads: small-tile images, %zu threaded decodes equal to one thread's\n", n);
+    }
+
+    // the stream API (nj2k_decode into the image's planes)
+    {
+        std::size_t n = 0, corpus_n = 0;
+        for (const auto& path : expand_inputs(g_corpus)) {
+            const auto data = read_file(path);
+            if (data && data->size() <= 65536) {
+                n += threads_stream_file(pool, base_name(path), *data, true, 1);
+                ++corpus_n;
+            }
+        }
+        n += threads_stream_file(pool, large[0].first, large[0].second, false, 1);
+        n += threads_stream_file(pool, large[4].first, large[4].second, false, 0);
+        n += threads_stream_file(pool, "1024x1024 in 64 x 64 tiles", tiles1024, false, 0);
+        std::printf("threads: the stream API, %zu corpus files and 3 large images, %zu threaded decodes equal to "
+                    "one thread's\n",
+                    corpus_n, n);
+    }
+
+    // under a capped allocator, one thread's outcome at every cap
+    {
+        std::size_t n = 0, files_n = 0;
+        for (const char* f : {"sl_64_rgb_97.j2k", "sl_128_rgba_97.j2k", "size_17x37_rgb_97.j2k", "layers_4_53.j2k",
+                              "tile_100x80_t64_97.j2k", "packed_ppt_tiles.j2k", "mark_tlm_tiles.j2k", "sub_420.j2k"}) {
+            const auto data = read_file(g_corpus + "/" + f);
+            CHECK_MSG(data.has_value(), "cannot read %s", f);
+            if (data) {
+                n += threads_capped(pool, f, *data);
+                ++files_n;
+            }
+        }
+        n += threads_capped(pool, "512x512 in 128 x 128 tiles", tiles512_16);
+        std::printf("threads: %zu files under capped allocators, %zu decodes, one thread's outcome at every cap\n",
+                    files_n + 1, n);
     }
 
     // again and again

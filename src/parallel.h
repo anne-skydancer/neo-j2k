@@ -7,7 +7,9 @@
 // when every part has returned. A part's result depends only on its own inputs, never on which
 // thread ran it, when, or what the other parts did, and nothing is summed across parts, so a decode
 // gives the same samples, status and messages for any executor and any concurrency. Small tiles
-// (below the codec's threshold) and a codec without an executor never come here.
+// (below the codec's threshold) and a codec without an executor never come here; nor does a decode
+// into caller's planes that share bytes (planes_apart, decode.cpp), whose writes only one thread
+// orders as before.
 #pragma once
 
 #include <cstddef>
@@ -24,11 +26,17 @@ inline constexpr std::uint32_t kMaxJobs = 64;
 // microseconds an executor needs to start and join them (performance.md section 6).
 inline constexpr std::uint64_t kParallelTileSamples = std::uint64_t(1) << 18;
 // Inside such a tile, a wavelet level is split from this area (samples of the level) on; smaller
-// levels run on the calling thread, as before.
+// levels run on the calling thread, as before. An estimate (not probed on its own): it applies only
+// inside a tile already split.
 inline constexpr std::uint64_t kParallelLevelArea = std::uint64_t(1) << 18;
 // And an output region (the colour transform, the DC shift, the copy) from this many samples a
-// component.
+// component. An estimate as well, and inside a tile already split.
 inline constexpr std::uint64_t kParallelOutputSamples = std::uint64_t(1) << 16;
+// An image plane cleared because the first tile written into it does not cover it (a multi-tile
+// image) is cleared in bands from this many bytes on, whatever its tiles' sizes: below it the bands
+// cost more than they save (doc/bench.md, stage 5: a fresh 1 MiB plane cleared in 8 bands took as long
+// as on one thread, a 4 MiB one half as long).
+inline constexpr std::uint64_t kParallelClearBytes = std::uint64_t(1) << 22;
 
 // A stage's view of the executor: how many parts to cut it into, and the run itself.
 struct Jobs {
@@ -36,8 +44,10 @@ struct Jobs {
     std::uint32_t width = 1;                             // parts a stage is cut into, 2 to kMaxJobs
     std::uint64_t level_area = kParallelLevelArea;       // wavelet levels split from this area on
     std::uint64_t output_samples = kParallelOutputSamples;  // output regions split from this size on
+    std::uint64_t clear_bytes = kParallelClearBytes;        // plane clears split from this size on
 
-    // f(i) for every i < count, through the executor (one part runs on the calling thread)
+    // f(i) for every i < count, through the executor; when it returns, every part's writes are seen
+    // by the caller (the executor's contract, neoj2k.h)
     template <class F>
     void run(std::uint32_t count, F& f) const noexcept
     {
@@ -63,8 +73,9 @@ inline std::uint32_t part_begin(std::uint32_t total, std::uint32_t n, std::uint3
 }
 
 // For the tests: the sizes a codec splits from (tile samples, wavelet level area, output samples a
-// component), so that the corpus's small files take every threaded path; false for a null codec.
+// component, plane clear bytes), so that the corpus's small files take every threaded path; false
+// for a null codec. Not exported from the shared library (only nj2k_* names are).
 bool set_parallel_thresholds(nj2k_codec_t* codec, std::uint64_t tile_samples, std::uint64_t level_area,
-                             std::uint64_t output_samples) noexcept;
+                             std::uint64_t output_samples, std::uint64_t clear_bytes) noexcept;
 
 }  // namespace nj2k::detail

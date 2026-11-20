@@ -69,13 +69,13 @@ struct Scratch {
 };
 
 // The Tier-1 scratches of a threaded tile's parts (stage 5), kept between decodes as the decoder's
-// own T1 is.
+// own T1 is. Each is 256 bytes (sizeof(T1)), in an array aligned to 64 bytes, so two parts' scratches
+// never share a cache line.
 struct T1Parts {
     T1* t1 = nullptr;
     std::uint32_t count = 0;
-    // count scratches, each ready and with room for code-blocks of n bytes; false (and those there
-    // were kept) when the allocator refuses
-    bool ensure(const Allocator& a, std::uint32_t parts, std::size_t n) noexcept;
+    // at least parts scratches, each ready (its fixed buffers); false when the allocator refuses
+    bool ensure(const Allocator& a, std::uint32_t parts) noexcept;
     void release(const Allocator& a) noexcept;
     std::size_t bytes() const noexcept;
 };
@@ -143,6 +143,7 @@ struct Decoder {
     std::uint64_t parallel_tile = kParallelTileSamples;
     std::uint64_t parallel_level = kParallelLevelArea;
     std::uint64_t parallel_output = kParallelOutputSamples;
+    std::uint64_t parallel_clear = kParallelClearBytes;
 
     static Decoder* from(nj2k_codec_t* codec) noexcept
     {

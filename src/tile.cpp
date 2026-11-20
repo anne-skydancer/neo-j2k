@@ -545,53 +545,20 @@ NJ2K_NOINLINE bool decode_blocks(Tile& t, T1& t1, const Messages& msg, std::uint
 
 #undef NJ2K_NOINLINE
 
-// Tier-1 through the executor. The code-blocks are walked in OpenJPEG's order on this thread first,
-// up to the first one OpenJPEG refuses (bit-planes plus ROI shift at or above 31, the only refusal of
-// opj_t1_decode_cblk, decided by the packet headers alone), each with its estimated cost (about
-// 0.1 us a coded byte, and its samples); the walk is cut into runs of about equal cost, and each part
-// decodes its run with its own scratch, every block into its own place in the buffers. The blocks
-// before a refused one are decoded, as one thread decodes them before it stops, and the refusal's
-// warning comes after them, the only message Tier-1 gives: the same samples, status and messages.
+// Tier-1 through the executor (plan_t1 cut the blocks into runs): each part decodes its run with its
+// own scratch, every block into its own place in the buffers. The blocks before a refused one are
+// decoded, as one thread decodes them before it stops, and the refusal's warning comes after them,
+// the only message Tier-1 gives: the same samples, status and messages.
 nj2k_status_t t1_jobs(Tile& t, const TileJobs& tj, const Messages& msg) noexcept
 {
-    auto* cost = static_cast<std::uint64_t*>(tj.blocks);
-    std::uint32_t n = 0;
-    std::uint64_t total = 0;
     const Messages quiet;
-    T1Block refused{};
-    const bool all = for_each_cblk(t, [&](const T1Block& b, std::int32_t*, std::uint32_t, bool, float) noexcept {
-        if (!t1_empty_cblk_ok(b, quiet)) {
-            refused = b;
-            return false;
-        }
-        std::uint64_t bytes = 0;
-        for (std::uint32_t i = 0; i < b.nchunks; ++i) {
-            bytes += b.chunks[i].len;
-        }
-        cost[n] = bytes * 100 + std::uint64_t(b.w) * b.h;
-        total += cost[n++];
-        return true;
-    });
-    const std::uint32_t parts = n < tj.t1_count ? n : tj.t1_count;
-    std::uint32_t bounds[2 * kMaxJobs + 1];
-    std::uint64_t done = 0;
-    std::uint32_t k = 0;
-    for (std::uint32_t p = 0; p < parts; ++p) {
-        // total * p / parts without overflow
-        const std::uint64_t target = total / parts * p + total % parts * p / parts;
-        while (k < n && done < target) {
-            done += cost[k++];
-        }
-        bounds[p] = k;
-    }
-    bounds[parts] = n;
     auto part = [&](std::uint32_t p) noexcept {
-        // none of the run is refused (checked above), so nothing is said here
-        (void)decode_blocks(t, tj.t1[p], quiet, bounds[p], bounds[p + 1]);
+        // none of the run is refused (plan_t1 stopped before the refused block), so nothing is said here
+        (void)decode_blocks(t, tj.t1[p], quiet, tj.bounds[p], tj.bounds[p + 1]);
     };
-    tj.jobs->run(parts, part);
-    if (!all) {
-        (void)t1_empty_cblk_ok(refused, msg);  // OpenJPEG's warning
+    tj.jobs->run(tj.runs, part);
+    if (tj.refused) {
+        (void)t1_empty_cblk_ok(tj.refused_block, msg);  // OpenJPEG's warning
         return NJ2K_E_DATA;
     }
     return NJ2K_OK;
@@ -619,6 +586,57 @@ std::size_t Tile::cblk_costs_bytes() const noexcept
         }
     }
     return n * sizeof(std::uint64_t);
+}
+
+// The code-blocks are walked in OpenJPEG's order up to the first one OpenJPEG refuses (bit-planes plus
+// ROI shift at or above 31, the only refusal of opj_t1_decode_cblk, decided by the packet headers
+// alone), each with its estimated cost (about 0.1 us a coded byte, and its samples), and the walk is
+// cut into runs of about equal cost: contiguous runs, so a part's re-walk to its first block stays in
+// order; more runs than parts, so a slow run is not the tail.
+void Tile::plan_t1(TileJobs& tj, std::uint32_t max_runs, void* cost_room) noexcept
+{
+    // a block's entry: its coded bytes above its samples (at most T1::kMaxData, below 2^13)
+    static_assert(T1::kMaxData < (std::size_t(1) << 13), "a code-block's samples fit 13 bits");
+    auto* entry = static_cast<std::uint64_t*>(cost_room);
+    auto cost_of = [](std::uint64_t e) noexcept { return (e >> 13) * 100 + (e & 0x1FFF); };
+    std::uint32_t n = 0;
+    std::uint64_t total = 0;
+    const Messages quiet;
+    tj.refused = false;
+    (void)for_each_cblk(*this, [&](const T1Block& b, std::int32_t*, std::uint32_t, bool, float) noexcept {
+        if (!t1_empty_cblk_ok(b, quiet)) {
+            tj.refused = true;
+            tj.refused_block = b;
+            return false;
+        }
+        std::uint64_t bytes = 0;
+        for (std::uint32_t i = 0; i < b.nchunks; ++i) {
+            bytes += b.chunks[i].len;
+        }
+        entry[n] = bytes << 13 | std::uint64_t(b.w) * b.h;
+        total += cost_of(entry[n++]);
+        return true;
+    });
+    const std::uint32_t runs = n < max_runs ? n : max_runs;
+    std::uint64_t done = 0;
+    std::uint32_t k = 0;
+    for (std::uint32_t p = 0; p < runs; ++p) {
+        // total * p / runs without overflow
+        const std::uint64_t target = total / runs * p + total % runs * p / runs;
+        while (k < n && done < target) {
+            done += cost_of(entry[k++]);
+        }
+        tj.bounds[p] = k;
+    }
+    tj.bounds[runs] = n;
+    for (std::uint32_t p = 0; p < runs; ++p) {
+        std::uint64_t most = 0;
+        for (std::uint32_t i = tj.bounds[p]; i < tj.bounds[p + 1]; ++i) {
+            most = (entry[i] >> 13) > most ? (entry[i] >> 13) : most;
+        }
+        tj.run_bytes[p] = static_cast<std::size_t>(most);
+    }
+    tj.runs = runs;
 }
 
 nj2k_status_t Tile::decode_samples(T1& t1, void* dwt_scratch, const std::uint32_t* resno_decoded,

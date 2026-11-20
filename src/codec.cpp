@@ -383,10 +383,13 @@ bool Decoder::jobs(Jobs& out) const noexcept
     out.width = executor.concurrency < kMaxJobs ? executor.concurrency : kMaxJobs;
     out.level_area = parallel_level;
     out.output_samples = parallel_output;
+    out.clear_bytes = parallel_clear;
     return true;
 }
 
-bool T1Parts::ensure(const Allocator& a, std::uint32_t parts, std::size_t n) noexcept
+static_assert(sizeof(T1) % 64 == 0, "a part's Tier-1 scratch shares a cache line with the next part's");
+
+bool T1Parts::ensure(const Allocator& a, std::uint32_t parts) noexcept
 {
     if (parts > count) {
         auto* more = static_cast<T1*>(a.allocate(std::size_t(parts) * sizeof(T1), alignof(T1) < 64 ? 64 : alignof(T1)));
@@ -396,10 +399,15 @@ bool T1Parts::ensure(const Allocator& a, std::uint32_t parts, std::size_t n) noe
         for (std::uint32_t i = 0; i < parts; ++i) {
             ::new (static_cast<void*>(more + i)) T1();
         }
-        // the scratches there were keep their buffers
+        // the scratches there were hand their buffers over, the only state worth keeping (the MQ
+        // decoder's state, whose context pointer points into its own scratch, is set afresh by every
+        // code-block's decode)
         if (t1) {
             for (std::uint32_t i = 0; i < count; ++i) {
-                more[i] = t1[i];
+                more[i].data = t1[i].data;
+                more[i].flags = t1[i].flags;
+                more[i].cblkdata = t1[i].cblkdata;
+                more[i].cblkdata_size = t1[i].cblkdata_size;
             }
             a.release(t1, std::size_t(count) * sizeof(T1));
         }
@@ -407,7 +415,7 @@ bool T1Parts::ensure(const Allocator& a, std::uint32_t parts, std::size_t n) noe
         count = parts;
     }
     for (std::uint32_t i = 0; i < parts; ++i) {
-        if (!t1[i].ready(a) || !t1[i].reserve(a, n)) {
+        if (!t1[i].ready(a)) {
             return false;
         }
     }
@@ -437,7 +445,7 @@ std::size_t T1Parts::bytes() const noexcept
 }
 
 bool set_parallel_thresholds(nj2k_codec_t* codec, std::uint64_t tile_samples, std::uint64_t level_area,
-                             std::uint64_t output_samples) noexcept
+                             std::uint64_t output_samples, std::uint64_t clear_bytes) noexcept
 {
     Decoder* d = Decoder::from(codec);
     if (!d) {
@@ -446,6 +454,7 @@ bool set_parallel_thresholds(nj2k_codec_t* codec, std::uint64_t tile_samples, st
     d->parallel_tile = tile_samples;
     d->parallel_level = level_area;
     d->parallel_output = output_samples;
+    d->parallel_clear = clear_bytes;
     return true;
 }
 

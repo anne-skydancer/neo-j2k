@@ -6,10 +6,11 @@
 # build against a plain driver, nj2k_fuzz_<target>_replay, and CTest replays the seeds (the corpus,
 # the option-prefixed decode seeds and the JP2 header seeds of make_inputs.py, the round-trip seeds)
 # and fuzz/regressions through them on every compiler and platform. The guards' own test checks
-# the bombs of fuzz/bombs against the guards the targets give the oracle. Stage 5 adds
-# nj2k_fuzz_decode_threads_replay: the decode target built with NJ2K_FUZZ_THREADS, which decodes each
-# input again through a pool of threads, every stage split, and compares (the ThreadSanitizer job
-# replays the seeds and regressions through it).
+# the bombs of fuzz/bombs against the guards the targets give the oracle. Stage 5: the decode
+# target decodes each input again with every stage split, through an executor that runs the parts
+# one after the other (so the sanitizers see the threaded path), and compares; and
+# nj2k_fuzz_decode_threads_replay, the decode target built with NJ2K_FUZZ_THREADS, does the same
+# through a pool of threads (the ThreadSanitizer job replays the seeds and regressions through it).
 set(NJ2K_FUZZ_TARGETS header decode roundtrip)
 
 if(NJ2K_BUILD_FUZZERS)

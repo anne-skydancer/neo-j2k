@@ -2139,15 +2139,18 @@ NJ2K_API NJ2K_BOOL NJ2K_CALLCONV nj2k_decoder_set_retained_bytes(nj2k_codec_t *p
         NJ2K_SIZE_T bytes);
 
 /*
- * Threads in one image (neo-j2k's own; nj2k_codec_set_threads() stays false).
+ * Threads in one image (neo-j2k's own; nj2k_codec_set_threads() stays false: a host lends the codec
+ * its executor with nj2k_decoder_set_executor() instead).
  *
  * The library starts no thread of its own and keeps no pool: a host that wants a large image
  * decoded on several cores lends the codec its executor, so every decoder of the process shares the
  * host's one scheduler and nothing oversubscribes the cores, however many decoders run at once.
- * Without an executor, and for tiles below the size the codec splits from (2^18 decoded samples over
- * their components, a 512 x 512 grey or a 296 x 296 RGB tile: small images and textures), everything
- * runs on the calling thread, as before. A codec decodes the same samples, and gives the same status
- * and the same messages in the same order, whatever the executor and its concurrency.
+ * Without an executor everything runs on the calling thread, as before. With one, the codec calls it
+ * only for a tile of 2^18 decoded samples or more over its components (a 512 x 512 grey or a
+ * 296 x 296 RGB tile), and to clear an image plane of 4 MiB or more that the first tile written into
+ * it does not cover (a multi-tile image): small images and textures stay on the calling thread. A
+ * codec decodes the same samples, and gives the same status and the same messages in the same order,
+ * whatever the executor and its concurrency.
  */
 
 /** One job of a parallel_for: index runs from 0 to count - 1. */
@@ -2156,10 +2159,13 @@ typedef void (*nj2k_job_fn)(void *job_ctx, NJ2K_UINT32 index);
 /**
  * A host's executor. parallel_for(user, count, job, job_ctx) runs job(job_ctx, i) once for every
  * i < count, on any threads in any order (the calling thread included), and returns when every one
- * has returned. Jobs never wait for one another and never call into the codec or the executor, so
- * an executor whose waiting caller runs jobs itself never deadlocks, even with every worker busy.
- * concurrency is how many jobs the host would run at once (the calling thread included): the codec
- * cuts each stage into about that many parts (up to 64). Set struct_size to sizeof(nj2k_executor_t).
+ * has returned. Memory order: what the caller wrote before the call is seen by every job, and what
+ * every job wrote is seen by the caller once the call returns (each job's run happens before the
+ * return, as a mutex or a release/acquire pair gives it). Jobs never wait for one another and never
+ * call into the codec or the executor, so an executor whose waiting caller runs jobs itself never
+ * deadlocks, even with every worker busy. concurrency is how many jobs the host would run at once
+ * (the calling thread included): the codec cuts each stage into about that many parts (up to 64).
+ * Set struct_size to sizeof(nj2k_executor_t).
  */
 typedef struct nj2k_executor {
     NJ2K_SIZE_T struct_size;
@@ -2172,7 +2178,10 @@ typedef struct nj2k_executor {
  * Lends the codec an executor (copied; its user pointer must stay valid while the codec decodes),
  * or takes it back with NULL. A concurrency below 2 runs everything on the calling thread. The codec
  * calls parallel_for only from the thread that decodes, inside nj2k_decode(), nj2k_decode_memory()
- * and the calls that decode through them. Applies from the next decode.
+ * and the calls that decode through them. Applies from the next decode. The caller's planes of
+ * nj2k_decode_memory() are then written from several threads: a decode into planes that share bytes
+ * (a row within another row's reach, or two planes over the same bytes) runs on the calling thread,
+ * whose fixed order decides what such bytes hold, as without an executor.
  */
 NJ2K_API NJ2K_BOOL NJ2K_CALLCONV nj2k_decoder_set_executor(nj2k_codec_t *p_codec,
         const nj2k_executor_t *executor);

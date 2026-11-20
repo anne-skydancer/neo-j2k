@@ -61,7 +61,7 @@ public:
         static_cast<ThreadPool*>(user)->parallel_for(count, job, ctx);
     }
 
-    // calls of parallel_for and jobs run so far (the tests check that a decode used the pool)
+    // calls of parallel_for so far (the tests check whether a decode used the pool)
     std::uint64_t batches() const noexcept { return batches_.load(std::memory_order_relaxed); }
 
 private:
