@@ -38,6 +38,13 @@ nj2k_program_exceptions(neoj2k_openjp2)
 # No link-time code generation: it could mix the baseline adapter with the AVX2 core in one function.
 nj2k_no_ipo(neoj2k_openjp2)
 
+# The adapter takes and gives neo-j2k's types where a viewer's header says OpenJPEG's: the same layout under
+# other names, which clang's -fsanitize=function reports at every call through the viewer's pointer type (the
+# oracle is built the same way, oracle/CMakeLists.txt). The check skips a callee built without it.
+if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND "undefined" IN_LIST NJ2K_SANITIZE)
+  target_compile_options(neoj2k_openjp2 PRIVATE -fno-sanitize=function)
+endif()
+
 if(NOT WIN32)
   target_link_options(neoj2k_openjp2 PRIVATE "LINKER:--version-script=${CMAKE_CURRENT_SOURCE_DIR}/openjp2.map")
   if(NOT NJ2K_SANITIZE)

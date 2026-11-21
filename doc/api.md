@@ -319,7 +319,8 @@ core's; the core is the same code as `neoj2k.dll` (the module links the static l
     again with every neo-j2k release.
   - `opj_has_thread_support()` is true, and `opj_codec_set_threads(codec, n)` starts the threads, which the core
     never does: the module is the host that lends the core an executor (`nj2k_decoder_set_executor`). A decoder
-    gets a pool of its own, replaced by the next call and joined by `opj_destroy_codec`, as OpenJPEG's is. The
+    gets a pool of its own, replaced by the next call and joined by `opj_destroy_codec`, as OpenJPEG's is (its threads
+    are named `openjp2-worker`; an encoder gets none). The
     calling thread works while it waits, so `n` threads are `n - 1` workers and the caller (0 and 1 run on the
     caller), at most 64 (the most a decode is cut into); a negative count and no codec are refused; an encoder
     takes the call and answers true, as OpenJPEG's does, and runs on its calling thread (stage 6a). The samples
@@ -340,8 +341,8 @@ core's; the core is the same code as `neoj2k.dll` (the module links the static l
   One module-wide writable global, the list of codecs that have a pool, under a lock.
 - **Tests.** `openjp2_whole`, `openjp2_whole_threads` (4 threads), `openjp2_layers`, `openjp2_header` and, with the
   test data, `openjp2_conformance_differential` run the differential harness against the library loaded by path
-  (`lib:`), the way a viewer loads it; `openjp2_unit` checks the version, the thread lifecycle (the process's
-  thread count), decodes at 0 to 64 threads, decoders at once and the upload encode (`doc/testing.md`).
+  (`lib:`), the way a viewer loads it; `openjp2_unit` checks the version, the thread lifecycle (the pool's
+  threads, named `openjp2-worker`, counted), decodes at 0 to 64 threads, decoders at once and the upload encode (`doc/testing.md`).
 - **Not built yet:** the pre-built binary and the installer that puts it where the viewer's OpenJPEG is
   (owner, 2026-11-21).
 

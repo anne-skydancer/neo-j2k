@@ -6,8 +6,8 @@
 // forwarded calls (the differential tests, `openjp2_*` in ctest, check the calls themselves):
 //   - opj_version names OpenJPEG's API level and neo-j2k's release; the thread support is there;
 //   - opj_codec_set_threads starts the threads it was asked for, replaces them when asked again, caps them
-//     at 64, refuses a negative count and no codec, answers true for an encoder (which uses none), and
-//     opj_destroy_codec joins them (the process's thread count says so);
+//     at 64, refuses a negative count and no codec, answers true for an encoder (which uses none and starts
+//     none), and opj_destroy_codec joins them (the threads named "openjp2-worker" say so);
 //   - a decode on any number of threads gives the oracle's samples and viewer image, at every reduce
 //     level, in the plain and the viewer's mode, with several decoders running at once (the
 //     ThreadSanitizer job runs it);
@@ -41,6 +41,7 @@
 #include <dlfcn.h>
 
 #include <filesystem>
+#include <fstream>
 #endif
 
 using namespace nj2k::test;
@@ -58,38 +59,55 @@ int g_failures = 0;
         }                                                             \
     } while (0)
 
-// the threads of this process
-unsigned thread_count()
+// the pool's threads: those named "openjp2-worker" (the module names its workers; counting every thread of
+// the process would count the system's own too, such as a Windows loader's workers)
+unsigned pool_threads()
 {
-#if defined(_WIN32)
+    constexpr const char* kName = "openjp2-worker";
     unsigned n = 0;
+#if defined(_WIN32)
+    using GetDescription = HRESULT(WINAPI*)(HANDLE, PWSTR*);
+    HMODULE kernel = GetModuleHandleW(L"kernel32.dll");
+    auto get = kernel ? reinterpret_cast<GetDescription>(reinterpret_cast<void*>(GetProcAddress(kernel, "GetThreadDescription")))
+                      : nullptr;
     HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
-    if (snap == INVALID_HANDLE_VALUE) {
+    if (!get || snap == INVALID_HANDLE_VALUE) {
         return 0;
     }
     THREADENTRY32 te;
     te.dwSize = sizeof te;
     const DWORD pid = GetCurrentProcessId();
     for (BOOL ok = Thread32First(snap, &te); ok; ok = Thread32Next(snap, &te)) {
-        n += te.th32OwnerProcessID == pid;
+        if (te.th32OwnerProcessID != pid) {
+            continue;
+        }
+        if (HANDLE h = OpenThread(THREAD_QUERY_LIMITED_INFORMATION, FALSE, te.th32ThreadID)) {
+            PWSTR name = nullptr;
+            if (SUCCEEDED(get(h, &name)) && name) {
+                n += std::wstring(name) == L"openjp2-worker";
+                LocalFree(name);
+            }
+            CloseHandle(h);
+        }
     }
     CloseHandle(snap);
-    return n;
 #else
-    unsigned n = 0;
     for (const auto& e : std::filesystem::directory_iterator("/proc/self/task")) {
-        (void)e;
-        ++n;
+        std::ifstream comm(e.path() / "comm");
+        std::string name;
+        std::getline(comm, name);
+        n += name == kName;
     }
-    return n;
 #endif
+    (void)kName;
+    return n;
 }
 
 // waits for the count to settle at expected (a joined thread may take a moment to leave the system's list)
 bool threads_become(unsigned expected)
 {
     for (int i = 0; i < 400; ++i) {
-        if (thread_count() == expected) {
+        if (pool_threads() == expected) {
             return true;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
@@ -148,13 +166,13 @@ void test_identity(const Library& lib)
 
 void test_threads(const Library& lib)
 {
-    const unsigned base = thread_count();
+    const unsigned base = pool_threads();
     opj_codec_t* c = lib.create_decompress(OPJ_CODEC_J2K);
     CHECK_MSG(c != nullptr, "no decoder");
     if (!c) {
         return;
     }
-    CHECK_MSG(thread_count() == base, "a decoder started threads");
+    CHECK_MSG(pool_threads() == base, "a decoder started threads");
     struct Case {
         int asked;
         unsigned extra;  // threads beyond the caller's: asked - 1, none below 2, at most 63
@@ -164,21 +182,21 @@ void test_threads(const Library& lib)
                          Case{0, 0}}) {
         CHECK_MSG(lib.codec_set_threads(c, k.asked) == OPJ_TRUE, "opj_codec_set_threads(%d) refused", k.asked);
         CHECK_MSG(threads_become(base + k.extra), "opj_codec_set_threads(%d): %u threads, %u expected", k.asked,
-                  thread_count(), base + k.extra);
+                  pool_threads(), base + k.extra);
     }
     CHECK_MSG(lib.codec_set_threads(c, 5) == OPJ_TRUE, "set_threads(5) refused");
     CHECK_MSG(lib.codec_set_threads(c, -1) == OPJ_FALSE, "a negative count was accepted");
     CHECK_MSG(threads_become(base + 4), "a refused call changed the codec's threads");
     CHECK_MSG(lib.codec_set_threads(nullptr, 4) == OPJ_FALSE, "no codec was accepted");
     lib.destroy_codec(c);
-    CHECK_MSG(threads_become(base), "opj_destroy_codec left %u threads, %u expected", thread_count(), base);
+    CHECK_MSG(threads_become(base), "opj_destroy_codec left %u threads, %u expected", pool_threads(), base);
 
     // an encoder uses none, and OpenJPEG's answer for it is yes
     opj_codec_t* e = lib.create_compress(OPJ_CODEC_J2K);
     CHECK_MSG(e != nullptr, "no encoder");
     if (e) {
         CHECK_MSG(lib.codec_set_threads(e, 4) == OPJ_TRUE, "an encoder refused threads");
-        CHECK_MSG(thread_count() == base, "an encoder started threads");
+        CHECK_MSG(pool_threads() == base, "an encoder started threads");
         lib.destroy_codec(e);
     }
     // many codecs, each with its own pool, destroyed in another order than they were made
@@ -187,13 +205,13 @@ void test_threads(const Library& lib)
         m = lib.create_decompress(OPJ_CODEC_J2K);
         CHECK_MSG(m && lib.codec_set_threads(m, 3) == OPJ_TRUE, "a codec of five refused its threads");
     }
-    CHECK_MSG(threads_become(base + 10), "five codecs of 3 threads: %u threads", thread_count());
+    CHECK_MSG(threads_become(base + 10), "five codecs of 3 threads: %u threads", pool_threads());
     for (int i : {2, 0, 4, 1, 3}) {
         lib.destroy_codec(many[i]);
     }
-    CHECK_MSG(threads_become(base), "five codecs destroyed, %u threads, %u expected", thread_count(), base);
+    CHECK_MSG(threads_become(base), "five codecs destroyed, %u threads, %u expected", pool_threads(), base);
     lib.destroy_codec(nullptr);  // as OpenJPEG's: nothing
-    std::printf("threads: started, replaced, capped and joined (process threads: %u)\n", base);
+    std::printf("threads: started, replaced, capped and joined (pool threads at the start: %u)\n", base);
 }
 
 const char* const kLarge[] = {"large_1024_rgb_97.j2k", "large_4096_g_97.j2k", "large_2048x64_rgba_53.j2k",

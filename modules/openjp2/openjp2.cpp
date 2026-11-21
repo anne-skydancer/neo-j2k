@@ -30,8 +30,18 @@
 #include <vector>
 
 #if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
 #define OPJ_EXPORT extern "C" __declspec(dllexport)
 #else
+#if defined(__linux__)
+#include <pthread.h>
+#endif
 #define OPJ_EXPORT extern "C" __attribute__((visibility("default")))
 #endif
 
@@ -42,6 +52,23 @@
 #include "opj_forward.inc"
 
 namespace {
+
+// The name the pool's threads carry (a debugger lists them, and the tests count them): the thread
+// description on Windows 10 and later, looked up at run time so that older Windows still load the library,
+// and the thread name on Linux (at most 15 characters).
+void name_this_thread() noexcept
+{
+#if defined(_WIN32)
+    using SetDescription = HRESULT(WINAPI*)(HANDLE, PCWSTR);
+    if (HMODULE kernel = GetModuleHandleW(L"kernel32.dll")) {
+        if (auto set = reinterpret_cast<SetDescription>(reinterpret_cast<void*>(GetProcAddress(kernel, "SetThreadDescription")))) {
+            set(GetCurrentThread(), L"openjp2-worker");
+        }
+    }
+#elif defined(__linux__)
+    pthread_setname_np(pthread_self(), "openjp2-worker");
+#endif
+}
 
 // A decode is cut into at most 64 parts (doc/api.md, threads in one image), so more threads would idle.
 constexpr int kMaxThreads = 64;
@@ -139,6 +166,7 @@ private:
 
     void work()
     {
+        name_this_thread();
         std::unique_lock<std::mutex> lock(mutex_);
         for (;;) {
             Batch* b = nullptr;
@@ -247,17 +275,19 @@ OPJ_EXPORT nj2k_codec_t* opj_create_compress(NJ2K_CODEC_FORMAT format)
 //    num_threads plus a waiting caller; 0 and 1 run on the calling thread;
 //  - at most 64 threads (the most a decode is cut into);
 //  - only decoding uses them. The encoder (stage 6a) runs on its calling thread whatever is asked, and the
-//    answer for it is still true, as OpenJPEG's.
+//    answer for it is still true, as OpenJPEG's; no thread is started for it.
 OPJ_EXPORT NJ2K_BOOL opj_codec_set_threads(nj2k_codec_t* p_codec, int num_threads)
 {
     if (!p_codec || num_threads < 0) {
         return NJ2K_FALSE;
     }
-    // a codec's earlier pool goes first: the codec stops calling it, then it is joined
-    if (Pool* old = take(p_codec)) {
-        nj2k_decoder_set_executor(p_codec, nullptr);
-        delete old;
+    // the codec stops calling its earlier pool (taking an executor back is refused only by a codec that is
+    // not a decoder: an encoder, which has none and takes none), and then the pool is joined
+    Pool* old = take(p_codec);
+    if (!nj2k_decoder_set_executor(p_codec, nullptr)) {
+        return NJ2K_TRUE;
     }
+    delete old;
     const int total = std::min(num_threads, kMaxThreads);
     if (total < 2) {
         return NJ2K_TRUE;
@@ -267,12 +297,7 @@ OPJ_EXPORT NJ2K_BOOL opj_codec_set_threads(nj2k_codec_t* p_codec, int num_thread
         return NJ2K_FALSE;
     }
     const nj2k_executor_t executor = pool->executor();
-    if (!nj2k_decoder_set_executor(p_codec, &executor)) {
-        // an executor with its fields set is refused only by a codec that is not a decoder: an encoder
-        delete pool;
-        return NJ2K_TRUE;
-    }
-    if (!remember(p_codec, pool)) {
+    if (!nj2k_decoder_set_executor(p_codec, &executor) || !remember(p_codec, pool)) {
         nj2k_decoder_set_executor(p_codec, nullptr);
         delete pool;
         return NJ2K_FALSE;
