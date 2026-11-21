@@ -228,8 +228,16 @@ jobs:
     env:
       CC: gcc-14
       CXX: g++-14
+      # link with the GCC the oracle is built with: its driver finds its own libstdc++ (the
+      # container's cc is another GCC, whose search path does not hold GCC 14's)
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER: gcc-14
       # the oracle crate's build.rs builds the C++ itself here (no NJ2K_ORACLE_DIR)
       NJ2K_ORACLE_PRESET: linux-gcc
+      # the container runs as root, whose home is /root, while the runner sets HOME to
+      # /github/home: rustup reports that mismatch, so HOME is root's and rustup has its own homes
+      HOME: /root
+      RUSTUP_HOME: /opt/rustup
+      CARGO_HOME: /opt/cargo
     steps:
       - name: Toolchain
         run: |
@@ -244,8 +252,8 @@ jobs:
             if [ "$attempt" = 2 ]; then echo "::error::apt failed twice"; exit 1; fi
             echo "apt failed (attempt $attempt of 2); retrying in 30 s"; sleep 30
           done
-          curl --proto '=https' --tlsv1.2 -fsSL --retry 5 https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
-          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          curl --proto '=https' --tlsv1.2 -fsSL --retry 5 https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none --no-modify-path
+          echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
           gcc-14 --version | head -n 1
           cmake --version | head -n 1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
