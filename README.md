@@ -19,8 +19,8 @@ before anything is allocated. A decoder has none unless it is given some: withou
 format allows. The profiles (`doc/api.md`) are Second Life textures (1,024 tiles, 8 components, 64 layers, 2,048
 px a side at the decoded resolution, 256 MiB of working memory) and, as a build module, OpenSim textures (the
 same with 16,384 px a side). Where OpenJPEG departs from the standard, neo-j2k follows the standard and lists the
-departure with its test (`doc/departures.md`). A native Rust crate follows later and is tested against the C++
-library bit for bit.
+departure with its test (`doc/departures.md`). The [native Rust crate](rust/README.md) implements the same core
+codec and compares its output against the C++ library.
 
 Licence: BSD-2-Clause (`LICENSE`). Code ported from OpenJPEG keeps its own BSD-2-Clause notices (`NOTICE.md`,
 `LICENSE.OpenJPEG`).
@@ -67,8 +67,8 @@ own install instructions (`modules/openjp2/INSTALL.md`, `tools/package_openjp2.p
 
 Version: 0.1.0 is the first release; 0.1.1 adds the floating-point hotfix (the output no longer depends on the host's
 floating-point environment) and the openjp2 module; 0.1.2 fixes the module's `opj_version()`, whose 0.1.1 string was too long
-for Firestorm's texture cache header and stopped the viewer at start. The Rust crate, not released yet, will carry the version of the C++
-library whose output it matches.
+for Firestorm's texture cache header and stopped the viewer at start. The Rust crate uses the version of the C++
+library it was tested against.
 
 ## How fast
 
@@ -214,10 +214,9 @@ The benches are in `bench/`, with their commands in `doc/bench.md`. Run compiled
 
 ### Rust
 
-The native Rust twin is in progress (stages R0-R6): a transcription of this library, bit-identical to it.
-The crate is native Rust, with no C or C++ and no FFI in it or its dependency tree; the C++ is only its test
-oracle. Stage R0, the scaffolding, is in `rust/`; `rust/README.md` has every command, and these are the main
-ones:
+The native Rust library in `rust/` decodes J2K, JP2 and JPH Part 1 codestreams, including truncated and reduced
+previews. Its viewer encoder supports reversible 5/3 and irreversible 9/7. The crate has zero dependencies.
+The [Rust workspace README](rust/README.md) shows how to encode, decode and run the comparison tests.
 
 ```
 cd rust

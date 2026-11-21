@@ -9,7 +9,8 @@
 # - windows (MSVC), linux (GCC 15) and linux-lts (Ubuntu 24.04, GCC 14): every test at baseline
 #   x86-64 and at x86-64-v3 against the C++ oracle; windows and linux build the oracle with CMake
 #   first (NJ2K_ORACLE_DIR), linux-lts lets the oracle crate's build.rs build it;
-# - miri: the crates' own unit tests under Miri, on the pinned nightly (rust/nightly-toolchain).
+# - miri: the crates' own unit tests under Miri, on the pinned nightly (rust/nightly-toolchain);
+# - fuzz: seeded decoder, encoder and C++ differential tests under AddressSanitizer.
 name: Rust
 
 on:
@@ -99,6 +100,9 @@ jobs:
         run: |
           python3 -I tools/check_rust_native.py --selftest
           python3 -I tools/check_rust_native.py
+      - name: Build the crate from its package
+        working-directory: rust
+        run: cargo package --offline --locked -p neo-j2k
       - name: cargo-deny (licences, advisories, bans, sources)
         env:
           DENY_VERSION: 0.20.2
@@ -299,3 +303,52 @@ jobs:
       - name: Miri
         working-directory: rust
         run: cargo "+$NIGHTLY" miri test -p neo-j2k-testkit -p neo-j2k --lib --locked
+
+  fuzz:
+    name: rust-fuzz (${{ matrix.cpu }})
+    runs-on: windows-2025
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        cpu: [x86-64, x86-64-v3]
+    env:
+      NJ2K_ORACLE_DIR: ${{ github.workspace }}/build/windows-msvc-asan
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Nightly and cargo-fuzz
+        working-directory: rust
+        shell: pwsh
+        run: |
+          $nightly = (Get-Content nightly-toolchain -Raw).Trim()
+          rustup toolchain install $nightly --profile minimal
+          cargo install cargo-fuzz --version 0.13.2 --locked
+      - name: Build the sanitized C++ oracle
+        shell: bash
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC2086
+          cmake --preset windows-msvc-asan $ORACLE_OPTIONS
+          cmake --build --preset windows-msvc-asan --target nj2k_rust_shim --parallel
+      - name: Fuzz the decoder and encoder
+        working-directory: rust
+        shell: pwsh
+        env:
+          RUSTFLAGS: -C target-cpu=${{ matrix.cpu }}
+        run: |
+          $installer = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer'
+          $vs = & (Join-Path $installer vswhere.exe) -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          Import-Module (Join-Path $vs 'Common7/Tools/Microsoft.VisualStudio.DevShell.dll')
+          Enter-VsDevShell -VsInstallPath $vs -SkipAutomaticLocation -DevCmdArguments '-arch=x64 -host_arch=x64'
+          $nightly = (Get-Content nightly-toolchain -Raw).Trim()
+          New-Item -ItemType Directory -Force fuzz/corpus/header_decode, fuzz/corpus/differential, fuzz/corpus/roundtrip | Out-Null
+          cargo "+$nightly" fuzz run header_decode fuzz/corpus/header_decode ../corpus/generated -- -max_len=1048576 -max_total_time=90 -timeout=10 -print_final_stats=1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo "+$nightly" fuzz run --features oracle differential fuzz/corpus/differential ../corpus/generated -- -max_len=131072 -max_total_time=90 -timeout=10 -print_final_stats=1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo "+$nightly" fuzz run --features oracle roundtrip fuzz/corpus/roundtrip ../fuzz/seeds/roundtrip -- -max_len=16400 -max_total_time=90 -timeout=10 -print_final_stats=1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Check the fuzz lockfile
+        run: git diff --exit-code -- rust/fuzz/Cargo.lock
