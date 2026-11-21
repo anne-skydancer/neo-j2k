@@ -190,6 +190,11 @@ buffers from it (plan P2a). OpenJPEG sizes the image differently when the factor
   the codec whole before the decode, where OpenJPEG holds one tile's data at a time: for a multi-tile image
   the stream API peaks higher than OpenJPEG by the codestream's size (`doc/bench.md`); the memory API does
   not.
+- **The host's floating-point environment does not reach the samples.** `nj2k_decode` and `nj2k_decode_memory`
+  run under round to nearest-even with flush-to-zero and denormals-are-zero off (x86-64: the MXCSR's
+  rounding-control, FZ and DAZ bits are set for the call and put back on every exit; the exception masks and
+  flags are the caller's), once per call, whatever the calling thread had. The 9/7 samples are the same for a
+  host that runs its threads rounding toward zero or flushing denormals (`fpenv_unit`).
 
 ## The encoder (stage 6a)
 
@@ -271,8 +276,12 @@ calling thread (`run_jobs()`), the shape stage 6b gives to a host's executor: th
 `nj2k_encoder_set_executor`); they are
 **not thread-safe yet**. Stage 6b's to-dos for it: a Tier-1 scratch for each worker (`EncT1` is shared), an arena (or a
 lock) for what Tier-1 commits (`enc_t1_encode` allocates from the encoder's), a status for each job (the jobs' status is
-shared), and the floating-point environment of a pool thread: `lrintf` rounds as the thread's MXCSR says, so a worker
-must round to nearest even with no flush-to-zero or denormals-are-zero. The library starts no thread.
+shared). The library starts no thread.
+
+`nj2k_start_compress` and `nj2k_encode` run under the default floating-point environment (round to
+nearest-even, no flush-to-zero, no denormals-are-zero: the control bits are set for the call and put back on every
+exit), so the quantization's `lrintf`, the 9/7 steps and the colour transform give OpenJPEG's bytes whatever environment
+the calling thread had (`fpenv_unit`). A 6b executor's jobs will run under it too, through the same job trampoline as the decoder's.
 
 ## Versions, and a host's cache
 
@@ -374,6 +383,13 @@ NJ2K_BOOL nj2k_decoder_set_executor(nj2k_codec_t *codec, const nj2k_executor_t *
   planes a first tile does not cover. Not tiles in parallel: a tile's walk over its tile-parts and its
   packets (Tier-2) stays on the calling thread, as in OpenJPEG, and two tiles at once would hold two
   tiles' samples (the peak-memory gate).
+- **The jobs run under the default floating-point environment, whatever the host's worker threads keep.**
+  Every job the codec hands to `parallel_for` sets round to nearest-even, no flush-to-zero and no
+  denormals-are-zero when it starts, on whatever thread runs it, and puts the thread's control bits back when
+  it ends (once per job, not per sample; the register is written only when it differs from the default). The
+  output is independent of the host's floating-point environment: a host whose workers round toward zero (game,
+  audio and physics threads often do) gets the samples of a decode on one thread in the default environment
+  (`fpenv_unit`; before this, about half the 9/7 samples differed).
 - The same samples, status and messages in the same order for any executor and any concurrency: every
   part writes its own samples, with the operations of the one-thread code in the same order; nothing is
   summed across parts; and the one refusal of Tier-1 (bit-planes plus ROI shift at or above 31) is found

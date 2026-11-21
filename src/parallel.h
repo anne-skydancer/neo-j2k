@@ -17,6 +17,8 @@
 
 #include <neoj2k/neoj2k.h>
 
+#include "fpenv.h"
+
 namespace nj2k::detail {
 
 // The most parts a stage is cut into (the executor's concurrency is clamped to it).
@@ -64,6 +66,8 @@ private:
     template <class F>
     static void call(void* ctx, NJ2K_UINT32 i)
     {
+        // a host's worker may keep another floating-point environment: the job runs under the default
+        const DefaultFpEnv fp;
         (*static_cast<F*>(ctx))(i);
     }
 };
