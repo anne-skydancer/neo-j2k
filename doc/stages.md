@@ -63,6 +63,7 @@ contents as proposed):
 
 | Module | What |
 |---|---|
+| openjp2 | OpenJPEG's API as the library a viewer already loads (`openjp2.dll`, `libopenjp2.so.7`), neo-j2k inside (done, `modules/openjp2`, `doc/api.md` "The openjp2 module"; `NJ2K_MODULE_OPENJP2`, on in the presets) |
 | j2k-extra | the full encoder |
 | j2k-tile | decoding by tile, decode areas, the low-memory stream for large multi-tile images |
 | j2k-htj | HTJ2K (Part 15) decode and encode |
@@ -120,4 +121,7 @@ Decided (2026-11-18/19):
 - D13 the texture cache's decoder-output version is bumped at the fork hotfix, not at the switch.
 - D14 no packet index until re-decodes are counted.
 - D15 the viewer's upload encode moves off the main thread (a viewer change).
-- Distribution: source (BSD-2), built static or as a DLL; no binary drop-in for `openjp2.dll`.
+- Distribution: source (BSD-2), built static or as a DLL. The openjp2 module (below) builds OpenJPEG's own
+  library name, `openjp2.dll` / `libopenjp2.so.7`, with neo-j2k inside (owner, 2026-11-21): a viewer that loads
+  OpenJPEG as a separate library takes it as a drop-in, with nothing recompiled or relinked. A pre-built binary
+  in an installer that swaps it in is planned, not built.

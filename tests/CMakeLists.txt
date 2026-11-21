@@ -37,6 +37,13 @@ nj2k_test_program(nj2k_encode_unit unit/encode_unit.cpp)
 nj2k_test_program(nj2k_findings_unit unit/findings_unit.cpp)
 # the output does not depend on the host's floating-point environment (MXCSR)
 nj2k_test_program(nj2k_fpenv_unit unit/fpenv_unit.cpp)
+# the openjp2 module (modules/openjp2): OpenJPEG's API over neo-j2k, loaded at run time as a viewer loads
+# its openjp2 library. The tests build it first: they load it by path.
+if(TARGET neoj2k_openjp2)
+  nj2k_test_program(nj2k_openjp2_unit unit/openjp2_unit.cpp)
+  add_dependencies(nj2k_openjp2_unit neoj2k_openjp2)
+  add_dependencies(nj2k_diff neoj2k_openjp2)
+endif()
 # the local gate on a viewer's texture cache (private: run where it is, doc/testing.md)
 nj2k_test_program(nj2k_cache_check tools/nj2k_cache_check.cpp)
 if(NJ2K_PROFILE_OPENSIM)
@@ -187,6 +194,28 @@ if(EXISTS "${NJ2K_TESTDATA}/input/nonregression")
                 --departures "${CMAKE_CURRENT_SOURCE_DIR}/neoj2k-departures-nonregression.txt")
 endif()
 
+# The openjp2 module against the same tables: the viewer's own way in, OpenJPEG's names called through
+# OpenJPEG's header on a library loaded by path (nj2k_diff's lib: backend). Whole files at every reduce
+# level, the same on 4 threads of the module's own pool (the large corpus files reach it), the layer
+# boundaries, the header reads, the unit (version, threads started and joined, decodes at 0-64 threads,
+# decoders at once, the upload encode), and with the test data the conformance files too. Every cut point
+# is the core's, tested above, and only the calls between differ.
+if(TARGET neoj2k_openjp2)
+  set(_nj2k_openjp2 "lib:$<TARGET_FILE:neoj2k_openjp2>=openjp2")
+  nj2k_add_test(openjp2_whole nj2k_diff verify --a "${_nj2k_openjp2}" --ref "${_nj2k_ref}" --root "${NJ2K_CORPUS}"
+                --no-cuts --departures "${_nj2k_departures}")
+  nj2k_add_test(openjp2_whole_threads nj2k_diff verify --a "${_nj2k_openjp2}" --ref "${_nj2k_ref}"
+                --root "${NJ2K_CORPUS}" --no-cuts --departures "${_nj2k_departures}" --threads 4)
+  nj2k_add_test(openjp2_layers nj2k_diff layers --a "${_nj2k_openjp2}" --files "${NJ2K_CORPUS}")
+  nj2k_add_test(openjp2_header nj2k_diff header --a oracle --b "${_nj2k_openjp2}" --files "${NJ2K_CORPUS}"
+                --root "${NJ2K_CORPUS}" --modes plain,viewer --reduce 0-5 --bytes 4096)
+  nj2k_add_test(openjp2_unit nj2k_openjp2_unit "$<TARGET_FILE:neoj2k_openjp2>" "${NJ2K_CORPUS}")
+  if(EXISTS "${NJ2K_TESTDATA}/input/conformance")
+    nj2k_add_test(openjp2_conformance_differential nj2k_diff compare --a oracle --b "${_nj2k_openjp2}" --jp2
+                  --files "${NJ2K_TESTDATA}/input/conformance" --mode plain,strict,viewer --reduce 0-5)
+  endif()
+endif()
+
 # The oracle's known resource defects (doc/oracle.md, tests/oracle-known-resource-defects.txt):
 # each input must still make the oracle ask the heap for what the list says, through the counting
 # oracle module, which is built without sanitizers only; a line whose defect is gone fails.
@@ -211,6 +240,12 @@ if(Python3_FOUND AND NOT NJ2K_SANITIZE)
     nj2k_add_test(exports "${Python3_EXECUTABLE}" -I "${PROJECT_SOURCE_DIR}/tools/check_exports.py"
                   --library "$<TARGET_FILE:neoj2k_shared>" --header "${PROJECT_SOURCE_DIR}/include/neoj2k/neoj2k.h"
                   --list "${PROJECT_SOURCE_DIR}/abi/exports.txt")
+  endif()
+  # the openjp2 module exports exactly the functions of OpenJPEG's header, and its forwarders are current
+  if(TARGET neoj2k_openjp2)
+    nj2k_add_test(openjp2_exports "${Python3_EXECUTABLE}" -I "${PROJECT_SOURCE_DIR}/tools/check_openjp2.py"
+                  --library "$<TARGET_FILE:neoj2k_openjp2>" --header "${PROJECT_SOURCE_DIR}/oracle/openjp2/openjpeg.h")
+    nj2k_add_test(openjp2_forwarders "${Python3_EXECUTABLE}" -I "${PROJECT_SOURCE_DIR}/tools/gen_openjp2.py" --check)
   endif()
   # the scalar build (NJ2K_SIMD=SCALAR, "for other CPUs", D8) holds every object to baseline x86-64
   set(_nj2k_baseline)

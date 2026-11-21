@@ -294,6 +294,57 @@ fork's stage 1a hotfix, nothing at the switch). The viewer's texture cache keys 
 holds `opj_version()` (`llimagej2coj.cpp`, `lltexturecache.cpp`): built against the compatibility header
 unchanged, every neo-j2k release would purge every user's cache. The viewer switch (stage 8b) keys it on
 the viewer's own output version.
+The openjp2 module's `opj_version()` returns a longer string, "Jpeg2000 2.5.4 provided by neo-j2k 0.1.0": a
+viewer built for OpenJPEG that caches on it purges at every neo-j2k release, which is the cost of taking the
+module without the viewer's own output version.
+
+## The openjp2 module
+
+A viewer that talks to OpenJPEG through its own library file (`openjp2.dll`, `libopenjp2.so.7`) can take
+neo-j2k without a line changed, recompiled or relinked: the module (`NJ2K_MODULE_OPENJP2`, `modules/openjp2`,
+on in the presets, off by default as the other modules are) builds a shared library with OpenJPEG's name that
+exports OpenJPEG's functions and holds neo-j2k. It is an adapter between the calls a viewer makes and the
+core's; the core is the same code as `neoj2k.dll` (the module links the static library) and never depends on it.
+
+- **Exports.** Exactly the 55 functions of the oracle's `openjpeg.h` (OpenJPEG 2.5.4 plus the fork's decoder
+  limits API), all `opj_*`, and no `nj2k_*` (`tools/check_openjp2.py`, test `openjp2_exports`). 49 of them call their
+  neo-j2k twin with the same arguments: the structures have OpenJPEG's layout, so the call is the whole
+  translation. `tools/gen_openjp2.py` writes them from `neoj2k.h` and fails if any function's return or parameter
+  types differ from `openjpeg.h`'s (name for name, once `opj_` and `OPJ_` are mapped); a stale
+  `modules/openjp2/opj_forward.inc` fails the test `openjp2_forwarders`.
+- **What the adapter does itself** (`modules/openjp2/openjp2.cpp`):
+  - `opj_version()` returns `"Jpeg2000 2.5.4 provided by neo-j2k 0.1.0"`: OpenJPEG's API level (from
+    `OPJ_VERSION_*`) and neo-j2k's release. A host that keys its cache of decoded images on `opj_version()` (the
+    viewers' texture cache does, "Versions, and a host's cache") purges it when it first meets the module and
+    again with every neo-j2k release.
+  - `opj_has_thread_support()` is true, and `opj_codec_set_threads(codec, n)` starts the threads, which the core
+    never does: the module is the host that lends the core an executor (`nj2k_decoder_set_executor`). A decoder
+    gets a pool of its own, replaced by the next call and joined by `opj_destroy_codec`, as OpenJPEG's is (its threads
+    are named `openjp2-worker`; an encoder gets none). The
+    calling thread works while it waits, so `n` threads are `n - 1` workers and the caller (0 and 1 run on the
+    caller), at most 64 (the most a decode is cut into); a negative count and no codec are refused; an encoder
+    takes the call and answers true, as OpenJPEG's does, and runs on its calling thread (stage 6a). The samples
+    and bytes are the same at every count (`openjp2_whole_threads`, `openjp2_unit`). The core calls the executor
+    for tiles of 2^18 samples or more only, so a small texture decodes on the caller whatever was asked.
+  - `opj_create_decompress` and `opj_create_compress` give `NULL` on a processor the library does not run on
+    (`nj2k_cpu_supported()`, which the core's own callers check first; a viewer written for OpenJPEG does
+    not). The adapter's own code is built for baseline x86-64 so that the check runs before any instruction of
+    the core's does.
+- **Where it differs from OpenJPEG** (as the core does, `doc/departures.md`): what the core leaves unsupported
+  answers as it does there (`opj_get_cstr_index`, `opj_get_jp2_index` and `opj_get_jp2_metadata` give `NULL`,
+  `opj_dump_codec` prints nothing, `opj_write_tile` and the tile-by-tile decoding functions and
+  `opj_set_decode_area` fail, and `opj_create_compress(OPJ_CODEC_JP2)` gives `NULL`: the j2k-tile,
+  j2k-codestream and j2k-extra modules'), and the decoder has no limits unless the host sets them
+  (`opj_decoder_set_limits`).
+- **Build.** `openjp2.dll` and `openjp2.lib` (the import library); `libopenjp2.so.2.5.4` with the soname
+  `libopenjp2.so.7`, no symbol versions. It needs the C++ runtime (threads), as the core does.
+  One module-wide writable global, the list of codecs that have a pool, under a lock.
+- **Tests.** `openjp2_whole`, `openjp2_whole_threads` (4 threads), `openjp2_layers`, `openjp2_header` and, with the
+  test data, `openjp2_conformance_differential` run the differential harness against the library loaded by path
+  (`lib:`), the way a viewer loads it; `openjp2_unit` checks the version, the thread lifecycle (the pool's
+  threads, named `openjp2-worker`, counted), decodes at 0 to 64 threads, decoders at once and the upload encode (`doc/testing.md`).
+- **Not built yet:** the pre-built binary and the installer that puts it where the viewer's OpenJPEG is
+  (owner, 2026-11-21).
 
 ## Stage 0
 
