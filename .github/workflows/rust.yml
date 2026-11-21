@@ -344,7 +344,7 @@ jobs:
           Enter-VsDevShell -VsInstallPath $vs -SkipAutomaticLocation -DevCmdArguments '-arch=x64 -host_arch=x64'
           $nightly = (Get-Content nightly-toolchain -Raw).Trim()
           New-Item -ItemType Directory -Force fuzz/corpus/header_decode, fuzz/corpus/differential, fuzz/corpus/roundtrip | Out-Null
-          cargo "+$nightly" fuzz run header_decode fuzz/corpus/header_decode ../corpus/generated -- -max_len=1048576 -max_total_time=90 -timeout=10 -print_final_stats=1
+          cargo "+$nightly" fuzz run header_decode fuzz/corpus/header_decode ../corpus/generated fuzz/seeds/jp2 -- -max_len=1048576 -max_total_time=90 -timeout=10 -print_final_stats=1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo "+$nightly" fuzz run --features oracle differential fuzz/corpus/differential ../corpus/generated -- -max_len=131072 -max_total_time=90 -timeout=10 -print_final_stats=1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
