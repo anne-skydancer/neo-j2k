@@ -1,0 +1,36 @@
+/* SPDX-License-Identifier: BSD-2-Clause
+   Copyright (c) 2026, Anne Skydancer (neo-j2k)
+
+   What Windows shows for the library (Explorer: Properties, Details), so that a file called openjp2.dll in a
+   viewer's folder says what it is: neo-j2k, not OpenJPEG. CMake fills in the version (openjp2.rc.in). */
+#include <winver.h>
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION @PROJECT_VERSION_MAJOR@,@PROJECT_VERSION_MINOR@,@PROJECT_VERSION_PATCH@,0
+ PRODUCTVERSION @PROJECT_VERSION_MAJOR@,@PROJECT_VERSION_MINOR@,@PROJECT_VERSION_PATCH@,0
+ FILEFLAGSMASK VS_FFI_FILEFLAGSMASK
+ FILEFLAGS 0
+ FILEOS VOS_NT_WINDOWS32
+ FILETYPE VFT_DLL
+ FILESUBTYPE 0
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904B0"
+        BEGIN
+            VALUE "ProductName", "neo-j2k"
+            VALUE "FileDescription", "neo-j2k JPEG 2000 codec, not OpenJPEG"
+            VALUE "Comments", "This is neo-j2k, not OpenJPEG. It is installed under the name openjp2.dll only because the viewer asks for that name. https://github.com/anne-skydancer/neo-j2k"
+            VALUE "CompanyName", "neo-j2k"
+            VALUE "FileVersion", "@PROJECT_VERSION@"
+            VALUE "ProductVersion", "@PROJECT_VERSION@"
+            VALUE "InternalName", "neoj2k-viewer"
+            VALUE "OriginalFilename", "neoj2k-viewer.dll"
+            VALUE "LegalCopyright", "Copyright (c) 2026 Anne Skydancer (neo-j2k). BSD-2-Clause. Contains code ported from OpenJPEG (LICENSE.OpenJPEG)."
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END

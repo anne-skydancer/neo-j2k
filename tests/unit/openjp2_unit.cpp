@@ -154,9 +154,8 @@ struct Library {
 
 void test_identity(const Library& lib)
 {
-    // OpenJPEG's API level (the header the viewer was built with) and neo-j2k's release
-    const std::string want = "Jpeg2000 " + std::to_string(OPJ_VERSION_MAJOR) + "." + std::to_string(OPJ_VERSION_MINOR) +
-                             "." + std::to_string(OPJ_VERSION_BUILD) + " provided by neo-j2k " + nj2k_version();
+    // what a viewer prints after "Runtime:": JPEG 2000 through neo-j2k, with the release (a cache keys on it)
+    const std::string want = std::string("Jpeg2000 through neo-j2k ") + nj2k_version();
     const std::string got = lib.version() ? lib.version() : "(null)";
     CHECK_MSG(got == want, "opj_version is '%s', not '%s'", got.c_str(), want.c_str());
     CHECK_MSG(lib.has_thread_support() == OPJ_TRUE, "opj_has_thread_support is false");

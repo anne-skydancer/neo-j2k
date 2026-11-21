@@ -55,11 +55,15 @@ stage 6b's (`doc/api.md`, `doc/bench.md`).
 
 The openjp2 module: OpenJPEG's API as the library a viewer already loads (`openjp2.dll`, `libopenjp2.so.7`), neo-j2k
 inside, so a viewer that talks to OpenJPEG takes neo-j2k with nothing recompiled or relinked: the 55 functions of
-OpenJPEG 2.5.4's header, the threads `opj_codec_set_threads` starts, and `opj_version()` saying "Jpeg2000 2.5.4
-provided by neo-j2k 0.1.0" (`doc/api.md`, build option `NJ2K_MODULE_OPENJP2`). A pre-built binary with an installer
-is planned.
+OpenJPEG 2.5.4's header, the threads `opj_codec_set_threads` starts, and `opj_version()` saying "Jpeg2000
+through neo-j2k 0.1.1" (`doc/api.md`, build option `NJ2K_MODULE_OPENJP2`). The library goes into a viewer's folder under the name `openjp2.dll`, which is only the name the viewer asks for:
+it is neo-j2k, not OpenJPEG, and its file properties say so. It is packaged as a zip
+(`neoj2k-viewer-<version>-win-x64.zip`, named for neo-j2k) with its
+own install instructions (`modules/openjp2/INSTALL.md`, `tools/package_openjp2.py`); an installer is planned.
 
-Version: 0.1.0 is the first release. The Rust crate will carry the same version number for the same output.
+Version: 0.1.0 is the first release; 0.1.1 adds the floating-point hotfix (the output no longer depends on the host's
+floating-point environment) and the openjp2 module. The Rust crate, not released yet, will carry the version of the C++
+library whose output it matches.
 
 ## How fast
 

@@ -12,7 +12,7 @@
 //  - opj_codec_set_threads starts the threads OpenJPEG would, which neo-j2k's core never does (it starts
 //    none and takes an executor from its host): the module is that host. A decoder gets a pool of its own,
 //    lent to it as the executor, and opj_destroy_codec joins it, as OpenJPEG does;
-//  - opj_version names both: "Jpeg2000 2.5.4 provided by neo-j2k 0.1.0";
+//  - opj_version says what it is: "Jpeg2000 through neo-j2k 0.1.1" (a viewer prints it after "Runtime:");
 //  - a codec is refused on a processor the library does not run on (opj_create_* give NULL), where the
 //    core's own callers check nj2k_cpu_supported() first.
 //
@@ -238,8 +238,8 @@ bool remember(nj2k_codec_t* codec, Pool* pool) noexcept
     return true;
 }
 
-const char kVersion[] = "Jpeg2000 " NJ2K_OPENJPEG_API_LEVEL " provided by neo-j2k " NJ2K_STR(
-    NJ2K_VERSION_MAJOR) "." NJ2K_STR(NJ2K_VERSION_MINOR) "." NJ2K_STR(NJ2K_VERSION_PATCH);
+const char kVersion[] = "Jpeg2000 through neo-j2k " NJ2K_STR(NJ2K_VERSION_MAJOR) "." NJ2K_STR(NJ2K_VERSION_MINOR) "."
+    NJ2K_STR(NJ2K_VERSION_PATCH);
 
 }  // namespace
 
