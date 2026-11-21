@@ -1,0 +1,293 @@
+# SPDX-License-Identifier: BSD-2-Clause
+# Copyright (c) 2026, Anne Skydancer (neo-j2k)
+#
+# The Rust twin (rust/README.md), beside the C++ jobs of ci.yml, which it leaves unchanged. It runs
+# when the twin changes and when the C++ it is compared with changes (a C++ change moves the
+# oracle):
+# - lint: fmt, clippy at both CPU levels, docs, cargo-deny, and the native-Rust check (neo-j2k's
+#   dependency tree holds no C or C++, its package no C or C++ source, its sources no FFI);
+# - windows (MSVC), linux (GCC 15) and linux-lts (Ubuntu 24.04, GCC 14): every test at baseline
+#   x86-64 and at x86-64-v3 against the C++ oracle; windows and linux build the oracle with CMake
+#   first (NJ2K_ORACLE_DIR), linux-lts lets the oracle crate's build.rs build it;
+# - miri: the crates' own unit tests under Miri, on the pinned nightly (rust/nightly-toolchain).
+name: Rust
+
+on:
+  pull_request:
+    paths:
+      - "rust/**"
+      - "src/**"
+      - "include/**"
+      - "oracle/**"
+      - "tests/common/**"
+      - "corpus/**"
+      - "fuzz/**"
+      - "cmake/**"
+      - "CMakeLists.txt"
+      - "CMakePresets.json"
+      - "tools/check_rust_native.py"
+      - ".github/workflows/rust.yml"
+  push:
+    branches: [main]
+    paths:
+      - "rust/**"
+      - "src/**"
+      - "include/**"
+      - "oracle/**"
+      - "tests/common/**"
+      - "corpus/**"
+      - "fuzz/**"
+      - "cmake/**"
+      - "CMakeLists.txt"
+      - "CMakePresets.json"
+      - "tools/check_rust_native.py"
+      - ".github/workflows/rust.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rust-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  OPENJPEG_DATA_COMMIT: 39524bd3a601d90ed8e0177559400d23945f96a9
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  # the oracle's C++ build: the static library, the oracle, the harness and the shim only
+  ORACLE_OPTIONS: >-
+    -DNJ2K_BUILD_RUST_SHIM=ON -DNJ2K_BUILD_TESTS=OFF -DNJ2K_BUILD_TOOLS=OFF -DNJ2K_BUILD_BENCH=OFF
+    -DNJ2K_BUILD_SHARED=OFF -DNJ2K_INSTALL=OFF
+
+jobs:
+  lint:
+    name: rust-lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # nothing here links: no C++ build
+      NJ2K_ORACLE_NO_BUILD: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Toolchain (rust/rust-toolchain.toml)
+        working-directory: rust
+        run: |
+          set -euo pipefail
+          rustup toolchain install || rustup show
+          rustc --version
+      - name: Format
+        working-directory: rust
+        run: cargo fmt --all --check
+      - name: Clippy (baseline x86-64)
+        working-directory: rust
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      - name: Clippy (x86-64-v3)
+        working-directory: rust
+        env:
+          RUSTFLAGS: -C target-cpu=x86-64-v3
+          CARGO_TARGET_DIR: target-v3
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      - name: Docs
+        working-directory: rust
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --workspace --no-deps --document-private-items --locked
+      - name: The crate is native Rust
+        run: |
+          python3 -I tools/check_rust_native.py --selftest
+          python3 -I tools/check_rust_native.py
+      - name: cargo-deny (licences, advisories, bans, sources)
+        env:
+          DENY_VERSION: 0.20.2
+          DENY_SHA256: 9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f
+        run: |
+          set -euo pipefail
+          name="cargo-deny-${DENY_VERSION}-x86_64-unknown-linux-musl"
+          archive="$RUNNER_TEMP/$name.tar.gz"
+          curl -fsSL --retry 5 --retry-delay 10 -o "$archive" \
+            "https://github.com/EmbarkStudios/cargo-deny/releases/download/${DENY_VERSION}/$name.tar.gz"
+          echo "$DENY_SHA256  $archive" | sha256sum -c -
+          tar -xzf "$archive" -C "$RUNNER_TEMP"
+          cd rust
+          "$RUNNER_TEMP/$name/cargo-deny" --workspace check licenses bans sources advisories
+
+  windows:
+    name: rust-windows (MSVC)
+    runs-on: windows-2025
+    timeout-minutes: 45
+    env:
+      NJ2K_TESTDATA: ${{ github.workspace }}/.testdata/openjpeg-data
+      NJ2K_ORACLE_DIR: ${{ github.workspace }}/build/windows-msvc
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Conformance data (cache)
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: .testdata/openjpeg-data
+          key: openjpeg-data-conformance-${{ env.OPENJPEG_DATA_COMMIT }}-windows
+      - name: Conformance data (fetch)
+        run: python -I tools/fetch_testdata.py
+      - name: Toolchain (rust/rust-toolchain.toml)
+        working-directory: rust
+        run: |
+          set -euo pipefail
+          rustup toolchain install || rustup show
+          rustc --version
+      - name: The C++ oracle
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC2086
+          cmake --preset windows-msvc $ORACLE_OPTIONS
+          cmake --build --preset windows-msvc --target nj2k_rust_shim --parallel
+      - name: Test (baseline x86-64)
+        working-directory: rust
+        run: |
+          export NJ2K_TEST_TMP="$RUNNER_TEMP" TEMP="$RUNNER_TEMP" TMP="$RUNNER_TEMP"
+          cargo test --release --workspace --locked
+      - name: Test (x86-64-v3)
+        working-directory: rust
+        env:
+          RUSTFLAGS: -C target-cpu=x86-64-v3
+          CARGO_TARGET_DIR: target-v3
+        run: |
+          export NJ2K_TEST_TMP="$RUNNER_TEMP" TEMP="$RUNNER_TEMP" TMP="$RUNNER_TEMP"
+          cargo test --release --workspace --locked
+
+  linux:
+    name: rust-linux (GCC 15)
+    runs-on: ubuntu-26.04
+    timeout-minutes: 45
+    env:
+      CC: gcc-15
+      CXX: g++-15
+      NJ2K_TESTDATA: ${{ github.workspace }}/.testdata/openjpeg-data
+      NJ2K_ORACLE_DIR: ${{ github.workspace }}/build/linux-gcc
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: C++ toolchain
+        run: |
+          set -euo pipefail
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 update -qq
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 install -y -qq ninja-build g++-15
+          "$CXX" --version | head -n 1
+      - name: Conformance data (cache)
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: .testdata/openjpeg-data
+          key: openjpeg-data-conformance-${{ env.OPENJPEG_DATA_COMMIT }}-linux
+      - name: Conformance data (fetch)
+        run: python3 -I tools/fetch_testdata.py
+      - name: Toolchain (rust/rust-toolchain.toml)
+        working-directory: rust
+        run: |
+          set -euo pipefail
+          if ! command -v rustup > /dev/null; then
+            curl --proto '=https' --tlsv1.2 -fsSL --retry 5 https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+            export PATH="$HOME/.cargo/bin:$PATH"
+          fi
+          rustup toolchain install || rustup show
+          rustc --version
+      - name: The C++ oracle
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC2086
+          cmake --preset linux-gcc $ORACLE_OPTIONS
+          cmake --build --preset linux-gcc --target nj2k_rust_shim --parallel
+      - name: Test (baseline x86-64)
+        working-directory: rust
+        run: |
+          export NJ2K_TEST_TMP="$RUNNER_TEMP" TMPDIR="$RUNNER_TEMP"
+          cargo test --release --workspace --locked
+      - name: Test (x86-64-v3)
+        working-directory: rust
+        env:
+          RUSTFLAGS: -C target-cpu=x86-64-v3
+          CARGO_TARGET_DIR: target-v3
+        run: |
+          export NJ2K_TEST_TMP="$RUNNER_TEMP" TMPDIR="$RUNNER_TEMP"
+          cargo test --release --workspace --locked
+
+  linux-lts:
+    name: rust-linux-lts (ubuntu:24.04, GCC 14)
+    runs-on: ubuntu-26.04
+    timeout-minutes: 45
+    container:
+      image: ubuntu:24.04
+      options: --dns 168.63.129.16 --dns 8.8.8.8 --dns 1.1.1.1
+    env:
+      CC: gcc-14
+      CXX: g++-14
+      # the oracle crate's build.rs builds the C++ itself here (no NJ2K_ORACLE_DIR)
+      NJ2K_ORACLE_PRESET: linux-gcc
+    steps:
+      - name: Toolchain
+        run: |
+          set -eu
+          # as ci.yml's linux-lts job: the runners' in-Azure mirror, bounded fetches, one retry
+          sed -i 's#http://archive.ubuntu.com/ubuntu#http://azure.archive.ubuntu.com/ubuntu#g; s#http://security.ubuntu.com/ubuntu#http://azure.archive.ubuntu.com/ubuntu#g' /etc/apt/sources.list.d/ubuntu.sources
+          apt_opts="-o Acquire::Retries=3 -o Acquire::http::Timeout=30"
+          for attempt in 1 2; do
+            if apt-get $apt_opts update -qq && DEBIAN_FRONTEND=noninteractive apt-get $apt_opts install -y -qq g++-14 cmake ninja-build python3 git ca-certificates curl; then
+              break
+            fi
+            if [ "$attempt" = 2 ]; then echo "::error::apt failed twice"; exit 1; fi
+            echo "apt failed (attempt $attempt of 2); retrying in 30 s"; sleep 30
+          done
+          curl --proto '=https' --tlsv1.2 -fsSL --retry 5 https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          gcc-14 --version | head -n 1
+          cmake --version | head -n 1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Rust (rust/rust-toolchain.toml)
+        working-directory: rust
+        run: |
+          rustup toolchain install || rustup show
+          rustc --version
+      - name: Test (baseline x86-64)
+        working-directory: rust
+        run: |
+          export NJ2K_TEST_TMP="$RUNNER_TEMP" TMPDIR="$RUNNER_TEMP"
+          cargo test --release --workspace --locked
+      - name: Test (x86-64-v3)
+        working-directory: rust
+        env:
+          RUSTFLAGS: -C target-cpu=x86-64-v3
+          CARGO_TARGET_DIR: target-v3
+        run: |
+          export NJ2K_TEST_TMP="$RUNNER_TEMP" TMPDIR="$RUNNER_TEMP"
+          cargo test --release --workspace --locked
+
+  miri:
+    name: rust-miri
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      NJ2K_ORACLE_NO_BUILD: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Nightly (rust/nightly-toolchain)
+        working-directory: rust
+        run: |
+          set -euo pipefail
+          nightly="$(tr -d '[:space:]' < nightly-toolchain)"
+          echo "NIGHTLY=$nightly" >> "$GITHUB_ENV"
+          rustup toolchain install "$nightly" --profile minimal --component miri,rust-src
+          cargo "+$nightly" miri setup
+      - name: Miri
+        working-directory: rust
+        run: cargo "+$NIGHTLY" miri test -p neo-j2k-testkit -p neo-j2k --lib --locked
