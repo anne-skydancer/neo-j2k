@@ -23,7 +23,7 @@
 extern "C" {
 #endif
 
-#define NJ2K_SHIM_ABI_VERSION 1u
+#define NJ2K_SHIM_ABI_VERSION 6u
 
 uint32_t nj2k_shim_abi_version(void);
 /* 1 when the harness's backends were made before main() (their making clears OPJ_NUM_THREADS, an
@@ -120,16 +120,90 @@ void nj2k_shim_rct_scalar(const int32_t *c0, const int32_t *c1, const int32_t *c
 void nj2k_shim_ict_scalar(const int32_t *c0, const int32_t *c1, const int32_t *c2, int32_t *o0, int32_t *o1,
                           int32_t *o2, size_t n);
 
+typedef struct nj2k_shim_wavelet_rect {
+    uint32_t x0, y0, x1, y1;
+} nj2k_shim_wavelet_rect_t;
+/* Inverse whole-tile-component wavelet. The plane holds size samples, stride samples per row.
+ * Resolutions go from coarsest to finest. Returns 0 for invalid geometry or unavailable scratch. */
+uint32_t nj2k_shim_dwt_decode(int32_t *plane, size_t size, uint32_t stride, const nj2k_shim_wavelet_rect_t *resolutions,
+                              size_t count, uint32_t reversible);
+
+/* ---- the C++ encoder, using a memory output stream -------------------------------------------- */
+typedef struct nj2k_shim_encode_request {
+    const uint8_t *pixels;
+    size_t size, stride;
+    uint32_t width, height, components, flip_vertical;
+    uint32_t reversible, resolutions, mct, max_codestream_size;
+    const float *rates;
+    size_t rate_count;
+    const uint8_t *comment;
+    size_t comment_len;
+} nj2k_shim_encode_request_t;
+typedef struct nj2k_shim_codestream nj2k_shim_codestream_t;
+/* Returns the C++ encoder's status; on success out owns the codestream until it is freed. */
+int32_t nj2k_shim_encode_u8(const nj2k_shim_encode_request_t *request, nj2k_shim_codestream_t **out);
+typedef struct nj2k_shim_encode_updates {
+    uint32_t max_codestream_size, layer_count;
+    float ratios[100];
+} nj2k_shim_encode_updates_t;
+/* A nonzero layer_count records the settings written back by a successful setup, even if encoding fails. */
+int32_t nj2k_shim_encode_u8_with_updates(const nj2k_shim_encode_request_t *request,
+                                       nj2k_shim_encode_updates_t *updates, nj2k_shim_codestream_t **out);
+typedef struct nj2k_shim_encode_trace_request_s {
+    size_t buffer_size;
+    size_t max_write; /* At most this many bytes are accepted in each callback. */
+    size_t stop_at;   /* Refuse further writes after this many bytes have been accepted. */
+    uint32_t fail_with_error; /* Return size_t(-1) instead of zero on refusal. */
+    const char *const *extra_options; /* NULL-terminated option list. */
+} nj2k_shim_encode_trace_request_t;
+/* The snapshot includes bytes, offers, and diagnostics up to any codec error. */
+int32_t nj2k_shim_encode_u8_trace(const nj2k_shim_encode_request_t *request,
+                                 const nj2k_shim_encode_trace_request_t *trace, nj2k_shim_codestream_t **out);
+const size_t *nj2k_shim_codestream_offers(const nj2k_shim_codestream_t *codestream, size_t *count);
+uint32_t nj2k_shim_codestream_diagnostic(const nj2k_shim_codestream_t *codestream, size_t index, uint32_t *severity,
+                                         const uint8_t **text, size_t *len);
+const uint8_t *nj2k_shim_codestream_bytes(const nj2k_shim_codestream_t *codestream, size_t *len);
+void nj2k_shim_codestream_free(nj2k_shim_codestream_t *codestream);
+
+/* Generate one bounded case with the pinned OpenJPEG encoder. Owns out on success. */
+int32_t nj2k_shim_generate_codestream(uint32_t seed, uint32_t index, nj2k_shim_codestream_t **out);
+
 /* ---- a memory codec of neo-j2k, its ledger numbers and its thresholds ------------------------- */
-/* a non-strict memory decoder (NJ2K_CODEC_J2K or NJ2K_CODEC_JP2) at the reduce factor; with
- * max_memory != 0, the limits are NJ2K_DECODER_LIMITS_NONE with that max_memory */
-nj2k_codec_t *nj2k_shim_codec_new(uint32_t format, uint32_t reduce, uint64_t max_memory);
+/* A memory decoder (NJ2K_CODEC_J2K or NJ2K_CODEC_JP2) with the given options and limits. */
+nj2k_codec_t *nj2k_shim_codec_new(uint32_t format, uint32_t reduce, uint32_t reduce_policy,
+                                  const nj2k_decoder_limits_t *limits, uint32_t max_layers, uint32_t strict);
 void nj2k_shim_codec_free(nj2k_codec_t *codec);
 uint32_t nj2k_shim_codec_set_max_memory(nj2k_codec_t *codec, uint64_t max_memory);
-/* the header from memory, then the decode into planar int32 planes (each component w x h, one
- * after the other) in out (cap samples; the samples needed through *count): the status */
+int32_t nj2k_shim_codec_set_reduce(nj2k_codec_t *codec, uint32_t reduce);
+uint32_t nj2k_shim_codec_set_retained_bytes(nj2k_codec_t *codec, size_t retained_bytes);
+typedef struct nj2k_shim_pool nj2k_shim_pool_t;
+nj2k_shim_pool_t *nj2k_shim_pool_new(uint32_t workers);
+void nj2k_shim_pool_free(nj2k_shim_pool_t *pool);
+uint64_t nj2k_shim_pool_batches(const nj2k_shim_pool_t *pool);
+/* Run the jobs synchronously, holding no references to job or context after returning. */
+uint32_t nj2k_shim_pool_run(nj2k_shim_pool_t *pool, uint32_t count, nj2k_job_fn job, void *context);
+typedef struct nj2k_shim_header nj2k_shim_header_t;
+typedef struct nj2k_shim_header_info {
+    uint32_t x0, y0, x1, y1, numcomps;
+    int32_t color_space;
+    uint32_t tx0, ty0, tdx, tdy, tw, th, numlayers, min_resolutions, progression;
+    int32_t reduce_status, dimensions_status;
+} nj2k_shim_header_info_t;
+/* Returns the header status. The optional reduce change is applied between the header read and the dimensions
+ * check. Even on a rejected header, out can own a diagnostic trace of the header read. */
+int32_t nj2k_shim_codec_header(nj2k_codec_t *codec, const uint8_t *data, size_t size, const uint32_t *reduce_after_header,
+                               uint32_t capture_diagnostics, nj2k_shim_header_info_t *info, nj2k_shim_header_t **out);
+/* each result points to info->numcomps entries until the snapshot is freed; NULL if the dimensions check failed */
+const nj2k_shim_component_t *nj2k_shim_header_components(const nj2k_shim_header_t *header, uint32_t sized);
+/* The next message's severity (0 info, 1 warning, 2 error) and bytes; returns 0 at the end of the trace. */
+uint32_t nj2k_shim_header_diagnostic(const nj2k_shim_header_t *header, size_t index, uint32_t *severity,
+                                     const uint8_t **text, size_t *len);
+void nj2k_shim_header_free(nj2k_shim_header_t *header);
+/* Read the header and report the total number of samples through count. A null out queries this
+ * count only. Otherwise decode into cap samples, packed by component, skipping empty planes.
+ * An optional pool is borrowed for the decode only. */
 int32_t nj2k_shim_codec_decode_i32(nj2k_codec_t *codec, const uint8_t *data, size_t size, int32_t *out,
-                                   uint64_t cap, uint64_t *count);
+                                   uint64_t cap, uint64_t *count, nj2k_shim_pool_t *pool);
 typedef struct nj2k_shim_ledger_s {
     uint64_t header_reserved;  /* the header arena's reserved bytes */
     uint64_t tile_reserved;    /* the tile-part arena's */
@@ -140,6 +214,10 @@ typedef struct nj2k_shim_ledger_s {
 uint32_t nj2k_shim_ledger(nj2k_codec_t *codec, nj2k_shim_ledger_t *ledger);
 uint32_t nj2k_shim_set_parallel_thresholds(nj2k_codec_t *codec, uint64_t tile_samples, uint64_t level_area,
                                            uint64_t output_samples, uint64_t clear_bytes);
+/* Read a memory header, select indices, and report the resulting sizing status and geometry. */
+int32_t nj2k_shim_codec_dimensions_for(nj2k_codec_t *codec, const uint8_t *data, size_t size,
+                                      const uint32_t *indices, uint32_t count, uint32_t *numcomps,
+                                      nj2k_shim_header_t **out);
 
 #ifdef __cplusplus
 }

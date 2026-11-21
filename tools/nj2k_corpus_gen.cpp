@@ -19,46 +19,20 @@
 
 #include <algorithm>
 #include <cstdio>
-#include <cstring>
 #include <fstream>
 #include <string>
 #include <vector>
 
 #include "common.h"
 #include "decoder.h"
+#include "generated.h"
 #include "j2k_scan.h"
 
 using namespace nj2k::test;
 
 namespace {
 
-enum class Packed { None, Ppm, Ppt };
-
-struct Spec {
-    std::string name;
-    int w = 32, h = 32, comps = 3, prec = 8;
-    bool sgnd = false;
-    int sub = 1;              // dx = dy of components 1 and 2 (4:2:0 style when 2)
-    int x0 = 0, y0 = 0;       // image origin on the reference grid
-    int tw = 0, th = 0;       // tile size, 0: one tile
-    int tx0 = 0, ty0 = 0;     // tile grid origin
-    bool irreversible = false;
-    int mct = -1;             // -1: on for 3+ components with equal sizes
-    int numres = 6;
-    std::vector<float> rates;  // per layer, compression ratios; 0 last for lossless
-    int cbw = 64, cbh = 64;
-    std::vector<int> precincts;  // log2 size per resolution, coarsest first; empty: none
-    OPJ_PROG_ORDER prog = OPJ_LRCP;
-    int mode = 0;  // code-block style: 1 BYPASS, 2 RESET, 4 TERMALL, 8 VSC, 16 PTERM, 32 SEGMARK
-    bool sop = false, eph = false, plt = false, tlm = false;
-    bool poc = false;
-    Packed packed = Packed::None;
-    bool packed_keeps_markers = false;  // PPM/PPT that keep SOP and EPH
-    bool oracle_refuses = false;        // an edge case the oracle refuses (the rewrite is checked on its source)
-    int psot0 = 0;                      // 1: the last tile-part's Psot set to 0; 2: and the EOC dropped
-    unsigned seed = 1;
-    int texture = 24;  // texture amplitude, in 8-bit steps
-};
+using Spec = GeneratedSpec;
 
 std::vector<Spec> specs()
 {
@@ -179,6 +153,12 @@ std::vector<Spec> specs()
          .rates = rates({8, 3})});
     add({.name = "sgnd8_rgb", .w = 40, .h = 40, .comps = 3, .sgnd = true, .mct = 0, .numres = 4});
     add({.name = "sub_420", .w = 48, .h = 40, .comps = 3, .sub = 2, .numres = 4, .rates = r3});
+    add({.name = "mix_odd_sub420_signed12_53", .w = 36, .h = 31, .comps = 3, .prec = 12, .sgnd = true,
+         .sub = 2, .x0 = 3, .y0 = 5, .tw = 19, .th = 17, .tx0 = 1, .ty0 = 2, .numres = 3,
+         .rates = {16, 4, 0}, .cbw = 8, .cbh = 4, .precincts = {3, 3, 4}, .prog = OPJ_RPCL});
+    add({.name = "mix_odd_sub420_signed12_97", .w = 43, .h = 38, .comps = 3, .prec = 12, .sgnd = true,
+         .sub = 2, .x0 = 5, .y0 = 7, .irreversible = true, .numres = 3,
+         .rates = {24, 8, 3}, .cbw = 4, .cbh = 8, .precincts = {3, 3, 4}, .prog = OPJ_CPRL});
     add({.name = "cblk_4x4", .w = 32, .h = 32, .comps = 3, .numres = 4, .rates = r3, .cbw = 4, .cbh = 4});
     add({.name = "cblk_32x16_97", .w = 64, .h = 48, .comps = 3, .irreversible = true, .numres = 5,
          .rates = rates({16, 6}), .cbw = 32, .cbh = 16});
@@ -193,219 +173,6 @@ std::vector<Spec> specs()
     add({.name = "large_4096x8_rgb_97", .w = 4096, .h = 8, .comps = 3, .irreversible = true, .numres = 4,
          .rates = rates({64, 16})});
     return v;
-}
-
-// ---- synthetic images -------------------------------------------------------------------------------
-
-struct Rng {
-    std::uint64_t s;
-    std::uint32_t next()
-    {
-        s ^= s << 13;
-        s ^= s >> 7;
-        s ^= s << 17;
-        return std::uint32_t(s >> 11);
-    }
-};
-
-int ceil_div(int a, int b)
-{
-    return (a + b - 1) / b;
-}
-
-opj_image_t* make_image(const Spec& s)
-{
-    std::vector<opj_image_cmptparm_t> cp(std::size_t(s.comps));
-    const int x1 = s.x0 + s.w, y1 = s.y0 + s.h;
-    for (int c = 0; c < s.comps; ++c) {
-        auto& p = cp[std::size_t(c)];
-        std::memset(&p, 0, sizeof(p));
-        const int d = (c == 1 || c == 2) ? s.sub : 1;
-        p.dx = p.dy = OPJ_UINT32(d);
-        p.x0 = OPJ_UINT32(ceil_div(s.x0, d));
-        p.y0 = OPJ_UINT32(ceil_div(s.y0, d));
-        p.w = OPJ_UINT32(ceil_div(x1, d) - ceil_div(s.x0, d));
-        p.h = OPJ_UINT32(ceil_div(y1, d) - ceil_div(s.y0, d));
-        p.prec = OPJ_UINT32(s.prec);
-        p.sgnd = s.sgnd ? 1 : 0;
-    }
-    const OPJ_COLOR_SPACE cs = s.comps >= 3 ? OPJ_CLRSPC_SRGB : OPJ_CLRSPC_GRAY;
-    opj_image_t* img = opj_image_create(OPJ_UINT32(s.comps), cp.data(), cs);
-    if (!img) {
-        return nullptr;
-    }
-    img->x0 = OPJ_UINT32(s.x0);
-    img->y0 = OPJ_UINT32(s.y0);
-    img->x1 = OPJ_UINT32(x1);
-    img->y1 = OPJ_UINT32(y1);
-    // integer arithmetic only, so every platform makes the same image
-    Fnv64 seed;
-    seed.bytes(s.name.data(), s.name.size());
-    seed.u32(s.seed);
-    Rng rng{seed.value() | 1};
-    const std::int64_t maxval = (std::int64_t(1) << s.prec) - 1;
-    for (int c = 0; c < s.comps; ++c) {
-        const auto& comp = img->comps[c];
-        for (OPJ_UINT32 y = 0; y < comp.h; ++y) {
-            for (OPJ_UINT32 x = 0; x < comp.w; ++x) {
-                // two triangle waves that differ per component, an interference term, seeded texture
-                const std::int64_t fx = comp.w > 1 ? std::int64_t(x) * 1024 / (comp.w - 1) : 512;
-                const std::int64_t fy = comp.h > 1 ? std::int64_t(y) * 1024 / (comp.h - 1) : 512;
-                const std::int64_t t1 = (fx * 3 + fy * 5 + c * 400) % 2048, t2 = (fx * 7 - fy * 2 + 4096 + c * 900) % 2048;
-                const std::int64_t tri1 = t1 < 1024 ? t1 : 2047 - t1, tri2 = t2 < 1024 ? t2 : 2047 - t2;
-                std::int64_t v = 20 + (tri1 * 150 >> 10) + (tri2 * 60 >> 10) + ((fx * fy >> 12) & 15);
-                v += std::int64_t(rng.next() % unsigned(2 * s.texture + 1)) - s.texture;
-                v = std::clamp<std::int64_t>(v, 0, 255) * maxval / 255;
-                if (s.sgnd) {
-                    v -= std::int64_t(1) << (s.prec - 1);
-                }
-                comp.data[std::size_t(y) * comp.w + x] = OPJ_INT32(v);
-            }
-        }
-    }
-    return img;
-}
-
-// ---- encoding ------------------------------------------------------------------------------------------
-
-struct Sink {
-    Bytes* out;
-    std::size_t pos = 0;
-};
-
-OPJ_SIZE_T sink_write(void* buf, OPJ_SIZE_T n, void* user)
-{
-    auto* s = static_cast<Sink*>(user);
-    if (s->pos + n > s->out->size()) {
-        s->out->resize(s->pos + n);
-    }
-    std::memcpy(s->out->data() + s->pos, buf, n);
-    s->pos += n;
-    return n;
-}
-
-OPJ_OFF_T sink_skip(OPJ_OFF_T n, void* user)
-{
-    auto* s = static_cast<Sink*>(user);
-    s->pos = std::size_t(OPJ_OFF_T(s->pos) + n);
-    if (s->pos > s->out->size()) {
-        s->out->resize(s->pos);
-    }
-    return n;
-}
-
-OPJ_BOOL sink_seek(OPJ_OFF_T to, void* user)
-{
-    auto* s = static_cast<Sink*>(user);
-    s->pos = std::size_t(to);
-    if (s->pos > s->out->size()) {
-        s->out->resize(s->pos);
-    }
-    return OPJ_TRUE;
-}
-
-void on_message(const char* msg, void* user)
-{
-    if (user) {
-        *static_cast<std::string*>(user) += msg;
-    }
-}
-
-bool encode(const Spec& s, bool sop, bool eph, Bytes& out, std::string& err)
-{
-    opj_image_t* img = make_image(s);
-    if (!img) {
-        err = "image";
-        return false;
-    }
-    opj_cparameters_t p;
-    opj_set_default_encoder_parameters(&p);
-    p.numresolution = s.numres;
-    p.irreversible = s.irreversible ? 1 : 0;
-    p.cblockw_init = s.cbw;
-    p.cblockh_init = s.cbh;
-    p.prog_order = s.prog;
-    p.mode = s.mode;
-    const bool equal_comps = s.sub == 1;
-    p.tcp_mct = char(s.mct >= 0 ? s.mct : (s.comps >= 3 && equal_comps ? 1 : 0));
-    if (s.rates.empty()) {
-        p.tcp_numlayers = 1;
-        p.tcp_rates[0] = 0;
-    } else {
-        p.tcp_numlayers = int(s.rates.size());
-        for (std::size_t i = 0; i < s.rates.size(); ++i) {
-            p.tcp_rates[i] = s.rates[i];
-        }
-    }
-    p.cp_disto_alloc = 1;
-    if (sop) {
-        p.csty |= 0x02;
-    }
-    if (eph) {
-        p.csty |= 0x04;
-    }
-    if (!s.precincts.empty()) {
-        p.csty |= 0x01;
-        p.res_spec = int(s.precincts.size());
-        // OpenJPEG lists precinct sizes from the finest resolution down
-        for (std::size_t i = 0; i < s.precincts.size(); ++i) {
-            const int e = s.precincts[s.precincts.size() - 1 - i];
-            p.prcw_init[i] = 1 << e;
-            p.prch_init[i] = 1 << e;
-        }
-    }
-    if (s.tw) {
-        p.tile_size_on = OPJ_TRUE;
-        p.cp_tdx = s.tw;
-        p.cp_tdy = s.th;
-        p.cp_tx0 = s.tx0;
-        p.cp_ty0 = s.ty0;
-    }
-    if (s.poc) {
-        // resolutions 0..2 layer by layer, then the rest resolution by resolution
-        const int layers = p.tcp_numlayers;
-        p.numpocs = 2;
-        p.POC[0].tile = 1;
-        p.POC[0].resno0 = 0;
-        p.POC[0].compno0 = 0;
-        p.POC[0].layno1 = OPJ_UINT32(layers);
-        p.POC[0].resno1 = 3;
-        p.POC[0].compno1 = OPJ_UINT32(s.comps);
-        p.POC[0].prg1 = OPJ_LRCP;
-        p.POC[1].tile = 1;
-        p.POC[1].resno0 = 0;
-        p.POC[1].compno0 = 0;
-        p.POC[1].layno1 = OPJ_UINT32(layers);
-        p.POC[1].resno1 = OPJ_UINT32(s.numres);
-        p.POC[1].compno1 = OPJ_UINT32(s.comps);
-        p.POC[1].prg1 = OPJ_RLCP;
-    }
-    char comment[] = "neo-j2k test corpus";
-    p.cp_comment = comment;
-
-    opj_codec_t* codec = opj_create_compress(OPJ_CODEC_J2K);
-    opj_set_error_handler(codec, on_message, &err);
-    out.clear();
-    Sink sink{&out};
-    opj_stream_t* st = opj_stream_create(1 << 20, OPJ_FALSE);
-    opj_stream_set_user_data(st, &sink, nullptr);
-    opj_stream_set_write_function(st, sink_write);
-    opj_stream_set_skip_function(st, sink_skip);
-    opj_stream_set_seek_function(st, sink_seek);
-    bool ok = opj_setup_encoder(codec, &p, img) != 0;
-    if (ok && (s.plt || s.tlm)) {
-        const char* opts[3] = {nullptr, nullptr, nullptr};
-        int n = 0;
-        if (s.plt) opts[n++] = "PLT=YES";
-        if (s.tlm) opts[n++] = "TLM=YES";
-        ok = opj_encoder_set_extra_options(codec, opts) != 0;
-    }
-    ok = ok && opj_start_compress(codec, img, st) && opj_encode(codec, st) && opj_end_compress(codec, st);
-    out.resize(sink.pos);
-    opj_stream_destroy(st);
-    opj_destroy_codec(codec);
-    opj_image_destroy(img);
-    return ok;
 }
 
 // ---- packed packet headers (PPM, PPT) from a SOP+EPH stream -----------------------------------------
@@ -585,17 +352,17 @@ bool build(const Spec& s, Bytes& out, std::string& err)
         // Psot = 0 tile-part to the stream's end less 2 bytes, so without an EOC it dropped the last
         // 2 data bytes (plan W5); the oracle keeps them since the fork's stage 1a.
         Bytes src;
-        if (!encode(s, s.sop, s.eph, src, err) || !last_psot_zero(src, s.psot0 == 2, out, err) ||
+        if (!encode_generated(s, s.sop, s.eph, src, err) || !last_psot_zero(src, s.psot0 == 2, out, err) ||
                 !same_decodes(src, out, s.numres, err)) {
             return false;
         }
     } else if (s.packed == Packed::None) {
-        if (!encode(s, s.sop, s.eph, out, err)) {
+        if (!encode_generated(s, s.sop, s.eph, out, err)) {
             return false;
         }
     } else {
         Bytes src;
-        if (!encode(s, true, true, src, err) || !pack_headers(src, s.packed, s.packed_keeps_markers, out, err)) {
+        if (!encode_generated(s, true, true, src, err) || !pack_headers(src, s.packed, s.packed_keeps_markers, out, err)) {
             return false;
         }
         if (s.oracle_refuses) {

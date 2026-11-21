@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: BSD-2-Clause
 // Copyright (c) 2026, Anne Skydancer (neo-j2k)
 
-//! The raw bindings of `shim/nj2k_rust_shim.h` (ABI version 1) and the few public `nj2k_*`
+//! The raw bindings of `shim/nj2k_rust_shim.h` and the few public `nj2k_*`
 //! functions the wrapper calls. Written by hand from the header; `lib.rs` checks the ABI version
 //! before any other call. Nothing outside this crate sees these.
 
-use std::ffi::c_char;
+use std::ffi::{c_char, c_void};
+
+use super::{Limits, kernels::WaveletRect};
 
 /// `nj2k_codec_t`, opaque.
 #[repr(C)]
@@ -28,7 +30,60 @@ pub(crate) struct Pgx {
     _private: [u8; 0],
 }
 
-pub(crate) const ABI_VERSION: u32 = 1;
+/// `nj2k_shim_header_t`, opaque.
+#[repr(C)]
+pub(crate) struct Header {
+    _private: [u8; 0],
+}
+
+/// `nj2k_shim_pool_t`, opaque.
+#[repr(C)]
+pub(crate) struct Pool {
+    _private: [u8; 0],
+}
+
+pub(crate) const ABI_VERSION: u32 = 6;
+
+/// `nj2k_shim_codestream_t`, opaque.
+#[repr(C)]
+pub(crate) struct Codestream {
+    _private: [u8; 0],
+}
+
+#[repr(C)]
+pub(crate) struct EncodeRequest {
+    pub(crate) pixels: *const u8,
+    pub(crate) size: usize,
+    pub(crate) stride: usize,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) components: u32,
+    pub(crate) flip_vertical: u32,
+    pub(crate) reversible: u32,
+    pub(crate) resolutions: u32,
+    pub(crate) mct: u32,
+    pub(crate) max_codestream_size: u32,
+    pub(crate) rates: *const f32,
+    pub(crate) rate_count: usize,
+    pub(crate) comment: *const u8,
+    pub(crate) comment_len: usize,
+}
+
+#[repr(C)]
+pub(crate) struct EncodeUpdates {
+    pub(crate) max_codestream_size: u32,
+    pub(crate) layer_count: u32,
+    pub(crate) ratios: [f32; 100],
+}
+
+#[repr(C)]
+pub(crate) struct EncodeTraceRequest {
+    pub(crate) buffer_size: usize,
+    pub(crate) max_write: usize,
+    pub(crate) stop_at: usize,
+    pub(crate) fail_with_error: u32,
+    pub(crate) extra_options: *const *const c_char,
+}
 
 #[repr(C)]
 pub(crate) struct Layout {
@@ -67,7 +122,7 @@ pub(crate) struct OutcomeInfo {
 }
 
 #[repr(C)]
-#[derive(Default)]
+#[derive(Clone, Copy, Default)]
 pub(crate) struct Component {
     pub(crate) w: u32,
     pub(crate) h: u32,
@@ -79,6 +134,28 @@ pub(crate) struct Component {
     pub(crate) sgnd: u32,
     pub(crate) factor: u32,
     pub(crate) resno_decoded: u32,
+}
+
+#[repr(C)]
+#[derive(Default)]
+pub(crate) struct HeaderInfo {
+    pub(crate) x0: u32,
+    pub(crate) y0: u32,
+    pub(crate) x1: u32,
+    pub(crate) y1: u32,
+    pub(crate) numcomps: u32,
+    pub(crate) color_space: i32,
+    pub(crate) tx0: u32,
+    pub(crate) ty0: u32,
+    pub(crate) tdx: u32,
+    pub(crate) tdy: u32,
+    pub(crate) tw: u32,
+    pub(crate) th: u32,
+    pub(crate) numlayers: u32,
+    pub(crate) min_resolutions: u32,
+    pub(crate) progression: u32,
+    pub(crate) reduce_status: i32,
+    pub(crate) dimensions_status: i32,
 }
 
 #[repr(C)]
@@ -166,10 +243,76 @@ unsafe extern "C" {
         o2: *mut i32,
         n: usize,
     );
+    pub(crate) fn nj2k_shim_dwt_decode(
+        plane: *mut i32,
+        size: usize,
+        stride: u32,
+        resolutions: *const WaveletRect,
+        count: usize,
+        reversible: u32,
+    ) -> u32;
+    pub(crate) fn nj2k_shim_encode_u8(request: *const EncodeRequest, out: *mut *mut Codestream) -> i32;
+    pub(crate) fn nj2k_shim_generate_codestream(seed: u32, index: u32, out: *mut *mut Codestream) -> i32;
+    pub(crate) fn nj2k_shim_encode_u8_with_updates(
+        request: *const EncodeRequest,
+        updates: *mut EncodeUpdates,
+        out: *mut *mut Codestream,
+    ) -> i32;
+    pub(crate) fn nj2k_shim_encode_u8_trace(
+        request: *const EncodeRequest,
+        trace: *const EncodeTraceRequest,
+        out: *mut *mut Codestream,
+    ) -> i32;
+    pub(crate) fn nj2k_shim_codestream_offers(codestream: *const Codestream, count: *mut usize) -> *const usize;
+    pub(crate) fn nj2k_shim_codestream_diagnostic(
+        codestream: *const Codestream,
+        index: usize,
+        severity: *mut u32,
+        text: *mut *const u8,
+        len: *mut usize,
+    ) -> u32;
+    pub(crate) fn nj2k_shim_codestream_bytes(codestream: *const Codestream, len: *mut usize) -> *const u8;
+    pub(crate) fn nj2k_shim_codestream_free(codestream: *mut Codestream);
 
-    pub(crate) fn nj2k_shim_codec_new(format: u32, reduce: u32, max_memory: u64) -> *mut Codec;
+    pub(crate) fn nj2k_shim_codec_new(
+        format: u32,
+        reduce: u32,
+        reduce_policy: u32,
+        limits: *const Limits,
+        max_layers: u32,
+        strict: u32,
+    ) -> *mut Codec;
     pub(crate) fn nj2k_shim_codec_free(codec: *mut Codec);
     pub(crate) fn nj2k_shim_codec_set_max_memory(codec: *mut Codec, max_memory: u64) -> u32;
+    pub(crate) fn nj2k_shim_codec_set_reduce(codec: *mut Codec, reduce: u32) -> i32;
+    pub(crate) fn nj2k_shim_codec_header(
+        codec: *mut Codec,
+        data: *const u8,
+        size: usize,
+        reduce_after_header: *const u32,
+        capture_diagnostics: u32,
+        info: *mut HeaderInfo,
+        out: *mut *mut Header,
+    ) -> i32;
+    pub(crate) fn nj2k_shim_header_components(header: *const Header, sized: u32) -> *const Component;
+    pub(crate) fn nj2k_shim_header_diagnostic(
+        header: *const Header,
+        index: usize,
+        severity: *mut u32,
+        text: *mut *const u8,
+        len: *mut usize,
+    ) -> u32;
+    pub(crate) fn nj2k_shim_header_free(header: *mut Header);
+    pub(crate) fn nj2k_shim_codec_set_retained_bytes(codec: *mut Codec, retained_bytes: usize) -> u32;
+    pub(crate) fn nj2k_shim_pool_new(workers: u32) -> *mut Pool;
+    pub(crate) fn nj2k_shim_pool_free(pool: *mut Pool);
+    pub(crate) fn nj2k_shim_pool_batches(pool: *const Pool) -> u64;
+    pub(crate) fn nj2k_shim_pool_run(
+        pool: *mut Pool,
+        count: u32,
+        job: extern "C" fn(*mut c_void, u32),
+        context: *mut c_void,
+    ) -> u32;
     pub(crate) fn nj2k_shim_codec_decode_i32(
         codec: *mut Codec,
         data: *const u8,
@@ -177,6 +320,7 @@ unsafe extern "C" {
         out: *mut i32,
         cap: u64,
         count: *mut u64,
+        pool: *mut Pool,
     ) -> i32;
     pub(crate) fn nj2k_shim_ledger(codec: *mut Codec, ledger: *mut Ledger) -> u32;
     pub(crate) fn nj2k_shim_set_parallel_thresholds(
@@ -186,4 +330,13 @@ unsafe extern "C" {
         output_samples: u64,
         clear_bytes: u64,
     ) -> u32;
+    pub(crate) fn nj2k_shim_codec_dimensions_for(
+        codec: *mut Codec,
+        data: *const u8,
+        size: usize,
+        indices: *const u32,
+        count: u32,
+        numcomps: *mut u32,
+        out: *mut *mut Header,
+    ) -> i32;
 }

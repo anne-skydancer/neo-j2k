@@ -9,7 +9,10 @@
 # - windows (MSVC), linux (GCC 15) and linux-lts (Ubuntu 24.04, GCC 14): every test at baseline
 #   x86-64 and at x86-64-v3 against the C++ oracle; windows and linux build the oracle with CMake
 #   first (NJ2K_ORACLE_DIR), linux-lts lets the oracle crate's build.rs build it;
-# - miri: the crates' own unit tests under Miri, on the pinned nightly (rust/nightly-toolchain).
+# - miri: the crates' own unit tests and the AVX2 kernels under Miri (rust/nightly-toolchain);
+# - scheduled and manual reference replay: the larger committed cut table through the Rust codec alone;
+# - fuzz: seeded decoder, encoder and C++ differential tests under AddressSanitizer,
+#   with longer runs on the nightly schedule and manual dispatch.
 name: Rust
 
 on:
@@ -42,13 +45,15 @@ on:
       - "CMakePresets.json"
       - "tools/check_rust_native.py"
       - ".github/workflows/rust.yml"
+  schedule:
+    - cron: '43 3 * * *'
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: rust-${{ github.event.pull_request.number || github.ref }}
+  group: rust-${{ github.event_name == 'schedule' && 'nightly' || github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 env:
@@ -62,6 +67,7 @@ env:
 
 jobs:
   lint:
+    if: github.event_name != 'schedule'
     name: rust-lint
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -90,6 +96,9 @@ jobs:
           RUSTFLAGS: -C target-cpu=x86-64-v3
           CARGO_TARGET_DIR: target-v3
         run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      - name: Clippy (decoder-only)
+        working-directory: rust
+        run: cargo clippy -p neo-j2k --all-targets --no-default-features --features std --locked -- -D warnings
       - name: Docs
         working-directory: rust
         env:
@@ -99,6 +108,9 @@ jobs:
         run: |
           python3 -I tools/check_rust_native.py --selftest
           python3 -I tools/check_rust_native.py
+      - name: Build the crate from its package
+        working-directory: rust
+        run: cargo package --offline --locked -p neo-j2k
       - name: cargo-deny (licences, advisories, bans, sources)
         env:
           DENY_VERSION: 0.20.2
@@ -115,6 +127,7 @@ jobs:
           "$RUNNER_TEMP/$name/cargo-deny" --workspace check licenses bans sources advisories
 
   windows:
+    if: github.event_name != 'schedule'
     name: rust-windows (MSVC)
     runs-on: windows-2025
     timeout-minutes: 45
@@ -150,18 +163,23 @@ jobs:
       - name: Test (baseline x86-64)
         working-directory: rust
         run: |
+          set -euo pipefail
           export NJ2K_TEST_TMP="$RUNNER_TEMP" TEMP="$RUNNER_TEMP" TMP="$RUNNER_TEMP"
           cargo test --release --workspace --locked
+          cargo test --release --manifest-path fuzz/Cargo.toml --features oracle --locked --lib
       - name: Test (x86-64-v3)
         working-directory: rust
         env:
           RUSTFLAGS: -C target-cpu=x86-64-v3
           CARGO_TARGET_DIR: target-v3
         run: |
+          set -euo pipefail
           export NJ2K_TEST_TMP="$RUNNER_TEMP" TEMP="$RUNNER_TEMP" TMP="$RUNNER_TEMP"
           cargo test --release --workspace --locked
+          cargo test --release --manifest-path fuzz/Cargo.toml --features oracle --locked --lib
 
   linux:
+    if: github.event_name != 'schedule'
     name: rust-linux (GCC 15)
     runs-on: ubuntu-26.04
     timeout-minutes: 45
@@ -180,13 +198,13 @@ jobs:
           sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 update -qq
           sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 install -y -qq ninja-build g++-15
           "$CXX" --version | head -n 1
-      - name: Conformance data (cache)
+      - name: Conformance and non-regression data (cache)
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: .testdata/openjpeg-data
-          key: openjpeg-data-conformance-${{ env.OPENJPEG_DATA_COMMIT }}-linux
-      - name: Conformance data (fetch)
-        run: python3 -I tools/fetch_testdata.py
+          key: openjpeg-data-full-${{ env.OPENJPEG_DATA_COMMIT }}-linux
+      - name: Conformance and non-regression data (fetch)
+        run: python3 -I tools/fetch_testdata.py --all
       - name: Toolchain (rust/rust-toolchain.toml)
         working-directory: rust
         run: |
@@ -207,18 +225,23 @@ jobs:
       - name: Test (baseline x86-64)
         working-directory: rust
         run: |
+          set -euo pipefail
           export NJ2K_TEST_TMP="$RUNNER_TEMP" TMPDIR="$RUNNER_TEMP"
           cargo test --release --workspace --locked
+          cargo test --release --locked -p neo-j2k --lib -- --ignored --exact mct::tests::irreversible_shift_matches_cpp_for_all_float_bits
       - name: Test (x86-64-v3)
         working-directory: rust
         env:
           RUSTFLAGS: -C target-cpu=x86-64-v3
           CARGO_TARGET_DIR: target-v3
         run: |
+          set -euo pipefail
           export NJ2K_TEST_TMP="$RUNNER_TEMP" TMPDIR="$RUNNER_TEMP"
           cargo test --release --workspace --locked
+          cargo test --release --locked -p neo-j2k --lib -- --ignored --exact mct::tests::irreversible_shift_matches_cpp_for_all_float_bits
 
   linux-lts:
+    if: github.event_name != 'schedule'
     name: rust-linux-lts (ubuntu:24.04, GCC 14)
     runs-on: ubuntu-26.04
     timeout-minutes: 45
@@ -279,6 +302,7 @@ jobs:
           cargo test --release --workspace --locked
 
   miri:
+    if: github.event_name != 'schedule'
     name: rust-miri
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -296,6 +320,107 @@ jobs:
           echo "NIGHTLY=$nightly" >> "$GITHUB_ENV"
           rustup toolchain install "$nightly" --profile minimal --component miri,rust-src
           cargo "+$nightly" miri setup
-      - name: Miri
+      - name: Miri (scalar)
         working-directory: rust
-        run: cargo "+$NIGHTLY" miri test -p neo-j2k-testkit -p neo-j2k --lib --locked
+        run: |
+          cargo "+$NIGHTLY" miri test -p neo-j2k-testkit -p neo-j2k --lib --locked
+          cargo "+$NIGHTLY" miri test -p neo-j2k --test miri_decode --locked
+      - name: Miri (AVX2)
+        working-directory: rust
+        env:
+          RUSTFLAGS: -C target-feature=+avx2
+          CARGO_TARGET_DIR: target-miri-avx2
+        run: |
+          cargo "+$NIGHTLY" miri test -p neo-j2k --lib --locked -- avx2_ interleaved_targets_match_plane_writes_at_every_channel_count
+
+  nightly-reference:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    name: rust-nightly-reference
+    runs-on: ubuntu-26.04
+    timeout-minutes: 25
+    env:
+      NJ2K_ORACLE_NO_BUILD: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Replay the extended cut table
+        working-directory: rust
+        run: cargo test --release --locked -p neo-j2k --test reference_replay -- --ignored --exact nightly_reference_cuts
+
+  nightly-generated:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    name: rust-nightly-generated
+    runs-on: ubuntu-26.04
+    timeout-minutes: 25
+    env:
+      CC: gcc-15
+      CXX: g++-15
+      NJ2K_ORACLE_DIR: ${{ github.workspace }}/build/linux-gcc
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build the C++ oracle
+        run: |
+          set -euo pipefail
+          cmake --preset linux-gcc $ORACLE_OPTIONS
+          cmake --build --preset linux-gcc --target nj2k_rust_shim --parallel
+      - name: Compare generated coding combinations
+        working-directory: rust
+        run: cargo test --release --locked -p neo-j2k --test generated_matrix -- --ignored --exact extended_generated_coding_matrix_matches_openjpeg
+
+  fuzz:
+    name: rust-fuzz (${{ matrix.cpu }})
+    runs-on: windows-2025
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        cpu: [x86-64, x86-64-v3]
+    env:
+      NJ2K_ORACLE_DIR: ${{ github.workspace }}/build/windows-msvc-asan
+      FUZZ_SECONDS: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '600' || '90' }}
+      API_SEQUENCE_SECONDS: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '600' || '45' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Nightly and cargo-fuzz
+        working-directory: rust
+        shell: pwsh
+        run: |
+          $nightly = (Get-Content nightly-toolchain -Raw).Trim()
+          rustup toolchain install $nightly --profile minimal
+          cargo install cargo-fuzz --version 0.13.2 --locked
+      - name: Build the sanitized C++ oracle
+        shell: bash
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC2086
+          cmake --preset windows-msvc-asan $ORACLE_OPTIONS
+          cmake --build --preset windows-msvc-asan --target nj2k_rust_shim --parallel
+      - name: Fuzz the decoder and encoder
+        working-directory: rust
+        shell: pwsh
+        env:
+          RUSTFLAGS: -C target-cpu=${{ matrix.cpu }}
+        run: |
+          $installer = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer'
+          $vs = & (Join-Path $installer vswhere.exe) -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          Import-Module (Join-Path $vs 'Common7/Tools/Microsoft.VisualStudio.DevShell.dll')
+          Enter-VsDevShell -VsInstallPath $vs -SkipAutomaticLocation -DevCmdArguments '-arch=x64 -host_arch=x64'
+          $nightly = (Get-Content nightly-toolchain -Raw).Trim()
+          New-Item -ItemType Directory -Force fuzz/corpus/header_decode, fuzz/corpus/differential, fuzz/corpus/roundtrip, fuzz/corpus/encode_options, fuzz/corpus/api_sequence | Out-Null
+          cargo "+$nightly" fuzz run header_decode fuzz/corpus/header_decode ../corpus/generated fuzz/seeds/jp2 -- -max_len=1048576 "-max_total_time=$env:FUZZ_SECONDS" -timeout=10 -print_final_stats=1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo "+$nightly" fuzz run --features oracle differential fuzz/corpus/differential ../corpus/generated fuzz/seeds/jp2 -- -max_len=131072 "-max_total_time=$env:FUZZ_SECONDS" -timeout=10 -print_final_stats=1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo "+$nightly" fuzz run --features oracle roundtrip fuzz/corpus/roundtrip ../fuzz/seeds/roundtrip -- -max_len=16400 "-max_total_time=$env:FUZZ_SECONDS" -timeout=10 -print_final_stats=1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo "+$nightly" fuzz run --features oracle encode_options fuzz/corpus/encode_options ../fuzz/seeds/encode -- -max_len=16400 "-max_total_time=$env:FUZZ_SECONDS" -timeout=10 -print_final_stats=1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo "+$nightly" fuzz run --features oracle api_sequence fuzz/corpus/api_sequence fuzz/seeds/api_sequence -- -max_len=18 "-max_total_time=$env:API_SEQUENCE_SECONDS" -timeout=10 -seed=137 -print_final_stats=1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Check the fuzz lockfile
+        run: git diff --exit-code -- rust/fuzz/Cargo.lock

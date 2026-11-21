@@ -58,6 +58,8 @@ prec12_g.j2k	2349	40	40	1	12	5/3	LRCP	1	4	-
 prec16_g_97.j2k	1075	40	40	1	16	9/7	LRCP	2	4	-
 sgnd8_rgb.j2k	4325	40	40	3	8	5/3	LRCP	1	4	signed
 sub_420.j2k	2800	48	40	3	8	5/3	LRCP	3	4	subsampled
+mix_odd_sub420_signed12_53.j2k	3954	36	31	3	12	5/3	RPCL	3	3	tiles,image-origin,tile-origin,precincts,signed,subsampled,code-block-size
+mix_odd_sub420_signed12_97.j2k	2462	43	38	3	12	9/7	CPRL	3	3	image-origin,precincts,signed,subsampled,code-block-size
 cblk_4x4.j2k	3674	32	32	3	8	5/3	LRCP	3	4	code-block-size
 cblk_32x16_97.j2k	1529	64	48	3	8	9/7	LRCP	2	5	code-block-size
 large_1024_rgb_97.j2k	31349	1024	1024	3	8	9/7	LRCP	5	6	-

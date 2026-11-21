@@ -12,14 +12,16 @@
 //! - [`layout_table`]: the C++ size table the twin's byte ledger mirrors;
 //! - [`viewer`], [`scan_summary`], [`read_pgx`]: the C++ harness's rules, scanner and PGX reader,
 //!   for the test kit's differential tests;
-//! - [`kernels`]: the library's scalar row kernels;
-//! - [`Codec`]: a memory codec of neo-j2k with its arena numbers and parallel thresholds.
+//! - [`kernels`]: the library's scalar row kernels and inverse wavelet transform;
+//! - [`Codec`]: a memory codec of neo-j2k with header facts, decoded dimensions, arena numbers and parallel thresholds.
+//! - [`encode_u8`]: the C++ encoder's codestream from eight-bit samples and explicit encoder settings.
 //!
 //! Every call first checks the shim's ABI version ([`init`]). The C++ never throws across the
 //! boundary (the shim catches); a failure of the harness itself is a panic here, which is a test
 //! failure.
 
 use std::ffi::{CStr, CString};
+use std::num::NonZeroUsize;
 use std::path::Path;
 use std::ptr::NonNull;
 use std::sync::OnceLock;
@@ -28,6 +30,9 @@ use neo_j2k_testkit::pgx::Pgx;
 use neo_j2k_testkit::request::{Backend, Component, Mode, Outcome, Request};
 
 mod ffi;
+mod pool;
+
+pub use pool::BenchmarkPool;
 
 /// Checks the shim once: its ABI version, and that its backends were made before `main` (so that
 /// making them, which writes the environment, never raced a test thread). Also sends the C++'s
@@ -235,18 +240,7 @@ impl OwnedOutcome {
             if more == 0 {
                 break;
             }
-            o.comps.push(Component {
-                w: k.w,
-                h: k.h,
-                dx: k.dx,
-                dy: k.dy,
-                x0: k.x0,
-                y0: k.y0,
-                prec: k.prec,
-                sgnd: k.sgnd,
-                factor: k.factor,
-                resno_decoded: k.resno_decoded,
-            });
+            o.comps.push(Component::from(k));
             if !samples.is_null() && count > 0 {
                 let count = usize::try_from(count).expect("a plane larger than memory");
                 // SAFETY: samples points to count samples owned by the outcome, which outlives
@@ -264,6 +258,23 @@ impl OwnedOutcome {
                 u8_hash: info.u8_hash,
             },
         )
+    }
+}
+
+impl From<ffi::Component> for Component {
+    fn from(raw: ffi::Component) -> Self {
+        Self {
+            w: raw.w,
+            h: raw.h,
+            dx: raw.dx,
+            dy: raw.dy,
+            x0: raw.x0,
+            y0: raw.y0,
+            prec: raw.prec,
+            sgnd: raw.sgnd,
+            factor: raw.factor,
+            resno_decoded: raw.resno_decoded,
+        }
     }
 }
 
@@ -372,7 +383,7 @@ pub fn read_pgx(path: &Path) -> Result<Pgx, String> {
     })
 }
 
-/// The library's scalar row kernels, as the library compiled them.
+/// The library's scalar row kernels and inverse wavelet transform, as the library compiled them.
 pub mod kernels {
     use crate::{ffi, init};
 
@@ -423,6 +434,221 @@ pub mod kernels {
     pub fn ict_scalar(c: [&[i32]; 3]) -> [Vec<i32>; 3] {
         colour(ffi::nj2k_shim_ict_scalar, c)
     }
+
+    /// The bounds of one resolution of a tile-component in that resolution's coordinates.
+    #[derive(Clone, Copy, Debug)]
+    #[repr(C)]
+    pub struct WaveletRect {
+        pub x0: u32,
+        pub y0: u32,
+        pub x1: u32,
+        pub y1: u32,
+    }
+
+    /// Inverse wavelet on the given tile-component. Resolutions go from coarsest to finest.
+    /// The plane includes the full `stride` of each row, and holds float bits for 9/7.
+    /// Returns false if the shim refuses the geometry or cannot allocate scratch.
+    #[must_use]
+    pub fn dwt_decode(plane: &mut [i32], stride: u32, resolutions: &[WaveletRect], reversible: bool) -> bool {
+        init();
+        // SAFETY: both slices are valid for the call. Before the transform the shim checks the
+        // chain of resolutions, every coordinate and the complete strided plane size.
+        unsafe {
+            ffi::nj2k_shim_dwt_decode(
+                plane.as_mut_ptr(),
+                plane.len(),
+                stride,
+                resolutions.as_ptr(),
+                resolutions.len(),
+                u32::from(reversible),
+            ) != 0
+        }
+    }
+}
+
+/// The inputs of one neo-j2k C++ encoder call. Samples are interleaved with an optional row stride.
+#[derive(Clone, Copy, Debug)]
+pub struct EncodeRequest<'a> {
+    pub pixels: &'a [u8],
+    pub row_stride: usize,
+    pub width: u32,
+    pub height: u32,
+    pub components: u32,
+    pub flip_vertical: bool,
+    pub reversible: bool,
+    pub resolutions: u32,
+    pub mct: bool,
+    pub max_codestream_size: u32,
+    pub layer_ratios: &'a [f32],
+    pub comment: Option<&'a [u8]>,
+}
+
+struct Codestream(NonNull<ffi::Codestream>);
+
+impl Codestream {
+    fn bytes(&self) -> Vec<u8> {
+        let mut len = 0;
+        // SAFETY: the codestream handle is live and len is a writable local.
+        let bytes = unsafe { ffi::nj2k_shim_codestream_bytes(self.0.as_ptr(), &raw mut len) };
+        if len == 0 {
+            return Vec::new();
+        }
+        // SAFETY: the C++ codestream owns len initialized bytes for as long as the handle lives.
+        unsafe { std::slice::from_raw_parts(bytes, len) }.to_vec()
+    }
+}
+
+impl Drop for Codestream {
+    fn drop(&mut self) {
+        // SAFETY: the handle was returned by the shim and is freed here exactly once.
+        unsafe { ffi::nj2k_shim_codestream_free(self.0.as_ptr()) };
+    }
+}
+
+/// Encode into a memory output stream. Errors are the C++ encoder's status codes.
+pub fn encode_u8(request: &EncodeRequest<'_>) -> Result<Vec<u8>, i32> {
+    encode_request(request, |raw, out| {
+        // SAFETY: encode_request supplies the live input and a writable output handle.
+        unsafe { ffi::nj2k_shim_encode_u8(raw, out) }
+    })
+}
+
+/// The parameters written back by a successful encoder setup.
+#[derive(Clone, Debug)]
+pub struct EncodeUpdates {
+    pub max_codestream_size: u32,
+    pub layer_ratios: Vec<f32>,
+}
+
+/// Encodes and returns the settings written back by the C++ encoder's setup call, if it succeeded.
+pub fn encode_u8_with_updates(request: &EncodeRequest<'_>) -> (Result<Vec<u8>, i32>, Option<EncodeUpdates>) {
+    let mut updates = ffi::EncodeUpdates {
+        max_codestream_size: 0,
+        layer_count: 0,
+        ratios: [0.0; 100],
+    };
+    let output = encode_request(request, |raw, out| {
+        // SAFETY: encode_request supplies the live input and writable output handle. The update
+        // record is a local with the C struct's repr(C) layout and stays live through the call.
+        unsafe { ffi::nj2k_shim_encode_u8_with_updates(raw, &raw mut updates, out) }
+    });
+    let updates = (updates.layer_count != 0).then(|| EncodeUpdates {
+        max_codestream_size: updates.max_codestream_size,
+        layer_ratios: updates.ratios[..updates.layer_count as usize].to_vec(),
+    });
+    (output, updates)
+}
+
+/// How the C++ stream callback accepts bytes during an encoder trace.
+#[derive(Clone, Copy, Debug)]
+pub struct EncodeTraceOptions<'a> {
+    pub buffer_size: NonZeroUsize,
+    pub max_write: usize,
+    pub stop_at: usize,
+    pub fail_with_error: bool,
+    pub extra_options: &'a [String],
+}
+
+/// The C++ encoder's status and callback observations, including after a refused write.
+#[derive(Debug, PartialEq, Eq)]
+pub struct EncodeTrace {
+    pub status: i32,
+    pub bytes: Vec<u8>,
+    pub offers: Vec<usize>,
+    pub diagnostics: Vec<HeaderDiagnostic>,
+}
+
+/// Encodes to a traced C++ stream using the same setup as [`encode_u8`].
+pub fn encode_u8_trace(request: &EncodeRequest<'_>, options: EncodeTraceOptions<'_>) -> EncodeTrace {
+    init();
+    let request = raw_encode_request(request);
+    let strings: Vec<_> = options
+        .extra_options
+        .iter()
+        .map(|option| CString::new(option.split('\0').next().unwrap_or_default()).unwrap())
+        .collect();
+    let mut pointers: Vec<_> = strings.iter().map(|option| option.as_ptr()).collect();
+    pointers.push(std::ptr::null());
+    let trace = ffi::EncodeTraceRequest {
+        buffer_size: options.buffer_size.get(),
+        max_write: options.max_write,
+        stop_at: options.stop_at,
+        fail_with_error: u32::from(options.fail_with_error),
+        extra_options: pointers.as_ptr(),
+    };
+    let mut out = std::ptr::null_mut();
+    // SAFETY: request spans and the null-terminated extra-options list remain valid until return.
+    let status = unsafe { ffi::nj2k_shim_encode_u8_trace(&raw const request, &raw const trace, &raw mut out) };
+    let stream = Codestream(NonNull::new(out).expect("the C++ harness did not return an encode trace"));
+    let mut count = 0;
+    // SAFETY: the codestream handle is live and count points to a writable local.
+    let offers = unsafe { ffi::nj2k_shim_codestream_offers(stream.0.as_ptr(), &raw mut count) };
+    let offers = if count == 0 {
+        Vec::new()
+    } else {
+        // SAFETY: the C++ codestream owns count initialized offers until the handle is freed.
+        unsafe { std::slice::from_raw_parts(offers, count) }.to_vec()
+    };
+    let diagnostics = read_diagnostics(|index, severity, text, len| {
+        // SAFETY: the snapshot is live and the out-pointers are valid, with zero past the last message.
+        unsafe { ffi::nj2k_shim_codestream_diagnostic(stream.0.as_ptr(), index, severity, text, len) }
+    });
+    EncodeTrace {
+        status,
+        bytes: stream.bytes(),
+        offers,
+        diagnostics,
+    }
+}
+
+fn encode_request(
+    request: &EncodeRequest<'_>,
+    encode: impl FnOnce(*const ffi::EncodeRequest, *mut *mut ffi::Codestream) -> i32,
+) -> Result<Vec<u8>, i32> {
+    init();
+    let raw = raw_encode_request(request);
+    get_codestream(|out| encode(&raw const raw, out))
+}
+
+fn raw_encode_request(request: &EncodeRequest<'_>) -> ffi::EncodeRequest {
+    let (comment, comment_len) = request.comment.map_or((std::ptr::null(), 0), |c| (c.as_ptr(), c.len()));
+    ffi::EncodeRequest {
+        pixels: request.pixels.as_ptr(),
+        size: request.pixels.len(),
+        stride: request.row_stride,
+        width: request.width,
+        height: request.height,
+        components: request.components,
+        flip_vertical: u32::from(request.flip_vertical),
+        reversible: u32::from(request.reversible),
+        resolutions: request.resolutions,
+        mct: u32::from(request.mct),
+        max_codestream_size: request.max_codestream_size,
+        rates: request.layer_ratios.as_ptr(),
+        rate_count: request.layer_ratios.len(),
+        comment,
+        comment_len,
+    }
+}
+
+/// Generates a synthetic JPEG 2000 codestream with the pinned OpenJPEG encoder.
+///
+/// The seed and case index select the sample data and bounded coding parameters.
+pub fn generate_codestream(seed: u32, index: u32) -> Result<Vec<u8>, i32> {
+    init();
+    get_codestream(|out| {
+        // SAFETY: get_codestream supplies a writable output handle.
+        unsafe { ffi::nj2k_shim_generate_codestream(seed, index, out) }
+    })
+}
+
+fn get_codestream(encode: impl FnOnce(*mut *mut ffi::Codestream) -> i32) -> Result<Vec<u8>, i32> {
+    let mut out = std::ptr::null_mut();
+    let status = encode(&raw mut out);
+    if status != 0 {
+        return Err(status);
+    }
+    Ok(Codestream(NonNull::new(out).expect("the C++ encoder returned its codestream")).bytes())
 }
 
 /// A codec's container format.
@@ -432,6 +658,118 @@ pub enum Format {
     J2k,
     /// A JP2 file (`NJ2K_CODEC_JP2`).
     Jp2,
+}
+
+/// Reduce policies of the C++ decoder.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u32)]
+pub enum ReducePolicy {
+    /// Refuse a reduce factor above the coarsest resolution.
+    Exact = 0,
+    /// Lower the factor to the coarsest resolution shared by all components.
+    Clamp = 1,
+}
+
+/// Resource limits of the C++ decoder. An individual zero leaves the resource unbounded.
+#[derive(Clone, Copy, Debug, Default)]
+#[repr(C)]
+pub struct Limits {
+    /// Tiles in the reference grid.
+    pub max_tiles: u32,
+    /// Components in the image.
+    pub max_components: u32,
+    /// Quality layers in the main header or a tile.
+    pub max_layers: u32,
+    /// Width or height of a decoded component.
+    pub max_decoded_side: u32,
+    /// Bytes available to the decoder's allocations.
+    pub max_memory: u64,
+}
+
+/// Header facts from the C++ memory API and the result of its separate dimensions check.
+#[derive(Debug)]
+pub struct Header {
+    /// Image bounds `[x0, y0, x1, y1]` on the reference grid.
+    pub bounds: [u32; 4],
+    /// Tile grid `[x0, y0, tile width, tile height, columns, rows]`.
+    pub tiles: [u32; 6],
+    /// The quality layer count in the main header.
+    pub layers: u32,
+    /// The fewest resolutions any component has in the main header.
+    pub min_resolutions: u32,
+    /// Progression Order in the main header (`NJ2K_PROG_ORDER`).
+    pub progression: u32,
+    /// `NJ2K_COLOR_SPACE` of the image.
+    pub color_space: i32,
+    /// Components as reported directly by `nj2k_read_header_memory`.
+    pub components: Vec<Component>,
+    /// Status of a reduce change requested after the header read, if requested.
+    pub reduce_status: Option<i32>,
+    /// Components after `nj2k_get_decoded_dimensions`, or its exact failure status.
+    pub dimensions: Result<Vec<Component>, i32>,
+}
+
+/// A diagnostic from the C++ codec callback.
+#[derive(Debug, PartialEq, Eq)]
+pub enum HeaderDiagnostic {
+    /// An informational message.
+    Info(Vec<u8>),
+    /// A recoverable warning.
+    Warning(Vec<u8>),
+    /// An error message.
+    Error(Vec<u8>),
+}
+
+struct OwnedHeader(NonNull<ffi::Header>);
+
+impl OwnedHeader {
+    fn components(&self, count: u32, sized: bool) -> Vec<Component> {
+        let count = usize::try_from(count).expect("component count fits in memory");
+        // SAFETY: the snapshot is live. When sized is true, the dimensions check succeeded.
+        let components = unsafe { ffi::nj2k_shim_header_components(self.0.as_ptr(), u32::from(sized)) };
+        assert!(!components.is_null(), "an empty header component array");
+        // SAFETY: the shim filled count entries for this snapshot and it outlives the copy.
+        unsafe { std::slice::from_raw_parts(components, count) }
+            .iter()
+            .copied()
+            .map(Component::from)
+            .collect()
+    }
+
+    fn diagnostics(&self) -> Vec<HeaderDiagnostic> {
+        read_diagnostics(|index, severity, text, len| {
+            // SAFETY: the snapshot is live and the out-pointers are valid, with zero past the last message.
+            unsafe { ffi::nj2k_shim_header_diagnostic(self.0.as_ptr(), index, severity, text, len) }
+        })
+    }
+}
+
+fn read_diagnostics(mut read: impl FnMut(usize, &mut u32, &mut *const u8, &mut usize) -> u32) -> Vec<HeaderDiagnostic> {
+    let mut diagnostics = Vec::new();
+    for index in 0.. {
+        let mut severity = 0;
+        let mut text = std::ptr::null();
+        let mut len = 0;
+        if read(index, &mut severity, &mut text, &mut len) == 0 {
+            break;
+        }
+        // SAFETY: the shim returns len text bytes owned by the live snapshot.
+        let bytes = unsafe { std::slice::from_raw_parts(text, len) }.to_vec();
+        diagnostics.push(match severity {
+            0 => HeaderDiagnostic::Info(bytes),
+            1 => HeaderDiagnostic::Warning(bytes),
+            2 => HeaderDiagnostic::Error(bytes),
+            _ => panic!("unexpected C++ diagnostic severity {severity}"),
+        });
+    }
+    diagnostics
+}
+
+impl Drop for OwnedHeader {
+    fn drop(&mut self) {
+        // SAFETY: the snapshot came from nj2k_shim_codec_header and is freed once.
+        unsafe { ffi::nj2k_shim_header_free(self.0.as_ptr()) };
+    }
 }
 
 /// The C++ arenas' numbers of a codec (`nj2k_shim_ledger_t`).
@@ -449,7 +787,7 @@ pub struct Ledger {
     pub kept_bytes: u64,
 }
 
-/// A non-strict memory decoder of the C++ neo-j2k.
+/// A memory decoder of the C++ neo-j2k.
 #[derive(Debug)]
 pub struct Codec(NonNull<ffi::Codec>);
 
@@ -461,13 +799,50 @@ impl Codec {
     /// A decoder at a reduce factor, with `max_memory` as its only limit when not 0.
     #[must_use]
     pub fn new(format: Format, reduce: u32, max_memory: u64) -> Option<Self> {
+        Self::with_limits(
+            format,
+            reduce,
+            ReducePolicy::Exact,
+            Limits {
+                max_memory,
+                ..Limits::default()
+            },
+        )
+    }
+
+    /// A decoder with explicit reduce policy and resource limits.
+    #[must_use]
+    pub fn with_limits(format: Format, reduce: u32, reduce_policy: ReducePolicy, limits: Limits) -> Option<Self> {
+        Self::with_options(format, reduce, reduce_policy, limits, 0, false)
+    }
+
+    /// A memory decoder with explicit reduce, resource, layer and strict-mode options.
+    #[must_use]
+    pub fn with_options(
+        format: Format,
+        reduce: u32,
+        reduce_policy: ReducePolicy,
+        limits: Limits,
+        max_layers: u32,
+        strict: bool,
+    ) -> Option<Self> {
         init();
         let f = match format {
             Format::J2k => ffi::CODEC_J2K,
             Format::Jp2 => ffi::CODEC_JP2,
         };
-        // SAFETY: plain values; the result is a new codec or null.
-        NonNull::new(unsafe { ffi::nj2k_shim_codec_new(f, reduce, max_memory) }).map(Self)
+        // SAFETY: limits is valid for the call and copied by the shim. The result is a new codec or null.
+        NonNull::new(unsafe {
+            ffi::nj2k_shim_codec_new(
+                f,
+                reduce,
+                reduce_policy as u32,
+                &raw const limits,
+                max_layers,
+                u32::from(strict),
+            )
+        })
+        .map(Self)
     }
 
     /// New limits (`max_memory` alone); false when the codec refuses them now.
@@ -476,40 +851,148 @@ impl Codec {
         unsafe { ffi::nj2k_shim_codec_set_max_memory(self.0.as_ptr(), max_memory) != 0 }
     }
 
+    /// Set the requested reduce factor on the existing decoder and return its status.
+    pub fn set_reduce(&mut self, reduce: u32) -> i32 {
+        // SAFETY: the codec is live and the factor is passed by value.
+        unsafe { ffi::nj2k_shim_codec_set_reduce(self.0.as_ptr(), reduce) }
+    }
+
+    /// Change the capacity the C++ codec can retain after a decode.
+    pub fn set_retained_bytes(&mut self, bytes: usize) -> bool {
+        // SAFETY: the codec is live and the byte limit is passed by value.
+        unsafe { ffi::nj2k_shim_codec_set_retained_bytes(self.0.as_ptr(), bytes) != 0 }
+    }
+
+    /// Read a memory header and check decoded dimensions without decoding samples.
+    /// Returns the exact C++ status if the header read fails.
+    pub fn read_header(&mut self, data: &[u8]) -> Result<Header, i32> {
+        self.read_header_request(data, None, false).0
+    }
+
+    /// Read a header, set a new reduce factor, then check decoded dimensions on the original image.
+    pub fn read_header_then_reduce(&mut self, data: &[u8], reduce: u32) -> Result<Header, i32> {
+        self.read_header_request(data, Some(reduce), false).0
+    }
+
+    /// Read a memory header, select codestream components, and check the resulting dimensions.
+    pub fn decoded_dimensions_for(&mut self, data: &[u8], indices: &[u32]) -> Result<Vec<Component>, i32> {
+        let count = u32::try_from(indices.len()).expect("component count fits in u32");
+        let mut numcomps = 0;
+        let mut raw = std::ptr::null_mut();
+        // SAFETY: the codec is live, the slices are valid for their lengths, and both out-pointers are valid.
+        let status = unsafe {
+            ffi::nj2k_shim_codec_dimensions_for(
+                self.0.as_ptr(),
+                data.as_ptr(),
+                data.len(),
+                indices.as_ptr(),
+                count,
+                &raw mut numcomps,
+                &raw mut raw,
+            )
+        };
+        if status != 0 {
+            return Err(status);
+        }
+        let header = OwnedHeader(NonNull::new(raw).expect("the C++ shim did not return a header snapshot"));
+        Ok(header.components(numcomps, true))
+    }
+
+    /// Read a header and also return ordered diagnostics from the read itself.
+    pub fn read_header_with_diagnostics(&mut self, data: &[u8]) -> (Result<Header, i32>, Vec<HeaderDiagnostic>) {
+        self.read_header_request(data, None, true)
+    }
+
+    fn read_header_request(
+        &mut self,
+        data: &[u8],
+        reduce_after_header: Option<u32>,
+        capture_diagnostics: bool,
+    ) -> (Result<Header, i32>, Vec<HeaderDiagnostic>) {
+        let mut info = ffi::HeaderInfo::default();
+        let mut raw = std::ptr::null_mut();
+        let reduce = reduce_after_header
+            .as_ref()
+            .map_or(std::ptr::null(), std::ptr::from_ref);
+        // SAFETY: the codec is live, data valid for its length, and reduce null or valid for the call.
+        // The shim writes to valid out-pointers info and raw.
+        let status = unsafe {
+            ffi::nj2k_shim_codec_header(
+                self.0.as_ptr(),
+                data.as_ptr(),
+                data.len(),
+                reduce,
+                u32::from(capture_diagnostics),
+                &raw mut info,
+                &raw mut raw,
+            )
+        };
+        let header = NonNull::new(raw).map(OwnedHeader);
+        let diagnostics = header.as_ref().map_or_else(Vec::new, OwnedHeader::diagnostics);
+        if status != 0 {
+            return (Err(status), diagnostics);
+        }
+        let header = header.expect("the C++ shim did not return a header snapshot");
+        (
+            Ok(Header {
+                bounds: [info.x0, info.y0, info.x1, info.y1],
+                tiles: [info.tx0, info.ty0, info.tdx, info.tdy, info.tw, info.th],
+                layers: info.numlayers,
+                min_resolutions: info.min_resolutions,
+                progression: info.progression,
+                color_space: info.color_space,
+                components: header.components(info.numcomps, false),
+                reduce_status: reduce_after_header.map(|_| info.reduce_status),
+                dimensions: if info.dimensions_status == 0 {
+                    Ok(header.components(info.numcomps, true))
+                } else {
+                    Err(info.dimensions_status)
+                },
+            }),
+            diagnostics,
+        )
+    }
+
     /// The header from memory, then the decode into planar `int32` planes (each component `w x h`,
     /// one after the other): the status (`NJ2K_OK`, `NJ2K_TRUNCATED` or an error) and the samples.
     pub fn decode_i32(&mut self, data: &[u8]) -> (i32, Vec<i32>) {
-        let mut need = 0u64;
-        // SAFETY: the codec is live, data valid for its length; with no output (cap 0) the shim
-        // reads the header and gives the samples needed.
-        let st = unsafe {
-            ffi::nj2k_shim_codec_decode_i32(
-                self.0.as_ptr(),
-                data.as_ptr(),
-                data.len(),
-                std::ptr::null_mut(),
-                0,
-                &raw mut need,
-            )
-        };
-        if need == 0 {
-            return (st, Vec::new());
-        }
+        let mut prepared = self.prepare_i32(data);
+        let need = prepared.samples_needed();
         let mut out = vec![0i32; usize::try_from(need).expect("an image larger than memory")];
-        let mut count = 0u64;
-        // SAFETY: as above, out has room for the need samples the header gives.
-        let st = unsafe {
-            ffi::nj2k_shim_codec_decode_i32(
-                self.0.as_ptr(),
-                data.as_ptr(),
-                data.len(),
-                out.as_mut_ptr(),
-                need,
-                &raw mut count,
-            )
-        };
+        let (st, count) = prepared.decode_into(&mut out);
         assert_eq!(count, need, "the header changed between two reads of the same bytes");
         (st, out)
+    }
+
+    /// Query the header once and keep its input and decoder settings for repeated decodes.
+    pub fn prepare_i32<'a>(&'a mut self, data: &'a [u8]) -> PreparedI32<'a> {
+        let (status, need) = self.decode_i32_into(data, None, None);
+        PreparedI32 {
+            codec: self,
+            data,
+            status,
+            need,
+        }
+    }
+
+    fn decode_i32_into(&mut self, data: &[u8], output: Option<&mut [i32]>, pool: Option<&BenchmarkPool>) -> (i32, u64) {
+        let mut count = 0u64;
+        let (ptr, cap) = output.map_or((std::ptr::null_mut(), 0), |out| (out.as_mut_ptr(), out.len() as u64));
+        let pool = pool.map_or(std::ptr::null_mut(), BenchmarkPool::as_ptr);
+        // SAFETY: the codec, slices and count are live, and the shim borrows a pool only for this call.
+        // The shim only offsets the output pointer for nonempty planes after checking their length.
+        let st = unsafe {
+            ffi::nj2k_shim_codec_decode_i32(
+                self.0.as_ptr(),
+                data.as_ptr(),
+                data.len(),
+                ptr,
+                cap,
+                &raw mut count,
+                pool,
+            )
+        };
+        (st, count)
     }
 
     /// The arenas' numbers now.
@@ -533,6 +1016,39 @@ impl Codec {
     pub fn set_parallel_thresholds(&mut self, tile_samples: u64, level_area: u64, output: u64, clear: u64) -> bool {
         // SAFETY: the codec is live.
         unsafe { ffi::nj2k_shim_set_parallel_thresholds(self.0.as_ptr(), tile_samples, level_area, output, clear) != 0 }
+    }
+}
+
+/// One input whose planar output size has been checked against the oracle header.
+#[derive(Debug)]
+pub struct PreparedI32<'a> {
+    codec: &'a mut Codec,
+    data: &'a [u8],
+    status: i32,
+    need: u64,
+}
+
+impl PreparedI32<'_> {
+    /// The sample capacity required by the header, or zero if the header was refused.
+    #[must_use]
+    pub const fn samples_needed(&self) -> u64 {
+        self.need
+    }
+
+    /// Decode into a reusable sample buffer. Returns the status and required sample count.
+    pub fn decode_into(&mut self, output: &mut [i32]) -> (i32, u64) {
+        self.decode_into_with_pool(output, None)
+    }
+
+    /// Decode into a reusable sample buffer, optionally lending the C++ benchmark pool for this call.
+    pub fn decode_into_with_pool(&mut self, output: &mut [i32], pool: Option<&BenchmarkPool>) -> (i32, u64) {
+        if self.status != 0 {
+            return (self.status, self.need);
+        }
+        if (output.len() as u64) < self.need {
+            return (-9, self.need);
+        }
+        self.codec.decode_i32_into(self.data, Some(output), pool)
     }
 }
 
