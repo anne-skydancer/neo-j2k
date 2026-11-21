@@ -50,11 +50,11 @@ different program with different internals, tests and fixes.) To see it for your
 
    The hash must equal the line for `neoj2k-viewer.dll` in this zip's `SHA256SUMS`.
 7. **Start the viewer.** The first start downloads textures again: the viewer keys its texture cache on the
-   decoder's version, and neo-j2k's version string is a new one. It does so again after each neo-j2k release.
-   In Firestorm's *About* box, the line *J2C Decoder Version* should now read
-   `OpenJPEG: 2.5.4, Runtime: Jpeg2000 through neo-j2k 0.1.1`. The first part, "OpenJPEG: 2.5.4", is text the
-   viewer prints from its own build and nothing in this file can change it; the part after "Runtime:" is the
-   library speaking, and it says neo-j2k.
+   decoder's name, and neo-j2k's is a new one. Later neo-j2k versions do not refresh it. In Firestorm's *About*
+   box, the line *J2C Decoder Version* should now read `OpenJPEG: 2.5.4, Runtime: nj2k`. The first part,
+   "OpenJPEG: 2.5.4", is text the viewer prints from its own build; the part after "Runtime:" is the library
+   speaking, and the viewer leaves room for five characters only (a longer name stops it at start), so it says
+   "nj2k". The file's Properties, Details tell the whole story.
 
 ## Go back
 
