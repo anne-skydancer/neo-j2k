@@ -3,7 +3,8 @@
 # Copyright (c) 2026, Anne Skydancer (neo-j2k)
 """Check what the openjp2 module exports: exactly the functions OpenJPEG's openjpeg.h declares (the oracle's:
 OpenJPEG 2.5.4 plus the fork's decoder limits API), all opj_*, and none of neo-j2k's own (nj2k_*), so that a
-viewer which loads OpenJPEG finds what it expects and nothing it does not.
+viewer which loads OpenJPEG finds what it expects and nothing it does not; and a Windows library says in its
+version resource that it is neo-j2k and not OpenJPEG.
 
 usage: check_openjp2.py --library openjp2.dll|libopenjp2.so.7 --header oracle/openjp2/openjpeg.h
        check_openjp2.py --selftest
@@ -17,6 +18,9 @@ import re
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+# in the Windows version resource (modules/openjp2/openjp2.rc.in): what Explorer shows for a file that a viewer's
+# folder calls openjp2.dll
+IDENTITY = "This is neo-j2k, not OpenJPEG."
 
 
 def load_check_exports():
@@ -64,6 +68,10 @@ def main():
         return 2
     exported = load_check_exports().library_exports(a.library)
     problems = []
+    with open(a.library, "rb") as f:
+        data = f.read()
+    if data[:2] == b"MZ" and IDENTITY.encode("utf-16-le") not in data:
+        problems.append("the file does not say what it is (its version resource lacks '%s')" % IDENTITY)
     for name in exported:
         if not name.startswith("opj_"):
             problems.append("exported outside the opj_ namespace: " + name)

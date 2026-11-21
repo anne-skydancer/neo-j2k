@@ -294,7 +294,7 @@ fork's stage 1a hotfix, nothing at the switch). The viewer's texture cache keys 
 holds `opj_version()` (`llimagej2coj.cpp`, `lltexturecache.cpp`): built against the compatibility header
 unchanged, every neo-j2k release would purge every user's cache. The viewer switch (stage 8b) keys it on
 the viewer's own output version.
-The openjp2 module's `opj_version()` returns a longer string, "Jpeg2000 2.5.4 provided by neo-j2k 0.1.1": a
+The openjp2 module's `opj_version()` returns a longer string, "Jpeg2000 through neo-j2k 0.1.1": a
 viewer built for OpenJPEG that caches on it purges at every neo-j2k release, which is the cost of taking the
 module without the viewer's own output version.
 
@@ -312,9 +312,17 @@ core's; the core is the same code as `neoj2k.dll` (the module links the static l
   translation. `tools/gen_openjp2.py` writes them from `neoj2k.h` and fails if any function's return or parameter
   types differ from `openjpeg.h`'s (name for name, once `opj_` and `OPJ_` are mapped); a stale
   `modules/openjp2/opj_forward.inc` fails the test `openjp2_forwarders`.
+- **It is neo-j2k, not OpenJPEG** (owner, 2026-11-21), under whatever name it is installed. The Windows library
+  carries a version resource (`modules/openjp2/openjp2.rc.in`): product name `neo-j2k`, file description
+  "neo-j2k JPEG 2000 codec, not OpenJPEG", comments "This is neo-j2k, not OpenJPEG. It is installed under the name
+  openjp2.dll only because the viewer asks for that name.", so Explorer's Properties, Details say it for the file in a
+  viewer's folder. `openjp2_exports` and the packager fail on a library without it, and `opj_version()` says
+  "Jpeg2000 through neo-j2k".
 - **What the adapter does itself** (`modules/openjp2/openjp2.cpp`):
-  - `opj_version()` returns `"Jpeg2000 2.5.4 provided by neo-j2k 0.1.1"`: OpenJPEG's API level (from
-    `OPJ_VERSION_*`) and neo-j2k's release. A host that keys its cache of decoded images on `opj_version()` (the
+  - `opj_version()` returns `"Jpeg2000 through neo-j2k 0.1.1"`: what the library is, and neo-j2k's release. A
+    viewer built for OpenJPEG prints it after "Runtime:" (Firestorm's About box reads `J2C Decoder Version:
+    OpenJPEG: 2.5.4, Runtime: Jpeg2000 through neo-j2k 0.1.1`, `llimagej2coj.cpp`; the "OpenJPEG: 2.5.4" before it is
+    the viewer's own text from its compile-time header, which a library cannot change). A host that keys its cache of decoded images on `opj_version()` (the
     viewers' texture cache does, "Versions, and a host's cache") purges it when it first meets the module and
     again with every neo-j2k release.
   - `opj_has_thread_support()` is true, and `opj_codec_set_threads(codec, n)` starts the threads, which the core

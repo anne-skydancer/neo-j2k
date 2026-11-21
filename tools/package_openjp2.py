@@ -14,7 +14,8 @@ Before it writes anything it checks the library (and stops if a check fails):
   - it exports exactly the functions of OpenJPEG's openjpeg.h and no nj2k_* (tools/check_openjp2.py);
   - on Windows it imports no C or C++ runtime (MSVCP*, VCRUNTIME*, UCRTBASE, api-ms-win-crt-*): a build with
     NJ2K_MSVC_STATIC_RUNTIME=ON, which needs nothing installed on the machine it is dropped into;
-  - it says "provided by neo-j2k <version>" with the version of include/neoj2k/neoj2k.h.
+  - on Windows its version resource says "This is neo-j2k, not OpenJPEG." (Explorer, Properties, Details);
+  - it says "through neo-j2k <version>" (what opj_version() returns) with the version of include/neoj2k/neoj2k.h.
 
 The zip is neoj2k-viewer-<version>-<platform>.zip, with fixed timestamps and member order, so the same library
 gives the same zip.
@@ -99,7 +100,9 @@ def check_library(path, data):
         runtime = [n for n in pe_imports(data) if RUNTIME.match(n)]
         if runtime:
             problems.append("it imports a C/C++ runtime (%s): build with NJ2K_MSVC_STATIC_RUNTIME=ON" % ", ".join(runtime))
-    want = ("provided by neo-j2k %s" % version()).encode("ascii")
+    if data[:2] == b"MZ" and check.IDENTITY.encode("utf-16-le") not in data:
+        problems.append("its version resource does not say '%s' (a build without the resource?)" % check.IDENTITY)
+    want = ("Jpeg2000 through neo-j2k %s" % version()).encode("ascii")
     if want not in data:
         problems.append("it does not carry the string '%s' (a stale build?)" % want.decode())
     return problems

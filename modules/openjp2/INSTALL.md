@@ -13,6 +13,14 @@ back at any time.
 decodes as OpenJPEG 2.5.4, the library the viewers use today, bit for bit). It has not yet been tried in a viewer.
 If you try it, please say how it went: <https://github.com/anne-skydancer/neo-j2k/issues>.
 
+## What the file is, and what it is not
+
+**The file you put in the viewer's folder is named `openjp2.dll`, and it is not OpenJPEG. It is neo-j2k.** The
+viewer asks Windows for a file with that name, so that is the only name it can use; what is inside is neo-j2k's
+own code. (It contains some code ported from OpenJPEG, which is why OpenJPEG's licence is in this zip, but it is a
+different program with different internals, tests and fixes.) To see it for yourself: right-click the file,
+*Properties*, *Details*. The product name reads **neo-j2k**, and the comments read "This is neo-j2k, not OpenJPEG."
+
 ## What you need
 
 - **Windows, 64-bit**, and a **64-bit viewer**. The file is x64 only.
@@ -32,7 +40,7 @@ If you try it, please say how it went: <https://github.com/anne-skydancer/neo-j2
    (usually under `C:\Program Files`). Each viewer, and each install of it, has its own.
 4. **Keep the old file.** In that folder, rename `openjp2.dll` to `openjp2.dll.original`. Do not delete it.
 5. **Copy in the new one** and **name it `openjp2.dll`**: copy `neoj2k-viewer.dll` from this zip into that folder,
-   then rename the copy to `openjp2.dll`, because that is the name the viewer looks for. A folder under
+   then rename the copy to `openjp2.dll`. The name is only what the viewer looks for; the file is neo-j2k. A folder under
    *Program Files* asks for administrator permission.
 6. **Check the copy** (optional): in PowerShell, in that folder,
 
@@ -43,8 +51,10 @@ If you try it, please say how it went: <https://github.com/anne-skydancer/neo-j2
    The hash must equal the line for `neoj2k-viewer.dll` in this zip's `SHA256SUMS`.
 7. **Start the viewer.** The first start downloads textures again: the viewer keys its texture cache on the
    decoder's version, and neo-j2k's version string is a new one. It does so again after each neo-j2k release.
-   In the viewer's *About* box, the J2C decoder line should now read
-   `Jpeg2000 2.5.4 provided by neo-j2k 0.1.1` (viewers that show it).
+   In Firestorm's *About* box, the line *J2C Decoder Version* should now read
+   `OpenJPEG: 2.5.4, Runtime: Jpeg2000 through neo-j2k 0.1.1`. The first part, "OpenJPEG: 2.5.4", is text the
+   viewer prints from its own build and nothing in this file can change it; the part after "Runtime:" is the
+   library speaking, and it says neo-j2k.
 
 ## Go back
 
