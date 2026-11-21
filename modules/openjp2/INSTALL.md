@@ -18,8 +18,10 @@ If you try it, please say how it went: <https://github.com/anne-skydancer/neo-j2
 - **Windows, 64-bit**, and a **64-bit viewer**. The file is x64 only.
 - **A processor with AVX2**: Intel from Haswell (2013) on, AMD from Ryzen (2017) on, and most machines since.
   On an older one the library refuses to start and the viewer shows no textures (put the old file back).
-- A viewer that keeps its JPEG 2000 library in a **separate `openjp2.dll`** next to its program, as Firestorm and
-  Vulkanstorm do. A viewer with the library built into its program has no file to swap.
+- A viewer that keeps its JPEG 2000 library in a **separate `openjp2.dll`** next to its program. Look in the
+  viewer's folder: if there is no `openjp2.dll`, there is nothing to swap. (Vulkanstorm-Release 1.0.1 has none:
+  it already uses neo-j2k, as `neoj2k.dll`. A viewer with the library built into its program has no file to swap
+  either.)
 
 ## Install
 
@@ -27,7 +29,7 @@ If you try it, please say how it went: <https://github.com/anne-skydancer/neo-j2
    Then extract it anywhere.
 2. **Close the viewer** completely (check Task Manager for a leftover process).
 3. **Find the viewer's folder**: the one that holds the viewer's program and an `openjp2.dll`
-   (for example `C:\Program Files\Firestorm-Releasex64`). Each viewer, and each install of it, has its own.
+   (usually under `C:\Program Files`). Each viewer, and each install of it, has its own.
 4. **Keep the old file.** In that folder, rename `openjp2.dll` to `openjp2.dll.original`. Do not delete it.
 5. **Copy in the new one** and **name it `openjp2.dll`**: copy `neoj2k-viewer.dll` from this zip into that folder,
    then rename the copy to `openjp2.dll`, because that is the name the viewer looks for. A folder under
