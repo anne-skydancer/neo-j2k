@@ -225,16 +225,20 @@ jobs:
       - name: Test (baseline x86-64)
         working-directory: rust
         run: |
+          set -euo pipefail
           export NJ2K_TEST_TMP="$RUNNER_TEMP" TMPDIR="$RUNNER_TEMP"
           cargo test --release --workspace --locked
+          cargo test --release --locked -p neo-j2k --lib -- --ignored --exact mct::tests::irreversible_shift_matches_cpp_for_all_float_bits
       - name: Test (x86-64-v3)
         working-directory: rust
         env:
           RUSTFLAGS: -C target-cpu=x86-64-v3
           CARGO_TARGET_DIR: target-v3
         run: |
+          set -euo pipefail
           export NJ2K_TEST_TMP="$RUNNER_TEMP" TMPDIR="$RUNNER_TEMP"
           cargo test --release --workspace --locked
+          cargo test --release --locked -p neo-j2k --lib -- --ignored --exact mct::tests::irreversible_shift_matches_cpp_for_all_float_bits
 
   linux-lts:
     if: github.event_name != 'schedule'
@@ -343,6 +347,28 @@ jobs:
       - name: Replay the extended cut table
         working-directory: rust
         run: cargo test --release --locked -p neo-j2k --test reference_replay -- --ignored --exact nightly_reference_cuts
+
+  nightly-generated:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    name: rust-nightly-generated
+    runs-on: ubuntu-26.04
+    timeout-minutes: 25
+    env:
+      CC: gcc-15
+      CXX: g++-15
+      NJ2K_ORACLE_DIR: ${{ github.workspace }}/build/linux-gcc
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build the C++ oracle
+        run: |
+          set -euo pipefail
+          cmake --preset linux-gcc $ORACLE_OPTIONS
+          cmake --build --preset linux-gcc --target nj2k_rust_shim --parallel
+      - name: Compare generated coding combinations
+        working-directory: rust
+        run: cargo test --release --locked -p neo-j2k --test generated_matrix -- --ignored --exact extended_generated_coding_matrix_matches_openjpeg
 
   fuzz:
     name: rust-fuzz (${{ matrix.cpu }})

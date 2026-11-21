@@ -6,6 +6,7 @@
 # OpenJPEG-ABI libraries loaded at run time, neo-j2k through its compatibility header).
 add_library(nj2k_test_common STATIC
   common.cpp
+  generated.cpp
   j2k_scan.cpp
   pgx.cpp
   load.cpp
