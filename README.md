@@ -192,42 +192,31 @@ Options, given at configure time (`-D<option>=<value>`):
 | `NJ2K_PROFILE_OPENSIM` | `ON` | the OpenSim decoder limit profile |
 | `NJ2K_BUILD_TESTS`, `NJ2K_BUILD_BENCH`, `NJ2K_BUILD_TOOLS` | on as the top-level project | tests, oracle and harness; the bench; the tools |
 | `NJ2K_BUILD_FUZZERS` | `OFF` | libFuzzer targets (Clang, or MSVC with `/fsanitize=fuzzer`) |
+| `NJ2K_BUILD_RUST_SHIM` | `OFF` | the test-only C interface the Rust twin's oracle crate links (`rust/README.md`); never installed |
 
 The benches are in `bench/`, with their commands in `doc/bench.md`. Run compiled tests with `TEMP`/`TMP`
 (Windows) or `TMPDIR` (POSIX) pointing at a folder your antivirus excludes.
 
-### Rust (planned)
+### Rust
 
-The native Rust twin is in progress (stages R0-R6). It is a transcription of this library, bit-identical to it,
-with no FFI. These commands apply once `rust/` lands:
+The native Rust twin is in progress (stages R0-R6): a transcription of this library, bit-identical to it.
+The crate is native Rust, with no C or C++ and no FFI in it or its dependency tree; the C++ is only its test
+oracle. Stage R0, the scaffolding, is in `rust/`; `rust/README.md` has every command, and these are the main
+ones:
 
 ```
 cd rust
-rustup show                     # rust-toolchain.toml pins Rust 1.100.0
-cargo build --release
-cargo test --release            # the differential suite needs the C++ oracle, below
-cargo clippy --all-targets -- -D warnings
-cargo fmt --check
-cargo bench
+rustup toolchain install                     # rust-toolchain.toml pins Rust 1.100.0
+cargo test --release --workspace             # builds the C++ oracle with CMake, or links NJ2K_ORACLE_DIR's
+RUSTFLAGS="-C target-cpu=x86-64-v3" CARGO_TARGET_DIR=target-v3 cargo test --release --workspace
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo fmt --all --check
+python -I ../tools/check_rust_native.py      # the crate's tree holds no C or C++, its sources no FFI
 ```
 
-The tests link the C++ library as the oracle through a test-only crate that is never published.
-`NJ2K_ORACLE_DIR` points at an existing CMake build of this repository. Unset, `build.rs` builds one with the
-preset in `NJ2K_ORACLE_PRESET`.
-
-Both CPU targets must give identical results, and CI checks both:
-
-```
-cargo test --release --target-dir target-v1
-RUSTFLAGS="-C target-cpu=x86-64-v3" cargo test --release --target-dir target-v3
-```
-
-Miri (on the `simd` module) and fuzzing use a separately pinned nightly; the crate itself never needs one:
-
-```
-cargo +nightly-<pinned date> miri test -p neo-j2k simd::
-cargo +nightly-<pinned date> fuzz run decode -- -max_total_time=300
-```
+The tests link the C++ library as the oracle through `rust/neo-j2k-oracle`, a test-only crate that is never
+published, with the test-only CMake target `nj2k_rust_shim` (`-DNJ2K_BUILD_RUST_SHIM=ON`, off by default).
+Miri runs on a separately pinned nightly (`rust/nightly-toolchain`); the crate itself never needs one.
 
 ## Layout
 
@@ -237,6 +226,7 @@ cargo +nightly-<pinned date> fuzz run decode -- -max_total_time=300
 | `src/` | the library |
 | `oracle/` | OpenJPEG at the pinned fork commit (the head of the stage 1a hotfix branch, as the package `v2.5.4-cpu-avx2.5` builds it) and any patches `oracle/PIN` lists, built as the test oracle (`doc/oracle.md`) |
 | `tests/` | the runner (`nj2k_diff`), conformance, unit tests, the shared harness (`tests/common`) |
+| `rust/` | the native Rust twin: the crate, its test kit and its C++ oracle crate (`rust/README.md`) |
 | `corpus/generated/` | the generated corpus and the oracle's reference tables |
 | `fuzz/` | libFuzzer targets, dictionary, regression inputs |
 | `bench/` | the bench (`nj2k_bench`, `doc/bench.md`) |

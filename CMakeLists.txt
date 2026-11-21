@@ -18,6 +18,7 @@ option(NJ2K_BUILD_TESTS "Build the oracle, the harness and the tests" ${PROJECT_
 option(NJ2K_BUILD_TOOLS "Build the corpus generator" ${PROJECT_IS_TOP_LEVEL})
 option(NJ2K_BUILD_BENCH "Build the bench harness" ${PROJECT_IS_TOP_LEVEL})
 option(NJ2K_BUILD_FUZZERS "Build libFuzzer targets (Clang, or MSVC with /fsanitize=fuzzer)" OFF)
+option(NJ2K_BUILD_RUST_SHIM "Build the test-only C interface the Rust twin's oracle crate links (rust/README.md)" OFF)
 option(NJ2K_WERROR "Treat warnings in neo-j2k's own code as errors" OFF)
 option(NJ2K_MSVC_STATIC_RUNTIME "Link the static C runtime (/MT) instead of the DLL one (/MD)" OFF)
 option(NJ2K_INSTALL "Generate install rules" ${PROJECT_IS_TOP_LEVEL})
@@ -61,9 +62,13 @@ endfunction()
 
 add_subdirectory(src)
 
-if(NJ2K_BUILD_TESTS OR NJ2K_BUILD_TOOLS OR NJ2K_BUILD_BENCH OR NJ2K_BUILD_FUZZERS)
+if(NJ2K_BUILD_TESTS OR NJ2K_BUILD_TOOLS OR NJ2K_BUILD_BENCH OR NJ2K_BUILD_FUZZERS OR NJ2K_BUILD_RUST_SHIM)
   add_subdirectory(oracle)
   add_subdirectory(tests/common)
+endif()
+# the Rust twin's oracle: test-only, never installed (rust/neo-j2k-oracle)
+if(NJ2K_BUILD_RUST_SHIM)
+  add_subdirectory(rust/neo-j2k-oracle/shim)
 endif()
 if(NJ2K_BUILD_TESTS)
   enable_testing()
@@ -83,4 +88,5 @@ nj2k_asan_runtime_beside_programs()
 
 message(STATUS "neo-j2k ${PROJECT_VERSION}: SIMD ${NJ2K_SIMD}, static ${NJ2K_BUILD_STATIC}, shared ${NJ2K_BUILD_SHARED}, "
                "OpenSim profile ${NJ2K_PROFILE_OPENSIM}, tests ${NJ2K_BUILD_TESTS}, fuzzers ${NJ2K_BUILD_FUZZERS}, "
+               "Rust shim ${NJ2K_BUILD_RUST_SHIM}, "
                "sanitizers '${NJ2K_SANITIZE}'")

@@ -15,7 +15,7 @@ import sys
 EXEMPT_DIRS = ("oracle/openjp2/", "corpus/")
 EXEMPT_FILES = {"LICENSE", ".gitattributes", ".gitignore", "CMakePresets.json"}  # JSON has no comments
 TEXT_SUFFIXES = (".c", ".cc", ".cpp", ".h", ".hpp", ".inl", ".py", ".cmake", ".txt", ".md", ".yml", ".yaml",
-                 ".json", ".in", ".map", ".sh", ".cmd", ".dict", ".toml", ".patch")
+                 ".json", ".in", ".map", ".sh", ".cmd", ".dict", ".toml", ".patch", ".rs")
 OPENJPEG_DERIVED = ("include/neoj2k/neoj2k.h", "src/image.cpp", "src/defaults.cpp", "src/header.cpp",
                     "src/jp2.cpp", "src/codec.cpp", "src/stream.cpp",
                     # stage 1c: the decoder
