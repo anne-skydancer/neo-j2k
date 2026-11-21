@@ -50,6 +50,7 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 #include "encode.h"
+#include "fpenv.h"
 
 #include <cmath>
 #include <climits>
@@ -970,6 +971,7 @@ NJ2K_API NJ2K_BOOL NJ2K_CALLCONV nj2k_encoder_set_extra_options(nj2k_codec_t* p_
 
 NJ2K_API NJ2K_BOOL NJ2K_CALLCONV nj2k_start_compress(nj2k_codec_t* p_codec, nj2k_image_t* image, nj2k_stream_t* p_stream)
 {
+    const nj2k::detail::DefaultFpEnv fp_env;  // the output does not depend on the host's floating-point environment
     Encoder* e = Encoder::from(p_codec);
     if (!e) {
         return NJ2K_FALSE;
@@ -1041,6 +1043,7 @@ NJ2K_API NJ2K_BOOL NJ2K_CALLCONV nj2k_start_compress(nj2k_codec_t* p_codec, nj2k
 
 NJ2K_API NJ2K_BOOL NJ2K_CALLCONV nj2k_encode(nj2k_codec_t* p_codec, nj2k_stream_t* p_stream)
 {
+    const nj2k::detail::DefaultFpEnv fp_env;  // the output does not depend on the host's floating-point environment
     Encoder* e = Encoder::from(p_codec);
     if (!e) {
         return NJ2K_FALSE;

@@ -32,9 +32,11 @@ nj2k_simd(nj2k_decode_unit)  # the AVX2 kernels' declarations, compared with the
 # stage 6a: the encoder against the oracle's, byte for byte, at the viewer's settings
 nj2k_test_program(nj2k_encode_unit unit/encode_unit.cpp)
 # the Rust twin's plan, findings C2 (memory-limit outcomes and the codec's history: none found) and
-# C3 (the host's workers' floating-point environment reaches the samples), each held as today's
+# C3 (the host's workers' floating-point environment reaches the samples: fixed, held as same), each held as today's
 # behaviour (unit/findings_unit.cpp)
 nj2k_test_program(nj2k_findings_unit unit/findings_unit.cpp)
+# the output does not depend on the host's floating-point environment (MXCSR)
+nj2k_test_program(nj2k_fpenv_unit unit/fpenv_unit.cpp)
 # the local gate on a viewer's texture cache (private: run where it is, doc/testing.md)
 nj2k_test_program(nj2k_cache_check tools/nj2k_cache_check.cpp)
 if(NJ2K_PROFILE_OPENSIM)
@@ -78,7 +80,8 @@ nj2k_add_test(decode_unit nj2k_decode_unit "${NJ2K_CORPUS}")
 nj2k_add_test(decode_threads nj2k_decode_unit "${NJ2K_CORPUS}" --threads)
 nj2k_add_test(encode_unit nj2k_encode_unit "${NJ2K_CORPUS}")
 nj2k_add_test(findings_c2 nj2k_findings_unit --c2 "${NJ2K_CORPUS},${PROJECT_SOURCE_DIR}/fuzz/regressions" --expect none)
-nj2k_add_test(findings_c3 nj2k_findings_unit --c3 "${NJ2K_CORPUS}" --expect differ)
+nj2k_add_test(findings_c3 nj2k_findings_unit --c3 "${NJ2K_CORPUS}" --expect same)
+nj2k_add_test(fpenv_unit nj2k_fpenv_unit "${NJ2K_CORPUS}")
 nj2k_add_test(header_unit nj2k_header_unit "${NJ2K_CORPUS}" "${PROJECT_SOURCE_DIR}/fuzz/bombs"
               "${CMAKE_CURRENT_SOURCE_DIR}/known-defects")
 

@@ -24,11 +24,13 @@
 //   C3: whether the host's workers' floating-point environment reaches the samples. Every 9/7 file
 //   of the folder up to 2^20 samples decodes on one thread, then with every stage forced through
 //   an executor whose jobs all run on one worker thread that set MXCSR first: to round toward
-//   zero, to flush-to-zero with denormals-are-zero, and to both. "differ": some samples differ
-//   (the executor contract must state the environment, or the jobs must set it); "same": no
-//   sample differs. Today: differ. Round toward zero changes about half the samples of every 9/7
-//   file (all 28 of the corpus, the two larger ones too when run without the cap); flush-to-zero
-//   with denormals-are-zero alone changes none of the corpus.
+//   zero, to flush-to-zero with denormals-are-zero, and to both (and, as the control, to the default,
+//   which must equal one thread). "differ": some samples differ; "same": no sample differs. Today:
+//   same: the library's jobs run under the default floating-point environment (src/fpenv.h, the
+//   hotfix; tests/unit/fpenv_unit.cpp covers the calling thread, more environments and the encode).
+//   Before the fix, round toward zero changed about half the samples of every 9/7 file (all 28 of
+//   the corpus, the two larger ones too when run without the cap); flush-to-zero with
+//   denormals-are-zero alone changed none of the corpus.
 #include <neoj2k/neoj2k.h>
 
 #include <algorithm>
@@ -360,7 +362,8 @@ int run_c3(const std::string& corpus, bool expect_differ)
         const char* name;
         unsigned mxcsr;
     };
-    static const Env envs[] = {{"round toward zero", kMxcsrRz},
+    static const Env envs[] = {{"default", 0},
+                               {"round toward zero", kMxcsrRz},
                                {"FTZ and DAZ", kMxcsrFz | kMxcsrDaz},
                                {"round toward zero, FTZ and DAZ", kMxcsrRz | kMxcsrFz | kMxcsrDaz}};
     std::size_t files = 0, differ = 0, forced_batches = 0;
@@ -420,7 +423,7 @@ int run_c3(const std::string& corpus, bool expect_differ)
                 files, differ, forced_batches);
     CHECK_MSG(files > 0 && forced_batches > 0, "no 9/7 file went through the executor");
     if (expect_differ) {
-        CHECK_MSG(differ > 0, "C3 no longer holds: change the expectation to same (the hotfix's test)");
+        CHECK_MSG(differ > 0, "C3 is back: some samples differ, though the expectation is differ only for the unfixed library");
     } else {
         CHECK_MSG(differ == 0, "the host's workers' floating-point environment reaches the samples (C3)");
     }

@@ -60,6 +60,7 @@
 
 #include "decode.h"
 #include "encode.h"
+#include "fpenv.h"
 #include "limit_profiles.h"
 
 using nj2k::detail::Allocator;
@@ -1053,6 +1054,7 @@ NJ2K_API NJ2K_BOOL NJ2K_CALLCONV nj2k_set_decode_area(nj2k_codec_t* p_codec, nj2
 NJ2K_API NJ2K_BOOL NJ2K_CALLCONV nj2k_decode(nj2k_codec_t* p_codec, nj2k_stream_t* p_stream, nj2k_image_t* p_image)
 {
     using namespace nj2k::detail;
+    const DefaultFpEnv fp_env;  // the output does not depend on the host's floating-point environment
     Decoder* d = Decoder::from(p_codec);
     if (!d) {
         return NJ2K_FALSE;
@@ -1213,6 +1215,7 @@ NJ2K_API NJ2K_BOOL NJ2K_CALLCONV nj2k_decode_memory(nj2k_codec_t* p_codec, const
                                                   const nj2k_output_t* p_output)
 {
     using namespace nj2k::detail;
+    const DefaultFpEnv fp_env;  // the output does not depend on the host's floating-point environment
     Decoder* d = Decoder::from(p_codec);
     if (!d) {
         return NJ2K_FALSE;
