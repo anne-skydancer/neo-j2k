@@ -38,9 +38,11 @@ audit B4: one definition), built into the tests.
   - the encoder refuses an image whose code-blocks do not fit the guard bits of their band (`841b2de4`),
     which fixed OD-6.
 
-  and the fix `v2.5.4-cpu-avx2.6` adds:
-  - the encoder's check of the resolution count against the tile size shifts an unsigned 1 (`66b16561`; a signed
-    shift by 31 was undefined at 32 resolutions, found by the UBSan fuzz run of PR #13): no encoded byte changes.
+  and the fixes `v2.5.4-cpu-avx2.6` adds (`66b16561`, found by the UBSan fuzz run of PR #13; no encoded byte
+  changes):
+  - the encoder's check of the resolution count against the tile size shifts an unsigned 1 (a signed shift by 31
+    was undefined at 32 resolutions);
+  - the rate allocator's maximum squared-error sum shifts an unsigned 1 by the component precision (`tcd.c`).
 
   The viewer ships `v2.5.4-cpu-avx2.4` (`03b3cddc`) until its next OpenJPEG change; the two decode alike
   (the move to the hotfix head, below).
