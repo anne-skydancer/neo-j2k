@@ -3,10 +3,10 @@
 
 # neo-j2k
 
-> **[Download neo-j2k 0.1.1 for Windows x64 (ZIP)](https://github.com/anne-skydancer/neo-j2k/releases/download/v0.1.1/neoj2k-viewer-0.1.1-win-x64.zip)**
+> **[Download neo-j2k 0.1.2 for Windows x64 (ZIP)](https://github.com/anne-skydancer/neo-j2k/releases/download/v0.1.2/neoj2k-viewer-0.1.2-win-x64.zip)**
 >
 > Prerelease for 64-bit Windows viewers that load a separate `openjp2.dll`. Requires AVX2.
-> [Installation instructions](modules/openjp2/INSTALL.md) · [Release notes and checksums](https://github.com/anne-skydancer/neo-j2k/releases/tag/v0.1.1)
+> [Installation instructions](modules/openjp2/INSTALL.md) · [Release notes and checksums](https://github.com/anne-skydancer/neo-j2k/releases/tag/v0.1.2)
 
 A JPEG 2000 Part 1 codec (decode and encode, lossless 5/3 and lossy 9/7) in C++20, built as a static library or
 as a shared library (`neoj2k.dll`, `libneoj2k.so`). Its arithmetic is OpenJPEG 2.5.4's, so its decodes are
@@ -60,14 +60,14 @@ stage 6b's (`doc/api.md`, `doc/bench.md`).
 
 The openjp2 module: OpenJPEG's API as the library a viewer already loads (`openjp2.dll`, `libopenjp2.so.7`), neo-j2k
 inside, so a viewer that talks to OpenJPEG takes neo-j2k with nothing recompiled or relinked: the 55 functions of
-OpenJPEG 2.5.4's header, the threads `opj_codec_set_threads` starts, and `opj_version()` saying "Jpeg2000
-through neo-j2k 0.1.1" (`doc/api.md`, build option `NJ2K_MODULE_OPENJP2`). The library goes into a viewer's folder under the name `openjp2.dll`, which is only the name the viewer asks for:
+OpenJPEG 2.5.4's header, the threads `opj_codec_set_threads` starts, and `opj_version()` saying "nj2k" (the five characters a viewer's texture cache header has room for) (`doc/api.md`, build option `NJ2K_MODULE_OPENJP2`). The library goes into a viewer's folder under the name `openjp2.dll`, which is only the name the viewer asks for:
 it is neo-j2k, not OpenJPEG, and its file properties say so. It is packaged as a zip
 (`neoj2k-viewer-<version>-win-x64.zip`, named for neo-j2k) with its
 own install instructions (`modules/openjp2/INSTALL.md`, `tools/package_openjp2.py`); an installer is planned.
 
 Version: 0.1.0 is the first release; 0.1.1 adds the floating-point hotfix (the output no longer depends on the host's
-floating-point environment) and the openjp2 module. The Rust crate, not released yet, will carry the version of the C++
+floating-point environment) and the openjp2 module; 0.1.2 fixes the module's `opj_version()`, whose 0.1.1 string was too long
+for Firestorm's texture cache header and stopped the viewer at start. The Rust crate, not released yet, will carry the version of the C++
 library whose output it matches.
 
 ## How fast

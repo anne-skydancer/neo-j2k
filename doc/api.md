@@ -294,9 +294,10 @@ fork's stage 1a hotfix, nothing at the switch). The viewer's texture cache keys 
 holds `opj_version()` (`llimagej2coj.cpp`, `lltexturecache.cpp`): built against the compatibility header
 unchanged, every neo-j2k release would purge every user's cache. The viewer switch (stage 8b) keys it on
 the viewer's own output version.
-The openjp2 module's `opj_version()` returns a longer string, "Jpeg2000 through neo-j2k 0.1.1": a
-viewer built for OpenJPEG that caches on it purges at every neo-j2k release, which is the cost of taking the
-module without the viewer's own output version.
+The openjp2 module's `opj_version()` returns "nj2k", not a version: a viewer that caches on it refreshes its cache
+once, when it first meets the module (the string differs from "2.5.4"), and not at a later neo-j2k release, which
+decodes the same samples. The string is five characters at most, because Firestorm stores `OpenJPEG: 2.5.4, Runtime:
+<it>` in a 32-byte field of its texture cache header (below).
 
 ## The openjp2 module
 
@@ -316,15 +317,19 @@ core's; the core is the same code as `neoj2k.dll` (the module links the static l
   carries a version resource (`modules/openjp2/openjp2.rc.in`): product name `neo-j2k`, file description
   "neo-j2k JPEG 2000 codec, not OpenJPEG", comments "This is neo-j2k, not OpenJPEG. It is installed under the name
   openjp2.dll only because the viewer asks for that name.", so Explorer's Properties, Details say it for the file in a
-  viewer's folder. `openjp2_exports` and the packager fail on a library without it, and `opj_version()` says
-  "Jpeg2000 through neo-j2k".
+  viewer's folder. `openjp2_exports` and the packager fail on a library without it. (`opj_version()` can say only
+  "nj2k": see below.)
 - **What the adapter does itself** (`modules/openjp2/openjp2.cpp`):
-  - `opj_version()` returns `"Jpeg2000 through neo-j2k 0.1.1"`: what the library is, and neo-j2k's release. A
-    viewer built for OpenJPEG prints it after "Runtime:" (Firestorm's About box reads `J2C Decoder Version:
-    OpenJPEG: 2.5.4, Runtime: Jpeg2000 through neo-j2k 0.1.1`, `llimagej2coj.cpp`; the "OpenJPEG: 2.5.4" before it is
-    the viewer's own text from its compile-time header, which a library cannot change). A host that keys its cache of decoded images on `opj_version()` (the
-    viewers' texture cache does, "Versions, and a host's cache") purges it when it first meets the module and
-    again with every neo-j2k release.
+  - `opj_version()` returns `"nj2k"`. **Five characters at most**: Firestorm builds `OpenJPEG: %i.%i.%i, Runtime: %s`
+    (`LLImageJ2COJ::getEngineInfo`, `llimagej2coj.cpp`) and stores it in the 32-byte `mEncoderVersion` field of its
+    texture cache header (`sHeaderEncoderStringSize` in `lltexturecache.h`); a longer string stops the viewer with
+    "Version string doesn't fit in header" (`lltexturecache.cpp`, a fatal error). OpenJPEG's own "2.5.4" is exactly
+    five, and the text before it takes 26 of the 31 characters. v0.1.1 returned "Jpeg2000 through neo-j2k 0.1.1" and
+    crashed Firestorm at start; `openjp2_unit` now builds Firestorm's string and checks that it fits. The About box
+    reads `J2C Decoder Version: OpenJPEG: 2.5.4, Runtime: nj2k`; "OpenJPEG: 2.5.4" is the viewer's own compile-time
+    text, and the full name and the version are in the file's version resource. The texture cache refreshes the first
+    time a viewer meets the module (the string differs from "2.5.4") and not at later neo-j2k releases (the same
+    samples), where a version in the string would purge it at every release.
   - `opj_has_thread_support()` is true, and `opj_codec_set_threads(codec, n)` starts the threads, which the core
     never does: the module is the host that lends the core an executor (`nj2k_decoder_set_executor`). A decoder
     gets a pool of its own, replaced by the next call and joined by `opj_destroy_codec`, as OpenJPEG's is (its threads

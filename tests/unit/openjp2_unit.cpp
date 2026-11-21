@@ -154,10 +154,17 @@ struct Library {
 
 void test_identity(const Library& lib)
 {
-    // what a viewer prints after "Runtime:": JPEG 2000 through neo-j2k, with the release (a cache keys on it)
-    const std::string want = std::string("Jpeg2000 through neo-j2k ") + nj2k_version();
+    // what a viewer prints after "Runtime:" and keys its texture cache on: five characters at most. Firestorm
+    // stores "OpenJPEG: %i.%i.%i, Runtime: %s" (LLImageJ2COJ::getEngineInfo) in a 32-byte field of its
+    // texture cache header and stops with a fatal error when it does not fit (v0.1.1 did not).
     const std::string got = lib.version() ? lib.version() : "(null)";
-    CHECK_MSG(got == want, "opj_version is '%s', not '%s'", got.c_str(), want.c_str());
+    CHECK_MSG(got == "nj2k", "opj_version is '%s', not 'nj2k'", got.c_str());
+    char engine[128];
+    std::snprintf(engine, sizeof engine, "OpenJPEG: %i.%i.%i, Runtime: %s", OPJ_VERSION_MAJOR, OPJ_VERSION_MINOR,
+                  OPJ_VERSION_BUILD, got.c_str());
+    constexpr std::size_t kFirestormHeaderField = 32;  // sHeaderEncoderStringSize in lltexturecache.h
+    CHECK_MSG(std::strlen(engine) + 1 <= kFirestormHeaderField, "Firestorm's engine string '%s' is %zu characters; its cache header holds %zu",
+              engine, std::strlen(engine), kFirestormHeaderField - 1);
     CHECK_MSG(lib.has_thread_support() == OPJ_TRUE, "opj_has_thread_support is false");
     CHECK_MSG(lib.get_num_cpus() >= 1, "opj_get_num_cpus is %d", lib.get_num_cpus());
     std::printf("version: %s\n", got.c_str());
