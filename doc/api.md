@@ -294,7 +294,7 @@ fork's stage 1a hotfix, nothing at the switch). The viewer's texture cache keys 
 holds `opj_version()` (`llimagej2coj.cpp`, `lltexturecache.cpp`): built against the compatibility header
 unchanged, every neo-j2k release would purge every user's cache. The viewer switch (stage 8b) keys it on
 the viewer's own output version.
-The openjp2 module's `opj_version()` returns a longer string, "Jpeg2000 2.5.4 provided by neo-j2k 0.1.0": a
+The openjp2 module's `opj_version()` returns a longer string, "Jpeg2000 2.5.4 provided by neo-j2k 0.1.1": a
 viewer built for OpenJPEG that caches on it purges at every neo-j2k release, which is the cost of taking the
 module without the viewer's own output version.
 
@@ -313,7 +313,7 @@ core's; the core is the same code as `neoj2k.dll` (the module links the static l
   types differ from `openjpeg.h`'s (name for name, once `opj_` and `OPJ_` are mapped); a stale
   `modules/openjp2/opj_forward.inc` fails the test `openjp2_forwarders`.
 - **What the adapter does itself** (`modules/openjp2/openjp2.cpp`):
-  - `opj_version()` returns `"Jpeg2000 2.5.4 provided by neo-j2k 0.1.0"`: OpenJPEG's API level (from
+  - `opj_version()` returns `"Jpeg2000 2.5.4 provided by neo-j2k 0.1.1"`: OpenJPEG's API level (from
     `OPJ_VERSION_*`) and neo-j2k's release. A host that keys its cache of decoded images on `opj_version()` (the
     viewers' texture cache does, "Versions, and a host's cache") purges it when it first meets the module and
     again with every neo-j2k release.
@@ -343,7 +343,16 @@ core's; the core is the same code as `neoj2k.dll` (the module links the static l
   test data, `openjp2_conformance_differential` run the differential harness against the library loaded by path
   (`lib:`), the way a viewer loads it; `openjp2_unit` checks the version, the thread lifecycle (the pool's
   threads, named `openjp2-worker`, counted), decodes at 0 to 64 threads, decoders at once and the upload encode (`doc/testing.md`).
-- **Not built yet:** the pre-built binary and the installer that puts it where the viewer's OpenJPEG is
+- **The release zip.** `tools/package_openjp2.py --library <openjp2.dll>` writes `neoj2k-viewer-<version>-win-x64.zip`:
+  the library as `neoj2k-viewer.dll`, `INSTALL.md` (`modules/openjp2/INSTALL.md`: the swap, the check, the way back),
+  `SHA256SUMS` and the licences, with fixed timestamps so the same library gives the same zip. **Nothing in the
+  download says OpenJPEG or openjp2** (owner, 2026-11-21: a download named for OpenJPEG is written off by the people
+  who would install it): the instructions rename the file to `openjp2.dll` when it goes into the viewer's folder,
+  the one place where the viewer's own name for it matters. Build the library for it with
+  `NJ2K_MSVC_STATIC_RUNTIME=ON` in the Release configuration: the DLL then imports `KERNEL32.dll` only, and the
+  packager refuses a library that imports a C or C++ runtime, that does not export exactly `openjpeg.h`'s functions
+  or that does not carry the release's version string.
+- **Not built yet:** the installer that puts the file where a viewer's OpenJPEG is, and keeps the old one
   (owner, 2026-11-21).
 
 ## Stage 0

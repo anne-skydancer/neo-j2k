@@ -148,7 +148,7 @@ typedef size_t   NJ2K_SIZE_T;
  */
 #define NJ2K_VERSION_MAJOR 0
 #define NJ2K_VERSION_MINOR 1
-#define NJ2K_VERSION_PATCH 0
+#define NJ2K_VERSION_PATCH 1
 
 /* Avoid compile-time warning because parameter is not used */
 #define NJ2K_ARG_NOT_USED(x) (void)(x)
