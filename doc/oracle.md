@@ -11,8 +11,8 @@ audit B4: one definition), built into the tests.
 ## What it is
 
 - `oracle/PIN` names the fork (`anne-skydancer/openjpeg`), the commit and the patches (none today).
-- The pin: `841b2de4`, the head of the fork's `vkstorm-2.5.4-hotfix` branch, as the package `3p-openjpeg`
-  `v2.5.4-cpu-avx2.5` builds it (its tag `dc27a45`). It is OpenJPEG 2.5.4 as the package `v2.5.4-cpu-avx2.3`
+- The pin: `66b16561`, the head of the fork's `vkstorm-2.5.4-hotfix` branch, as the package `3p-openjpeg`
+  `v2.5.4-cpu-avx2.6` builds it (its recipe commit `1ad8ff6`); `841b2de4` is the head of `v2.5.4-cpu-avx2.5` (tag `dc27a45`). It is OpenJPEG 2.5.4 as the package `v2.5.4-cpu-avx2.3`
   ships it (`3b1a6a96`) with the 1a decoder fixes:
   - every complete codeword segment of a cut tile kept, a cut packet header an absent packet (`c51e47ed`:
     the fork audit's general truncation fix, which the oracle carried as a patch before);
@@ -37,6 +37,10 @@ audit B4: one definition), built into the tests.
     OD-4;
   - the encoder refuses an image whose code-blocks do not fit the guard bits of their band (`841b2de4`),
     which fixed OD-6.
+
+  and the fix `v2.5.4-cpu-avx2.6` adds:
+  - the encoder's check of the resolution count against the tile size shifts an unsigned 1 (`66b16561`; a signed
+    shift by 31 was undefined at 32 resolutions, found by the UBSan fuzz run of PR #13): no encoded byte changes.
 
   The viewer ships `v2.5.4-cpu-avx2.4` (`03b3cddc`) until its next OpenJPEG change; the two decode alike
   (the move to the hotfix head, below).
