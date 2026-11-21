@@ -3,6 +3,11 @@
 
 # neo-j2k
 
+> **[Download neo-j2k 0.1.1 for Windows x64 (ZIP)](https://github.com/anne-skydancer/neo-j2k/releases/download/v0.1.1/neoj2k-viewer-0.1.1-win-x64.zip)**
+>
+> Prerelease for 64-bit Windows viewers that load a separate `openjp2.dll`. Requires AVX2.
+> [Installation instructions](modules/openjp2/INSTALL.md) · [Release notes and checksums](https://github.com/anne-skydancer/neo-j2k/releases/tag/v0.1.1)
+
 A JPEG 2000 Part 1 codec (decode and encode, lossless 5/3 and lossy 9/7) in C++20, built as a static library or
 as a shared library (`neoj2k.dll`, `libneoj2k.so`). Its arithmetic is OpenJPEG 2.5.4's, so its decodes are
 bit-identical to OpenJPEG 2.5.4 on x86-64 through OpenJPEG's SSE 9/7 path (`opj_includes.h` defines `__SSE__` on
