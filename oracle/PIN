@@ -5,5 +5,5 @@
 # (oracle/patches/, applied in order), vendored under oracle/openjp2/ by tools/oracle_sync.py, which
 # also verifies the copy in CI. What the commit is and why it is the pin: doc/oracle.md.
 repo=https://github.com/anne-skydancer/openjpeg.git
-commit=841b2de4fb279ae1f805464c2872f0f10566350a
+commit=66b1656192fc621a4b26aa86d05b6a00514a7cee
 patches=

@@ -768,6 +768,13 @@ void test_limits_and_states()
         j.p.numresolution = bad;
         CHECK_MSG(!j.run() && j.status() == NJ2K_E_ARGUMENT && j.sink.bytes.empty(), "numresolution %d", bad);
     }
+    for (const int deep : {32, 33}) {
+        // no tile holds 2^31 samples across: refused at setup without shifting a signed 1 by 31 (OpenJPEG's UBSan
+        // finding in opj_j2k_encoding_validation)
+        Job j;
+        j.p.numresolution = deep;
+        CHECK_MSG(!j.setup() && j.status() == NJ2K_E_ARGUMENT && j.sink.bytes.empty(), "numresolution %d", deep);
+    }
     {
         Job j;
         j.p.tcp_numlayers = -1;
