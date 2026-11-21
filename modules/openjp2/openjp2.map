@@ -1,0 +1,10 @@
+/* SPDX-License-Identifier: BSD-2-Clause
+   Copyright (c) 2026, Anne Skydancer (neo-j2k)
+   Linux version script of libopenjp2.so.7, the openjp2 module: OpenJPEG's C API (opj_*) and nothing else,
+   as the library it stands in for exports it. */
+{
+  global:
+    opj_*;
+  local:
+    *;
+};

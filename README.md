@@ -53,6 +53,12 @@ encoder API, with codestreams byte for byte OpenJPEG's (`encode_unit`, the encod
 OpenJPEG's encoder gives `NJ2K_E_UNSUPPORTED` (the j2k-extra module). One thread, correctness first: speed is
 stage 6b's (`doc/api.md`, `doc/bench.md`).
 
+The openjp2 module: OpenJPEG's API as the library a viewer already loads (`openjp2.dll`, `libopenjp2.so.7`), neo-j2k
+inside, so a viewer that talks to OpenJPEG takes neo-j2k with nothing recompiled or relinked: the 55 functions of
+OpenJPEG 2.5.4's header, the threads `opj_codec_set_threads` starts, and `opj_version()` saying "Jpeg2000 2.5.4
+provided by neo-j2k 0.1.0" (`doc/api.md`, build option `NJ2K_MODULE_OPENJP2`). A pre-built binary with an installer
+is planned.
+
 Version: 0.1.0 is the first release. The Rust crate will carry the same version number for the same output.
 
 ## How fast
@@ -224,6 +230,7 @@ Miri runs on a separately pinned nightly (`rust/nightly-toolchain`); the crate i
 |---|---|
 | `include/neoj2k/` | `neoj2k.h` (C API), `neoj2k_openjpeg.h` (OpenJPEG names), `neoj2k.hpp` (C++ wrapper), `compat/` |
 | `src/` | the library |
+| `modules/` | the modules the core does not depend on: `openjp2`, OpenJPEG's API as `openjp2.dll` / `libopenjp2.so.7` with neo-j2k inside (`doc/api.md`) |
 | `oracle/` | OpenJPEG at the pinned fork commit (the head of the stage 1a hotfix branch, as the package `v2.5.4-cpu-avx2.5` builds it) and any patches `oracle/PIN` lists, built as the test oracle (`doc/oracle.md`) |
 | `tests/` | the runner (`nj2k_diff`), conformance, unit tests, the shared harness (`tests/common`) |
 | `rust/` | the native Rust twin: the crate, its test kit and its C++ oracle crate (`rust/README.md`) |

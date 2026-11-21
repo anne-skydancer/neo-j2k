@@ -16,11 +16,12 @@
 //            per file, reduce level, mode and step over its cut points (files of cut-min < size <=
 //            cut-max bytes; the prefixes from --cut-from to the file size, every step bytes).
 //   verify   --a SPEC --ref FILE --root DIR [--only FILE] [--cut-steps S] [--no-whole] [--no-cuts]
-//            [--departures FILE]
+//            [--departures FILE] [--threads N]
 //            Decodes the lines of a reference table again and compares. --departures lists files
 //            (one per line, "<file> <departure>") where the backend departs from the oracle on
 //            purpose (doc/departures.md): their lines are not compared, and each listed file must
-//            have lines in the table, so the list cannot go stale.
+//            have lines in the table, so the list cannot go stale. --threads N asks every decoder for N
+//            threads (opj_codec_set_threads) before it decodes: the samples must not change.
 //   decode   --a SPEC --files LIST [--bytes N] [--reduce R] [--layers L] [--mode M]
 //            Describes single requests.
 //   layers   --a SPEC --files LIST [--reduce R] [--ref KNOWN]
@@ -74,6 +75,7 @@ struct Args {
     std::vector<Mode> cut_modes;
     std::string only;
     int layers = 0;
+    int threads = 0;  // threads asked of every decoder (opj_codec_set_threads), 0 for none
     bool allow_diff = false, whole = true, cuts = true, cut_steps_given = false;
     bool jp2 = false;  // compare: JP2 and JPH files too, read by the JP2 codec
     std::string departures;  // verify, compare: files where the backend departs from the oracle on purpose
@@ -122,6 +124,7 @@ Args parse(int argc, char** argv)
         else if (k == "--only") a.only = next();
         else if (k == "--bytes") a.bytes = std::stoul(next());
         else if (k == "--layers") a.layers = std::stoi(next());
+        else if (k == "--threads") a.threads = std::stoi(next());
         else if (k == "--no-whole") a.whole = false;
         else if (k == "--jp2") a.jp2 = true;
         else if (k == "--departures") a.departures = next();
@@ -339,6 +342,7 @@ int cmd_compare(const Args& a)
                         rq.size = n;
                         rq.reduce = r;
                         rq.mode = mode;
+                        rq.threads = a.threads;
                         rq.capture = true;
                         rq.jp2 = is_jp2_file(in.data.data(), in.data.size());
                         const Outcome x = A->decode(rq), y = B->decode(rq);
@@ -445,6 +449,7 @@ int cmd_record(const Args& a)
                 rq.size = in.data.size();
                 rq.reduce = r;
                 rq.mode = mode;
+                rq.threads = a.threads;
                 const Outcome o = A->decode(rq);
                 out << "whole\t" << in.name << '\t' << mode_name(mode) << '\t' << r << '\t' << in.data.size() << '\t'
                     << int(o.ok) << '\t' << hex64(o.ok ? (mode == Mode::Viewer ? o.hash ^ o.u8_hash : o.hash) : 0)
@@ -537,6 +542,7 @@ int cmd_verify(const Args& a)
             rq.size = inp.data.size();
             rq.reduce = r;
             rq.mode = mode;
+            rq.threads = a.threads;
             const Outcome o = A->decode(rq);
             const std::uint64_t got = o.ok ? (mode == Mode::Viewer ? o.hash ^ o.u8_hash : o.hash) : 0;
             const bool ok_ref = f[5] == "1";
@@ -602,6 +608,7 @@ int cmd_decode(const Args& a)
                 rq.reduce = r;
                 rq.layers = a.layers;
                 rq.mode = mode;
+                rq.threads = a.threads;
                 const Outcome o = A->decode(rq);
                 std::printf("%s %s bytes=%zu/%zu r=%d layers=%d: %s", in.name.c_str(), mode_name(mode), rq.size,
                             in.data.size(), r, a.layers, o.ok ? "decoded" : ("refused at " + o.stage).c_str());
@@ -740,6 +747,7 @@ int cmd_header(const Args& a)
         rq.size = n;
         rq.reduce = r;
         rq.mode = mode;
+        rq.threads = a.threads;
         rq.jp2 = is_jp2_file(in.data.data(), in.data.size());
         const HeaderFacts x = A->header(rq), y = B->header(rq);
         ++reads;
@@ -831,6 +839,7 @@ int cmd_resources(const Args& a)
         rq.size = data->size();
         rq.reduce = std::stoi(f[2]);
         rq.mode = mode;
+        rq.threads = a.threads;
         A->alloc_reset();
         const Outcome o = A->decode(rq);
         std::uint64_t c[4];

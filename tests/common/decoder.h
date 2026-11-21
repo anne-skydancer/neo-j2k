@@ -46,6 +46,10 @@ struct Request {
     // released) cannot take such a request: it fails at its first codec.
     bool limits = false;
     std::uint64_t max_memory = 0;
+    // Threads asked of every decoder after its setup (opj_codec_set_threads); 0 asks for none. neo-j2k's
+    // compatibility header answers false, so only a library with OpenJPEG's own answer takes such a request
+    // (the oracle, the openjp2 module).
+    int threads = 0;
 };
 
 // Whether bytes start with the JP2 signature box.

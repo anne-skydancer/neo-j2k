@@ -30,7 +30,8 @@
     X(opj_get_cstr_info) X(opj_destroy_cstr_info) X(opj_set_decoded_resolution_factor)             \
     X(opj_decode) X(opj_end_decompress) X(opj_destroy_codec) X(opj_image_destroy) X(opj_version)   \
     X(opj_set_default_encoder_parameters) X(opj_create_compress) X(opj_setup_encoder)               \
-    X(opj_start_compress) X(opj_encode) X(opj_end_compress) X(opj_image_create)
+    X(opj_start_compress) X(opj_encode) X(opj_end_compress) X(opj_image_create)                    \
+    X(opj_codec_set_threads)
 
 // The decoder limits API of the fork's 1a hotfix, which OpenJPEG 2.5.4 as released lacks: a library
 // loaded at run time may not have it, and then takes no request with limits.
@@ -193,6 +194,9 @@ struct Session {
         A.opj_set_warning_handler(codec, on_warning, user);
         A.opj_set_error_handler(codec, on_error, user);
         if (!A.opj_setup_decoder(codec, &params)) {
+            return false;
+        }
+        if (rq.threads != 0 && !A.opj_codec_set_threads(codec, rq.threads)) {
             return false;
         }
         if (rq.limits) {

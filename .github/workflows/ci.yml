@@ -49,12 +49,15 @@ jobs:
           "$RUNNER_TEMP/actionlint" -color -shellcheck= -pyflakes= .github/workflows/*.yml
       - name: Compatibility header is current and complete
         run: python3 -I tools/gen_compat.py --check
+      - name: openjp2 module's forwarders are current and match openjpeg.h
+        run: python3 -I tools/gen_openjp2.py --check
       - name: Licence headers
         run: python3 -I tools/check_headers.py
       - name: Check scripts
         run: |
           python3 -I tools/check_exports.py --selftest
           python3 -I tools/check_objects.py --selftest
+          python3 -I tools/check_openjp2.py --selftest
       - name: Vendored oracle equals its pinned commit plus patches
         run: python3 -I tools/oracle_sync.py --verify
 
