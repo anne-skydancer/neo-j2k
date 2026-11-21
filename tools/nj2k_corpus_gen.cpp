@@ -179,6 +179,12 @@ std::vector<Spec> specs()
          .rates = rates({8, 3})});
     add({.name = "sgnd8_rgb", .w = 40, .h = 40, .comps = 3, .sgnd = true, .mct = 0, .numres = 4});
     add({.name = "sub_420", .w = 48, .h = 40, .comps = 3, .sub = 2, .numres = 4, .rates = r3});
+    add({.name = "mix_odd_sub420_signed12_53", .w = 36, .h = 31, .comps = 3, .prec = 12, .sgnd = true,
+         .sub = 2, .x0 = 3, .y0 = 5, .tw = 19, .th = 17, .tx0 = 1, .ty0 = 2, .numres = 3,
+         .rates = {16, 4, 0}, .cbw = 8, .cbh = 4, .precincts = {3, 3, 4}, .prog = OPJ_RPCL});
+    add({.name = "mix_odd_sub420_signed12_97", .w = 43, .h = 38, .comps = 3, .prec = 12, .sgnd = true,
+         .sub = 2, .x0 = 5, .y0 = 7, .irreversible = true, .numres = 3,
+         .rates = {24, 8, 3}, .cbw = 4, .cbh = 8, .precincts = {3, 3, 4}, .prog = OPJ_CPRL});
     add({.name = "cblk_4x4", .w = 32, .h = 32, .comps = 3, .numres = 4, .rates = r3, .cbw = 4, .cbh = 4});
     add({.name = "cblk_32x16_97", .w = 64, .h = 48, .comps = 3, .irreversible = true, .numres = 5,
          .rates = rates({16, 6}), .cbw = 32, .cbh = 16});
