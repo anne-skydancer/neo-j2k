@@ -105,7 +105,7 @@ The encode rows are the equal one-thread comparison, measured after the MQ coder
 "Stage 6c"; before it neo-j2k took 284.5 and 295.9 ms against OpenJPEG's 250.0 and 262.8). They do not include
 the branch-free preprocessing of "Stage 6e" (about 3.3 to 4.4 % off the encode with MSVC) and the cleanup pass's fixed
 column mask of "Stage 6f" (a further 4 to 6 % with MSVC; whole encode -6.2 % to -4.1 % against before; the kernel is 5 to 6 %
-faster on six Linux builds, GCC 14, GCC 15 and Clang, AVX2 and scalar) and the refinement pass's pair list of "Stage 6g" (the kernel -5.9 % to -3.4 % with MSVC, one machine; no Linux and no whole-encode figure yet); no GCC or clang whole-encode figure exists. With a host executor, neo-j2k C++ encodes the same 1,024² inputs in 62.43 ms lossy and
+faster on six Linux builds, GCC 14, GCC 15 and Clang, AVX2 and scalar). The refinement pass's pair list ("Stage 6g") takes the MSVC kernel a further -6.0 % to -3.6 % on one machine. On Linux, GCC 14 gains -7.1 % to -4.7 % and GCC 15 only -3.6 % to -1.8 %; clang-cl SCALAR misses -3.0 % by 0.3 and 0.7 points on the two large lossless cells, the Linux clang jobs are not measured yet, and there is no whole-encode figure for E3. No GCC or clang whole-encode figure exists. With a host executor, neo-j2k C++ encodes the same 1,024² inputs in 62.43 ms lossy and
 52.57 ms lossless at eight threads; that table measures C++ scaling rather than a like-for-like OpenJPEG comparison.
 All encoded bytes remain identical.
 
