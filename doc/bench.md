@@ -1318,7 +1318,7 @@ compiler and build.
 - No Linux or WSL here: the `linux-*` presets, UBSan, TSan and libFuzzer were not run locally (the repository's CI runs
   them), and the E2 Linux numbers wait for the `bench-e2-linux` run. `nj2k_enc_t1_unit` was not run locally with GCC or
   clang (the ctest on clang-cl was).
-- MSVC ASan: the ctest ran with `decode_unit`, `decode_threads` and `fuzz_replay.decode*` excluded (the decoder is not
+- MSVC ASan: 124 of 128 ctest tests pass; `decode_unit`, `decode_threads` and two `fuzz_replay.decode*` were excluded (the decoder is not
   touched, and those tests ran for over an hour under AddressSanitizer here without finishing); every encoder test,
   `enc_t1_unit` among them, ran.
 - The comparison with OpenJPEG 2.5.4 (`nj2k_encode_bench`) was not repeated: the README's rows are before E1 and E2.
