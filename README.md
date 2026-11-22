@@ -79,6 +79,25 @@ threads used), Windows, MSVC 14.51 RelWithDebInfo, AVX2. It was not quiet: other
 are more reliable than the milliseconds. Each section names its load. The full tables, with every run and how
 to reproduce them, are in `doc/bench.md`.
 
+### OpenJPEG 2.5.4 versus neo-j2k C++
+
+This is the short comparison for readers looking for “OpenJPEG2000 versus neo-j2k.” OpenJPEG is the upstream
+JPEG 2000 implementation; neo-j2k C++ is measured against the pinned OpenJPEG 2.5.4 oracle with identical
+outputs. Times are medians from the detailed tables below; lower is faster.
+
+| Operation | Threads | OpenJPEG | neo-j2k C++ | C++ / OpenJPEG | Result |
+|---|---:|---:|---:|---:|---|
+| Decode 64² whole | 1 | 373 µs | 316 µs | 0.85 | neo-j2k 1.18× faster |
+| Decode 1,024² whole | 1 | 37.176 ms | 26.158 ms | 0.70 | neo-j2k 1.42× faster |
+| Decode 4,096², one-tile 9/7 | 1 | 392 ms | 234 ms | 0.60 | neo-j2k 1.68× faster |
+| Decode 4,096², one-tile 9/7 | 8 | 136 ms | 46 ms | 0.34 | neo-j2k 2.96× faster |
+| Encode 1,024² RGB, lossy | 1 | 250.0 ms | 284.5 ms | 1.14 | OpenJPEG 1.14× faster |
+| Encode 1,024² RGB, lossless | 1 | 262.8 ms | 295.9 ms | 1.13 | OpenJPEG 1.13× faster |
+
+The encode rows are the equal one-thread comparison. With a host executor, neo-j2k C++ encodes the same
+1,024² inputs in 62.43 ms lossy and 52.57 ms lossless at eight threads; that table measures C++ scaling rather
+than a like-for-like OpenJPEG comparison. All encoded bytes remain identical.
+
 ### Small images, one thread (stages 2-4)
 
 The Second Life viewer's requests, the median per file, then over each class. 1,437 configurations, load 4 %
@@ -137,10 +156,10 @@ On a saturated host (8 threads, each decoding 1,024² RGB), lending the pool gai
 1.02, within noise. It costs about 3 % more CPU, so a busy host should not lend. A tile is split only when its
 largest component has at least 2^18 samples (512 x 512).
 
-### The upload encode, one thread (stage 6a)
+### The upload encode, one thread
 
 The Second Life viewer's upload settings, three components, byte for byte OpenJPEG's codestream. Load 28 %
-mean. Stage 6b is the speed stage.
+mean. The adaptive multi-core results follow in `doc/bench.md`.
 
 | Size | Mode | OpenJPEG ms | neo-j2k ms | Ratio | Peak MB, OpenJPEG / neo-j2k |
 |---|---|---|---|---|---|
