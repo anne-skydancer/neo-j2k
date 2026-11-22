@@ -1464,23 +1464,40 @@ against this branch's. The E3 gate was defined for MSVC; "Meets 3 %" says whethe
 | MinGW GCC 13.2 `-O2` (baseline) | -7.2 % | -6.2 % | -6.3 % | -5.3 % | -6.2 % | -5.2 % | Yes |
 | MinGW GCC 13.2 `-O2 -march=x86-64-v3` | -5.7 % | -4.7 % | -4.8 % | -4.2 % | -4.8 % | -3.9 % | Yes |
 
-### Linux (run 45067251889, before the fix round)
+### Linux (run 45070961104, the table of record)
 
-Workflow `bench-kernel-compare.yml`, same-machine change of E3 against main (minus is faster), lossless and lossy; the head
-was the branch before the fix round, and the two clang jobs failed to build it (`-Werror=unused-function` on the dead
-`enc_refpass_step`, removed since). The six-job comparison of the fixed branch has not been run yet.
+Workflow `bench-kernel-compare.yml`, run 45070961104 (head = `enc-e3-refinement` at `002b4be`, base = main at `d3760ee`): each
+of the six jobs builds `nj2k_enc_t1_ratio` for both refs and runs the two binaries alternately on the same machine
+(3 runs of 41 rounds, 256 blocks of 64 x 64). Each cell is the median over the three runs of E3's kernel change against
+main's (head over base, run by run; minus is faster), with the three runs in brackets. These are same-machine changes, one
+CPU per job. The output is identical (the kernel hash is the same for both refs). The E3 gate itself is defined for MSVC;
+"Meets 3 %" says whether both modes of a job are at least 3 % faster.
 
 | Job | CPU | Lossless | Lossy | Meets 3 % |
 |---|---|---|---|---|
-| gcc-14, AVX2 | Intel Xeon 6975P-C | -5.0 % | -7.1 % | Yes |
-| gcc-14, SCALAR | Intel Xeon 6975P-C | -4.7 % | -6.6 % | Yes |
+| gcc-14, AVX2 | Intel Xeon 6975P-C | -5.6 % (-5.8 %, -5.6 %, -5.6 %) | -7.5 % (-7.9 %, -7.4 %, -7.5 %) | Yes |
+| gcc-14, SCALAR | Intel Xeon 6975P-C | -5.0 % (-4.5 %, -5.0 %, -5.0 %) | -6.7 % (-6.5 %, -6.7 %, -6.8 %) | Yes |
+| gcc-15, AVX2 | Intel Xeon 6975P-C | -5.2 % (-5.2 %, -5.1 %, -5.3 %) | -7.1 % (-7.1 %, -7.0 %, -7.1 %) | Yes |
+| gcc-15, SCALAR | Intel Xeon 6973P-C | -4.9 % (-4.9 %, -4.7 %, -5.0 %) | -6.7 % (-6.7 %, -6.4 %, -7.1 %) | Yes |
+| clang, AVX2 | AMD EPYC 7763 | -2.0 % (-2.6 %, -2.0 %, -1.6 %) | -4.4 % (-5.1 %, -4.4 %, -4.1 %) | No (lossless) |
+| clang, SCALAR | Intel Xeon 6975P-C | -2.1 % (-2.0 %, -2.1 %, -2.4 %) | -4.6 % (-4.3 %, -4.6 %, -4.7 %) | No (lossless) |
+
+All four GCC jobs (GCC 14 and GCC 15) meet 3 % in both modes. Both clang jobs miss it in lossless (-2.0 % and -2.1 %); their
+lossy cells pass.
+
+An earlier run, 45067251889 (head = the branch before the fix round), gave the GCC 15 jobs on other CPUs; its clang jobs
+failed to build (`-Werror=unused-function` on the dead `enc_refpass_step`, removed in the fix round). These are real
+same-machine measurements and are kept, labelled with their CPUs (median of three runs, lossless / lossy):
+
+| Job | CPU | Lossless | Lossy | Meets 3 % |
+|---|---|---|---|---|
 | gcc-15, AVX2 | AMD EPYC 7763 | -1.8 % | -3.0 % | No (lossless) |
 | gcc-15, SCALAR | AMD EPYC 9V74 | -2.1 % | -3.6 % | No (lossless) |
-| clang, AVX2 | | build failed | build failed | n/a |
-| clang, SCALAR | | build failed | build failed | n/a |
 
-GCC 15 gains markedly less than GCC 14 and than MinGW GCC 13.2 here; not reproduced locally (no GCC 15), cause not
-established.
+What the two runs imply: GCC 15 gives about -2 % lossless on the AMD EPYC machines (Zen 3 and the EPYC 9V74) and about
+-5 % on Intel Xeon, like the local Zen 5 MSVC kernel (-4.9 % to -3.6 % lossless), so the CPU matters.
+Clang's lossless gain is about -2 % on both CPUs it ran on (an EPYC 7763 and a Xeon 6975P-C), so for clang it is not only a
+CPU effect. Lossy gains hold from -3.0 % to -7.5 % in every job of both runs.
 
 ### Costs and gaps (E3)
 
@@ -1495,4 +1512,4 @@ established.
   `decode_threads`, the decode fuzz replays) were not run: the decoder is not touched.
 - One machine (Zen 5), one synthetic texture. The share of refinement decisions on real images is not measured. The
   lossless 512² and 1,024² cells pass by 0.6 to 1.0 point, so a different texture or machine may sit on the gate, as
-  clang-cl SCALAR and GCC 15 do.
+  clang-cl SCALAR, the two Linux clang jobs and GCC 15 on AMD EPYC do.
