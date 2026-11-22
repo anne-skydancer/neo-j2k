@@ -200,7 +200,7 @@ std::int32_t preprocess_reference(std::int32_t* data, u32 n)
     return max;
 }
 
-// Both functions over `n` samples from `first` on (wrapping), blocks of kPre samples: every output word and
+// Both functions over `count` inputs from `first` on (wrapping), in blocks of kPre samples: every output word and
 // the block maximum equal. Returns false at the first difference.
 constexpr u32 kPre = 4096;
 
@@ -230,9 +230,10 @@ bool preprocess_range(std::uint64_t first, std::uint64_t count, u32 step)
 }
 
 // Full: all 2^32 inputs, in order (nightly, a few seconds). Default: a trimmed pass: every input
-// within 2^16 of 0 and of INT32_MIN, 2,048 values on each side of every power of two and of its negative (a window of 4,096), a stride
-// of 61 over the whole range, and random blocks (a block's maximum with a negative INT32_MIN in it among
-// the positives and the other way round, at every position of a block).
+// within 2^16 of 0 and of INT32_MIN, 2,048 values on each side of every power of two and of its
+// negative (a window of 4,096), a stride of 61 over the whole range, and random blocks (a block's
+// maximum with a negative INT32_MIN in it among the positives and the other way round, at every
+// position of a block).
 void test_preprocess(bool full)
 {
     bool ok = true;
