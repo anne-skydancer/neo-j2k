@@ -22,7 +22,17 @@
 //      clamp is not expected to be reachable through it (a code-block's buffer holds four bytes a
 //      sample and the coder writes about one and a half at most): the run counts the blocks refused
 //      for overflow and asserts none; the clamp is tested in 1 and 2.
+//   4. enc_preprocess (E1, the branch-free sign-magnitude conversion and block maximum, src/enc_pre.h)
+//      against OpenJPEG's per-sample branch: every output word and the maximum, over blocks of 4,096
+//      samples (64 in the random pass). The default run is a trimmed pass: the 2^17 inputs around 0 and
+//      around INT32_MIN, a window of 4,096 around every power of two and its negative, a stride of 61
+//      from 0 (about 0xF4000000, not the top of the range), and random blocks; --exhaustive-full takes
+//      all 2^32 inputs, which covers the rest;
+//   5. enc_t1_encode through E1 on blocks whose largest magnitude gives each bit-plane count from 0 to
+//      25 in every size, orientation and wavelet combination of a set of eight sizes; INT32_MIN is in the
+//      25-plane blocks, and in 16 further blocks of INT32_MIN alone and all zero.
 // Usage: nj2k_enc_t1_unit [--exhaustive-full] [--no-exhaustive]
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -37,6 +47,7 @@
 // the library's internals (by their path: src/ is no include directory)
 #include "../../src/arena.h"
 #include "../../src/enc_mq.h"
+#include "../../src/enc_pre.h"
 #include "../../src/enc_tile.h"
 #include "../../src/t1_flags.h"
 #include "../../src/t1_tables.h"
@@ -165,6 +176,98 @@ bool run_stream(u32 seed, u32 n, u32 cap, u32* total)
         *total = ref.mq.numbytes();
     }
     return ok;
+}
+
+// ---- 0. the coefficient preprocessing (E1) -----------------------------------------------------------
+
+// OpenJPEG's per-sample branch, as enc_t1_encode had it before E1: the reference for enc_preprocess.
+std::int32_t preprocess_reference(std::int32_t* data, u32 n)
+{
+    std::int32_t max = 0;
+    for (u32 i = 0; i < n; ++i) {
+        std::int32_t tmp = data[i];
+        if (tmp < 0) {
+            u32 tmp_unsigned;
+            if (tmp == INT32_MIN) {
+                tmp = INT32_MIN + 1;
+            }
+            max = max > -tmp ? max : -tmp;
+            tmp_unsigned = static_cast<u32>(-tmp) | 0x80000000U;
+            std::memcpy(&data[i], &tmp_unsigned, sizeof(std::int32_t));
+        } else {
+            max = max > tmp ? max : tmp;
+        }
+    }
+    return max;
+}
+
+// Both functions over `count` inputs from `first` on (wrapping), in blocks of kPre samples: every output word and
+// the block maximum equal. Returns false at the first difference.
+constexpr u32 kPre = 4096;
+
+bool preprocess_range(std::uint64_t first, std::uint64_t count, u32 step)
+{
+    std::vector<std::int32_t> a(kPre), b(kPre);
+    std::uint64_t v = first;
+    for (std::uint64_t done = 0; done < count; done += kPre) {
+        for (u32 i = 0; i < kPre; ++i, v += step) {
+            a[i] = b[i] = static_cast<std::int32_t>(static_cast<u32>(v));
+        }
+        const std::int32_t ma = preprocess_reference(a.data(), kPre);
+        const std::int32_t mb = d::enc_preprocess(b.data(), kPre);
+        if (ma != mb || std::memcmp(a.data(), b.data(), kPre * sizeof(std::int32_t)) != 0) {
+            for (u32 i = 0; i < kPre; ++i) {
+                if (a[i] != b[i]) {
+                    std::fprintf(stderr, "preprocess: input 0x%08x gives 0x%08x, was 0x%08x\n", static_cast<u32>(v - (kPre - i) * step), static_cast<u32>(b[i]),
+                                 static_cast<u32>(a[i]));
+                    break;
+                }
+            }
+            std::fprintf(stderr, "preprocess: maximum 0x%08x, was 0x%08x\n", static_cast<u32>(mb), static_cast<u32>(ma));
+            return false;
+        }
+    }
+    return true;
+}
+
+// Full: all 2^32 inputs, in order (nightly, a few seconds). Default: a trimmed pass: every input
+// within 2^16 of 0 and of INT32_MIN, 2,048 values on each side of every power of two and of its
+// negative (a window of 4,096), a stride of 61 from 0 to about 0xF4000000 (--exhaustive-full covers the rest), and random blocks (a block's
+// maximum with a negative INT32_MIN in it among the positives and the other way round, at every
+// position of a block).
+void test_preprocess(bool full)
+{
+    bool ok = true;
+    if (full) {
+        ok = preprocess_range(0, 1ull << 32, 1);
+        std::printf("enc_preprocess: all 2^32 inputs %s\n", ok ? "identical" : "DIFFER");
+    } else {
+        ok = preprocess_range(0xffff0000ull, 1u << 17, 1)       // -65536 .. 65535
+             && preprocess_range(0x7fff0000ull, 1u << 17, 1);   // INT32_MAX - 65535 .. INT32_MIN + 65535
+        for (u32 k = 0; ok && k < 32; ++k) {
+            const std::uint64_t p = 1ull << k;
+            ok = preprocess_range(p - kPre / 2, kPre, 1) && preprocess_range(0u - p - kPre / 2, kPre, 1);
+        }
+        ok = ok && preprocess_range(0, 1ull << 26, 61);
+        Rng rng(20261124);
+        std::vector<std::int32_t> a(64), b(64);
+        for (u32 t = 0; ok && t < 200000; ++t) {
+            for (u32 i = 0; i < 64; ++i) {
+                const u32 r = static_cast<u32>(rng.next());
+                a[i] = static_cast<std::int32_t>((t & 1) ? r >> rng.u(32) : r);
+            }
+            a[rng.u(64)] = (t & 2) ? INT32_MIN : INT32_MAX;
+            if (t & 4) {
+                a[rng.u(64)] = INT32_MIN;
+            }
+            b = a;
+            const std::int32_t ma = preprocess_reference(a.data(), 64);
+            const std::int32_t mb = d::enc_preprocess(b.data(), 64);
+            ok = ma == mb && a == b;
+        }
+        std::printf("enc_preprocess: %s (trimmed pass)\n", ok ? "identical" : "DIFFER");
+    }
+    CHECK_MSG(ok, "enc_preprocess differs from the earlier per-sample branch");
 }
 
 void test_streams()
@@ -329,10 +432,9 @@ void fill_block(std::int32_t* data, u32 w, u32 h, Rng& rng)
 
 u32 g_driver_false = 0;  // blocks both coders refused (the output clamp through the driver)
 
-bool encode_block(fz::EncT1* ref, d::EncT1* neo, u32 w, u32 h, u32 orient, bool reversible, Rng& rng, const nj2k::detail::Allocator& alloc)
+bool encode_samples(fz::EncT1* ref, d::EncT1* neo, const std::vector<std::int32_t>& samples, u32 w, u32 h, u32 orient, bool reversible,
+                    Rng& rng, const nj2k::detail::Allocator& alloc)
 {
-    std::vector<std::int32_t> samples(w * h);
-    fill_block(samples.data(), w, h, rng);
     std::memcpy(fz::enc_t1_data(ref), samples.data(), samples.size() * 4);
     std::memcpy(d::enc_t1_data(neo), samples.data(), samples.size() * 4);
     const u32 compno = rng.u(4);
@@ -369,6 +471,102 @@ bool encode_block(fz::EncT1* ref, d::EncT1* neo, u32 w, u32 h, u32 orient, bool 
     }
     const u32 bytes = cr.passes[cr.totalpasses - 1].rate;
     return std::memcmp(cr.data, cn.data, bytes) == 0;
+}
+
+bool encode_block(fz::EncT1* ref, d::EncT1* neo, u32 w, u32 h, u32 orient, bool reversible, Rng& rng, const nj2k::detail::Allocator& alloc)
+{
+    std::vector<std::int32_t> samples(w * h);
+    fill_block(samples.data(), w, h, rng);
+    return encode_samples(ref, neo, samples, w, h, orient, reversible, rng, alloc);
+}
+
+// E1 end to end: blocks whose largest magnitude puts numbps at each of 1 to 25 (numbps = floorlog2(max) + 1 - 6;
+// the sample range's whole span), the largest sample negative or positive and every other sample smaller, and at
+// 25 the INT32_MIN of the preprocessing's one special case, alone and among others; plus numbps 0 (the largest
+// under 2^6), a block of nothing and one of INT32_MIN only. Every one of the 8 sizes x 4 orientations x 2
+// wavelets for each count (asserted).
+void test_encode_planes()
+{
+    const nj2k::detail::Allocator alloc = nj2k::detail::Allocator::system();
+    fz::EncT1* ref = fz::enc_t1_create(alloc);
+    d::EncT1* neo = d::enc_t1_create(alloc);
+    CHECK_MSG(ref && neo, "no memory");
+    if (!ref || !neo) {
+        return;
+    }
+    Rng rng(20261123);
+    const u32 sizes[][2] = {{64, 64}, {64, 1}, {1, 64}, {33, 17}, {5, 7}, {64, 63}, {4, 4}, {1, 1}};
+    std::uint64_t blocks = 0;
+    bool seen[8][4][2] = {};
+    for (u32 planes = 0; planes <= 25 && g_failures == 0; ++planes) {
+        // every size, orientation and wavelet for each bit-plane count: the three indices are independent
+        for (u32 k = 0; k < 64; ++k) {
+            const u32 si = k % 8, orient = (k / 8) % 4, rev = k / 32;
+            seen[si][orient][rev] = true;
+            const u32 w = sizes[si][0], h = sizes[si][1];
+            std::vector<std::int32_t> v(w * h);
+            // the largest magnitude: 2^(planes+5) .. 2^(planes+6) - 1 gives numbps = planes (hi <= 2^31); every other
+            // sample is below lo, so the largest is the one at top_at, negative or positive by chance.
+            // planes = 0: all samples below 2^6, so floorlog2(max) + 1 - 6 is numbps 0 for an all-zero block and
+            // otherwise wraps as an unsigned in OpenJPEG, the frozen reference and the new code alike (no pass
+            // runs; production's 9/7 path reaches it, encode.cpp), so the blocks are compared as they are.
+            const std::uint64_t lo = planes ? (1ull << (planes + 5)) : 0, hi = planes ? (1ull << (planes + 6)) : (1ull << 6);
+            const std::uint64_t below = planes ? lo : hi;
+            const bool dense = rng.u(2) != 0;
+            const u32 top_at = rng.u(w * h);
+            for (u32 i = 0; i < w * h; ++i) {
+                std::uint64_t m = rng.next() % below;
+                if (dense) {
+                    m &= rng.next();  // many small ones, as a high band
+                }
+                if (i == top_at && planes) {
+                    m = lo + rng.next() % (hi - lo);
+                }
+                v[i] = rng.u(2) ? -static_cast<std::int32_t>(m) : static_cast<std::int32_t>(m);
+            }
+            if (planes == 25) {
+                // INT32_MIN among the samples, and at times INT32_MAX with it
+                v[top_at] = INT32_MIN;
+                if (k & 4) {
+                    v[(top_at + 1) % (w * h)] = INT32_MAX;
+                }
+            }
+            if (!encode_samples(ref, neo, v, w, h, orient, rev, rng, alloc)) {
+                std::fprintf(stderr, "enc_t1_encode differs: largest magnitude 2^%u.., %u x %u, orientation %u, %s\n", planes ? planes + 5 : 0, w, h, orient, rev ? "5/3" : "9/7");
+                ++g_failures;
+                break;
+            }
+            ++blocks;
+        }
+    }
+    if (g_failures == 0) {
+        u32 combos = 0;
+        for (auto& a : seen) {
+            for (auto& b : a) {
+                combos += b[0] + b[1];
+            }
+        }
+        CHECK_MSG(combos == 64, "%u of 64 size, orientation and wavelet combinations covered", combos);
+    }
+    for (u32 k = 0; k < 8 && g_failures == 0; ++k) {
+        const u32 w = sizes[k][0], h = sizes[k][1];
+        std::vector<std::int32_t> v(w * h, INT32_MIN);
+        if (!encode_samples(ref, neo, v, w, h, k & 3u, (k >> 2) & 1u, rng, alloc)) {
+            std::fprintf(stderr, "enc_t1_encode differs: INT32_MIN only, %u x %u\n", w, h);
+            ++g_failures;
+        }
+        ++blocks;
+        std::fill(v.begin(), v.end(), 0);
+        if (!encode_samples(ref, neo, v, w, h, k & 3u, (k >> 2) & 1u, rng, alloc)) {
+            std::fprintf(stderr, "enc_t1_encode differs: all zero, %u x %u\n", w, h);
+            ++g_failures;
+        }
+        ++blocks;
+    }
+    CHECK_MSG(g_driver_false == 0, "%u blocks overflowed the output buffer", g_driver_false);
+    std::printf("enc_t1_encode, bit-planes 0 to 25 and INT32_MIN: %llu code-blocks identical\n", static_cast<unsigned long long>(blocks));
+    fz::enc_t1_destroy(ref, alloc);
+    d::enc_t1_destroy(neo, alloc);
 }
 
 void test_encode()
@@ -439,14 +637,17 @@ int main(int argc, char** argv)
         }
     }
     if (full) {
-        // the nightly run: only the exhaustive comparison
+        // the nightly run: only the exhaustive comparisons
+        test_preprocess(true);
         test_single(true);
     } else {
         test_streams();
         if (exhaustive) {
             test_single(false);
         }
+        test_preprocess(false);
         test_encode();
+        test_encode_planes();
     }
     if (g_failures) {
         std::fprintf(stderr, "enc_t1_unit: %d failures\n", g_failures);

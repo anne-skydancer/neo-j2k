@@ -102,9 +102,11 @@ outputs. Times are medians from the detailed tables below; lower is faster.
 | Encode 1,024² RGB, lossless | 1 | 253.9 ms | 178.8 ms | 0.70 | neo-j2k 1.42× faster |
 
 The encode rows are the equal one-thread comparison, measured after the MQ coder redesign (`doc/bench.md`,
-"Stage 6c"; before it neo-j2k took 284.5 and 295.9 ms against OpenJPEG's 250.0 and 262.8). With a host executor,
-neo-j2k C++ encodes the same 1,024² inputs in 62.43 ms lossy and 52.57 ms lossless at eight threads; that table
-measures C++ scaling rather than a like-for-like OpenJPEG comparison. All encoded bytes remain identical.
+"Stage 6c"; before it neo-j2k took 284.5 and 295.9 ms against OpenJPEG's 250.0 and 262.8). They do not include
+the branch-free preprocessing of "Stage 6e", which takes about 3.3 to 4.4 % off the encode with MSVC (no GCC or clang
+whole-encode figure exists). With a host executor, neo-j2k C++ encodes the same 1,024² inputs in 62.43 ms lossy and
+52.57 ms lossless at eight threads; that table measures C++ scaling rather than a like-for-like OpenJPEG comparison.
+All encoded bytes remain identical.
 
 ### Small images, one thread (stages 2-4)
 
