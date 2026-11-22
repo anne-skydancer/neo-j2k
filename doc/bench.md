@@ -949,65 +949,65 @@ one-thread upload encode, the new library against the one at bee41d4 (5 rotation
 harness is the study's `bench/t1_study`, on the `studies` branch (see `bench/STUDIES.md` there); the Linux
 kernel bench, `bench/nj2k_enc_t1_ratio.cpp`, is in the repository.
 
-AVX2 build, Mcycles and ratios to today's:
+AVX2 build, Mcycles and change against today's (minus is faster):
 
-| Size | Mode | Today | Stage 2 | Encode, stage 2 | Kernel, stage 2 | Encode, stage 1 | Kernel, stage 1 |
-|---|---|---:|---:|---:|---:|---:|---:|
-| 256² | lossy | 64.5 | 42.3 | 0.656 | 0.603 | 0.865 | 0.854 |
-| 256² | lossless | 68.5 | 41.7 | 0.609 | 0.584 | 0.856 | 0.849 |
-| 512² | lossy | 293.5 | 189.6 | 0.646 | 0.603 | 0.866 | 0.855 |
-| 512² | lossless | 306.9 | 187.5 | 0.611 | 0.589 | 0.855 | 0.855 |
-| 1,024² | lossy | 1,201.4 | 774.0 | 0.644 | 0.605 | 0.860 | 0.857 |
-| 1,024² | lossless | 1,246.6 | 760.7 | 0.610 | 0.590 | 0.857 | 0.854 |
+| Size | Mode | Today | Stage 2 | Encode, stage 2 | Kernel, stage 2 | Passes gate | Encode, stage 1 | Kernel, stage 1 |
+|---|---|---:|---:|---:|---:|---|---:|---:|
+| 256² | lossy | 64.5 | 42.3 | -34.4 % | -39.7 % | Yes | -13.5 % | -14.6 % |
+| 256² | lossless | 68.5 | 41.7 | -39.1 % | -41.6 % | Yes | -14.4 % | -15.1 % |
+| 512² | lossy | 293.5 | 189.6 | -35.4 % | -39.7 % | Yes | -13.4 % | -14.5 % |
+| 512² | lossless | 306.9 | 187.5 | -38.9 % | -41.1 % | Yes | -14.5 % | -14.5 % |
+| 1,024² | lossy | 1,201.4 | 774.0 | -35.6 % | -39.5 % | Yes | -14.0 % | -14.3 % |
+| 1,024² | lossless | 1,246.6 | 760.7 | -39.0 % | -41.0 % | Yes | -14.3 % | -14.6 % |
 
-SCALAR build (baseline x86-64, `bsr` for the count): at stage 2 the encode is 0.618 to 0.671 and the kernel
-0.579 to 0.600 of today's (stage 1: encode 0.864 to 0.885, kernel 0.845 to 0.850). The study's targets, kernel
-at most 0.62 and encode at most 0.68 of today's, hold on every configuration of both builds (nearest: SCALAR
-256² lossy, encode 0.671). Stage 1 sits at its kernel gate of 0.85 (0.845 to 0.857, within the 1 to 3 % that
+SCALAR build (baseline x86-64, `bsr` for the count): at stage 2 the encode changes by -38.2 % to -32.9 % and the kernel
+by -42.1 % to -40.0 % of today's (stage 1: encode -13.6 % to -11.5 %, kernel -15.5 % to -15.0 %). The study's targets, kernel
+at most -38.0 % and encode at most -32.0 % against today's, hold on every configuration of both builds (nearest: SCALAR
+256² lossy, encode -32.9 %). Stage 1 sits at its kernel gate of -15.0 % (-15.5 % to -14.3 %, within the 1 to 3 % that
 code layout moves a kernel). The coder and the pass steps are force-inlined (`NJ2K_FORCE_INLINE`): without it
-MSVC left the renormalisation and the decision as calls and stage 1 reached only 0.92.
+MSVC left the renormalisation and the decision as calls and stage 1 reached only -8.0 %.
 
 Against OpenJPEG 2.5.4 (`nj2k_encode_bench`, 1,024² RGB, one thread, the same bytes): lossy 183.7 ms against
-240.4 (0.76), lossless 178.8 against 253.9 (0.70). Before the redesign neo-j2k took 284.5 and 295.9 ms and was
-1.13 to 1.14 times slower.
+240.4 (-24.0 %), lossless 178.8 against 253.9 (-30.0 %). Before the redesign neo-j2k took 284.5 and 295.9 ms and was
+13.0 % to 14.0 % slower.
 
 ### GCC and clang
 
 The selects only pay when the compiler keeps them as `cmov`. MSVC and clang do; GCC turned them back into
-branches (the select form: 0.95 of today's kernel on a local MinGW GCC 13.2), so for GCC `encode` computes the
+branches (the select form: -5.0 % of today's kernel on a local MinGW GCC 13.2), so for GCC `encode` computes the
 same function with arithmetic masks, and reads the next state as a byte of the table entry (`enc_luts.h`
 asserts the layout) in place of a mask.
 
 **Real Linux, GitHub Actions: the table of record.** `bench/nj2k_enc_t1_ratio.cpp` links the real library and
 times the new `enc_t1_encode` against the frozen earlier one in one process, interleaved rounds, 256 synthetic
-64 x 64 blocks a set, TSC cycles. A cell is the ratio new/old (lower is better, target 0.62), the median of the
+64 x 64 blocks a set, TSC cycles. A cell is the change in time, new against old (minus is faster, target -38.0 %), the median of the
 rounds' ratios and then the median of 3 runs of 41 rounds, lossless / lossy, kernel only, on shared runners.
 "Final code" is the confirmation run (45032049386) on the code of this branch; "before the byte load" is the
 first run (the masks, with the next state by mask) on the same harness:
 
-| Job | Before the byte load | Final code | Gain |
-|---|---|---|---:|
-| gcc-14, AVX2 | 0.588 / 0.620 | **0.565 / 0.599** | 3.9 % / 3.4 % |
-| gcc-14, SCALAR | 0.693 / 0.721 | **0.669 / 0.694** | 3.5 % / 3.7 % |
-| gcc-15, AVX2 | 0.677 / 0.703 | **0.656 / 0.685** | 3.1 % / 2.6 % |
-| gcc-15, SCALAR | 0.774 / 0.797 | **0.753 / 0.775** | 2.7 % / 2.8 % |
-| clang, AVX2 | not run | **0.611 / 0.640** | the selects, unchanged |
-| clang, SCALAR | not run | **0.595 / 0.620** | the selects, unchanged |
+| Job | Before the byte load | Final code | Gain | Passes gate (final code) |
+|---|---|---|---:|---|
+| gcc-14, AVX2 | -41.2 % / -38.0 % | **-43.5 % / -40.1 %** | 3.9 % / 3.4 % | Yes |
+| gcc-14, SCALAR | -30.7 % / -27.9 % | **-33.1 % / -30.6 %** | 3.5 % / 3.7 % | No |
+| gcc-15, AVX2 | -32.3 % / -29.7 % | **-34.4 % / -31.5 %** | 3.1 % / 2.6 % | No (accepted) |
+| gcc-15, SCALAR | -22.6 % / -20.3 % | **-24.7 % / -22.5 %** | 2.7 % / 2.8 % | No |
+| clang, AVX2 | not run | **-38.9 % / -36.0 %** | the selects, unchanged | No |
+| clang, SCALAR | not run | **-40.5 % / -38.0 %** | the selects, unchanged | Yes |
 
 The byte load is 2.7 to 3.9 % lower than the masks on all four GCC jobs. Where the build ends up:
 
-- GCC 14 AVX2 meets the 0.62 target (0.565 / 0.599); clang is at it (0.595 to 0.640).
-- **GCC 15, the compiler of the `linux-gcc` preset, AVX2 ends at 0.66 to 0.69**, above the 0.62 target; the
-  owner accepted about 0.70 or better.
-- **GCC 15 SCALAR ends at 0.75 to 0.78**, above the accepted 0.70, and GCC 14 SCALAR at 0.67 to 0.69. No
-  candidate gained there (below). The same masks cost 0.08 to 0.10 more on GCC 15 than on GCC 14.
+- GCC 14 AVX2 meets the -38.0 % target (-43.5 % / -40.1 %); clang is at it (-40.5 % to -36.0 %).
+- **GCC 15, the compiler of the `linux-gcc` preset, AVX2 ends at -34.0 % to -31.0 %**, above the -38.0 % target; the
+  owner accepted about -30.0 % or better.
+- **GCC 15 SCALAR ends at -25.0 % to -22.0 %**, above the accepted -30.0 %, and GCC 14 SCALAR at -33.0 % to -31.0 %. No
+  candidate gained there (below). The same masks cost 8 to 10 percentage points more on GCC 15 than on GCC 14.
 
 **The candidates (relative ranking only).** The second CI run built 14 candidate formulations of the GCC path,
 each its own program in one job per compiler and build, run 3 times each (run 45029986714). Those programs
 compile their own copy of `enc_t1.cpp` and of the frozen reference, and their absolute SCALAR ratios came out
-about 0.1 lower than the single-bench runs above for the same code (the shipped form: gcc-14 SCALAR
-0.586 / 0.616, gcc-15 SCALAR 0.641 / 0.671, against 0.669 / 0.694 and 0.753 / 0.775 in the final run; the AVX2
-jobs agreed to within 0.01). The likely cause is that the variant programs are built with different
+about 10 percentage points more negative than the single-bench runs above for the same code (the shipped form: gcc-14 SCALAR
+-41.4 % / -38.4 %, gcc-15 SCALAR -35.9 % / -32.9 %, against -33.1 % / -30.6 % and -24.7 % / -22.5 % in the final run; the AVX2
+jobs agreed to within 1 percentage point). The likely cause is that the variant programs are built with different
 effective conditions from the library's (not proven), so **their absolute numbers are not comparable with the
 table above and are kept only for the ranking inside that run**. In it the next-state byte load (variant 2) was
 3.1 to 3.9 % lower than the masks (variant 0) on all four jobs; a single 4-byte table load unpacked by shifts was
@@ -1017,8 +1017,8 @@ borrow of `a' - q`, a do-while byte-out loop with `__builtin_expect`, the byte-o
 in a local copy for the length of a pass, a forced-inline `byteout`, and the combinations of those.
 
 On the local Windows machine (MinGW GCC 13.2, the Visual Studio clang with the MSVC ABI, 64 synthetic blocks,
-kernel only, pinned, 31 interleaved rounds): GCC 0.95 with selects, 0.685 to 0.715 with masks; clang 0.62 to
-0.64 with selects. GCC 13's new coder runs in about the same cycles as clang's (84 against 83 Mcycles), but
+kernel only, pinned, 31 interleaved rounds): GCC -5.0 % with selects, -31.5 % to -28.5 % with masks; clang -38.0 % to
+-36.0 % with selects. GCC 13's new coder runs in about the same cycles as clang's (84 against 83 Mcycles), but
 its earlier coder is 8 % faster than clang's, which is the ratio's denominator.
 
 ### Not measured, and the gaps
@@ -1074,44 +1074,39 @@ the 37,424 code-blocks, the replay and 4,000 mutated fuzz inputs); `nj2k_t1_unit
 **Method.** Ryzen 9 9950X3D, Windows 11, one thread pinned to CPU 7, TSC cycles, medians of interleaved rounds. "Tier-1"
 is `nj2k_t1_dec` (`bench/nj2k_t1_dec.cpp`): `t1_decode_cblk` of the library against the frozen copy built with the
 same flags, over the dumped code-blocks of the author's synthetic texture (256², 512², 1,024², lossy and lossless; the viewer's
-upload parameters; the two objects hold the same text before stage 1 and time 0.97 to 1.00 of each other), 9 to 11
+upload parameters; the two objects hold the same text before stage 1 and time -3.0 % to 0.0 % against each other), 9 to 11
 rounds. "Whole decode" is the author's `mqng_profile` (7 decodes a run, 5 alternating runs of each library; the image
 hashes are equal): the new library against the one at 41c4048. The harness around them (the profile and the
 code-block dumper) is in the author's study notes, not in the repository.
 
-Tier-1 time against the frozen decoder (stage 1 / stage 2), lower is faster:
+Change against the earlier decoder, stage 1 / stage 2 (minus is faster). Tier-1 is against the frozen decoder, the whole decode against the library at 41c4048; the output is the same in both. Passes gate: stage 1 against the targets below, every size.
 
-| Build | 256² lossy | 256² lossless | 512² lossy | 512² lossless | 1,024² lossy | 1,024² lossless |
-|---|---|---|---|---|---|---|
-| MSVC AVX2 | 0.873 / 0.846 | 0.728 / 0.721 | 0.840 / 0.784 | 0.722 / 0.714 | 0.865 / 0.793 | 0.723 / 0.710 |
-| MSVC SCALAR | 0.868 / 0.841 | 0.729 / 0.720 | 0.841 / 0.784 | 0.720 / 0.711 | 0.856 / 0.787 | 0.719 / 0.712 |
-| clang-cl AVX2 | 0.869 / 0.835 | 0.776 / 0.768 | 0.878 / 0.811 | 0.781 / 0.768 | 0.898 / 0.817 | 0.786 / 0.770 |
-| MinGW GCC 13.2, AVX2 flags | 0.939 / 0.881 | 0.767 / 0.757 | 0.901 / 0.809 | 0.781 / 0.768 | 0.934 / 0.817 | 0.788 / 0.774 |
-| MinGW GCC 13.2, no AVX2 flag (stage 2) | 0.906 | not run | 0.830 | 0.786 | 0.844 | 0.787 |
+| Build, metric | 256² lossy | 256² lossless | 512² lossy | 512² lossless | 1,024² lossy | 1,024² lossless | Passes gate |
+|---|---|---|---|---|---|---|---|
+| MSVC AVX2, Tier-1 | -12.7 % / -15.4 % | -27.2 % / -27.9 % | -16.0 % / -21.6 % | -27.8 % / -28.6 % | -13.5 % / -20.7 % | -27.7 % / -29.0 % | Yes |
+| MSVC AVX2, whole decode | -9.8 % / -12.5 % | -27.1 % / -27.2 % | -15.3 % / -20.2 % | -27.8 % / -28.5 % | -13.3 % / -19.9 % | -27.5 % / -28.7 % | Yes |
+| MSVC SCALAR, Tier-1 | -13.2 % / -15.9 % | -27.1 % / -28.0 % | -15.9 % / -21.6 % | -28.0 % / -28.9 % | -14.4 % / -21.3 % | -28.1 % / -28.8 % | Yes |
+| MSVC SCALAR, whole decode | -9.3 % / -11.7 % | -25.0 % / -25.6 % | -13.1 % / -18.2 % | -26.4 % / -27.5 % | -11.7 % / -17.2 % | -26.7 % / -27.9 % | Yes |
+| clang-cl AVX2, Tier-1 | -13.1 % / -16.5 % | -22.4 % / -23.2 % | -12.2 % / -18.9 % | -21.9 % / -23.2 % | -10.2 % / -18.3 % | -21.4 % / -23.0 % | No (within noise) |
+| clang-cl, whole decode | -10.8 % / -14.4 % | -22.7 % / -23.4 % | -12.5 % / -19.4 % | -22.9 % / -24.2 % | -11.3 % / -19.2 % | -22.5 % / -24.3 % | Yes |
+| MinGW GCC 13.2, AVX2 flags, Tier-1 | -6.1 % / -11.9 % | -23.3 % / -24.3 % | -9.9 % / -19.1 % | -21.9 % / -23.2 % | -6.6 % / -18.3 % | -21.2 % / -22.6 % | No |
+| MinGW GCC 13.2, no AVX2 flag, Tier-1 (stage 2 only) | -9.4 % | not run | -17.0 % | -21.4 % | -15.6 % | -21.3 % | n/a |
 
-Whole decode against the library at 41c4048 (stage 1 / stage 2; the same output):
-
-| Build | 256² lossy | 256² lossless | 512² lossy | 512² lossless | 1,024² lossy | 1,024² lossless |
-|---|---|---|---|---|---|---|
-| MSVC AVX2 | 0.902 / 0.875 | 0.729 / 0.728 | 0.847 / 0.798 | 0.722 / 0.715 | 0.867 / 0.801 | 0.725 / 0.713 |
-| MSVC SCALAR | 0.907 / 0.883 | 0.750 / 0.744 | 0.869 / 0.818 | 0.736 / 0.725 | 0.883 / 0.828 | 0.733 / 0.721 |
-| clang-cl | 0.892 / 0.856 | 0.773 / 0.766 | 0.875 / 0.806 | 0.771 / 0.758 | 0.887 / 0.808 | 0.775 / 0.757 |
-
-The targets (Tier-1 at most 0.78 lossless and 0.91 lossy, whole decode at most 0.79 and 0.92) hold after stage 1 on
-MSVC AVX2 and SCALAR; clang-cl's whole decode holds, and its Tier-1 lossless sits at 0.776 to 0.786 (up to 0.006
-over 0.78, inside the 3 % noise band) until stage 2 takes it to 0.768 to 0.770. Stage 2's gate (at least 3 % on lossy
+The targets (Tier-1 at most -22.0 % lossless and -9.0 % lossy, whole decode at most -21.0 % and -8.0 %) hold after stage 1 on
+MSVC AVX2 and SCALAR; clang-cl's whole decode holds, and its Tier-1 lossless sits at -22.4 % to -21.4 % (up to 0.6
+percentage points over -22.0 %, inside the 3 % noise band) until stage 2 takes it to -23.2 % to -23.0 %. Stage 2's gate (at least 3 % on lossy
 at 512² and above in every build, at most 1 % slower elsewhere): lossy at 512² and above 7 to 12 % faster than
 stage 1 (MSVC AVX2 6.7 and 8.3 %, SCALAR 6.8 and 8.0 %, clang-cl 7.6 and 9.0 %, GCC 10 and 12.5 %), 256² lossy 3 to 6 %,
 lossless equal or 1 to 2 % faster. It stays.
 
 ### GCC and clang
 
-GCC turns the select form back into branches (stage 1 with it: 1.02 to 1.05 of today's Tier-1 on lossy, 0.92 to 0.93
+GCC turns the select form back into branches (stage 1 with it: +2.0 % to +5.0 % against today's Tier-1 on lossy, -8.0 % to -7.0 %
 on lossless), so for GCC the decision computes the same function with masks and a shift (the next-state index is
-`(w >> (17 + 7 * flip)) & 0x7f`, the state kept or replaced by a mask): 0.90 to 0.94 lossy and 0.77 to 0.79 lossless at
-stage 1, 0.81 to 0.88 and 0.76 to 0.77 at stage 2. clang takes the select form (the masks on clang-cl are worse: 0.79
-lossless and 0.91 lossy at 1,024²). Stage 1 alone is 0.901 at 512² and 0.934 at 1,024² on lossy GCC, the latter above the 0.91 target; stage 2 brings
-them to 0.809 and 0.817.
+`(w >> (17 + 7 * flip)) & 0x7f`, the state kept or replaced by a mask): -10.0 % to -6.0 % lossy and -23.0 % to -21.0 % lossless at
+stage 1, -19.0 % to -12.0 % and -24.0 % to -23.0 % at stage 2. clang takes the select form (the masks on clang-cl are worse: -21.0 %
+lossless and -9.0 % lossy at 1,024²). Stage 1 alone is -9.9 % at 512² and -6.6 % at 1,024² on lossy GCC, the latter above the -9.0 % target; stage 2 brings
+them to -19.1 % and -18.3 %.
 
 ### Not measured, and the gaps
 
@@ -1170,25 +1165,25 @@ x86-64), one thread pinned to CPU 7, TSC cycles, the two builds interleaved in a
 code-blocks of the upload encode's texture (the study's dump, `bench/t1_study`), the earlier library against this
 one, in separate processes; "encode" is the whole one-thread upload encode (5 rounds, 9 repeats, 3 at 1,024²).
 The harness is the study's (`bench/t1_study` and `bench/ebcotng_study`, on the `studies` branch, see
-`bench/STUDIES.md`), not in this branch. The gate: at most 0.97 of the base kernel on every
+`bench/STUDIES.md`), not in this branch. The gate: at most -3.0 % against the base kernel on every
 configuration, beyond the 3 % noise band.
 
-Kernel, Mcycles and ratio to the stage-6c base (the round-to-round range of the ratio was 0.002 to 0.01):
+Kernel, Mcycles and change against the stage-6c base (minus is faster; the round-to-round range of the change was 0.2 to 1.0 percentage points):
 
-| Size | Mode | AVX2 base | AVX2 E1 | AVX2 | SCALAR base | SCALAR E1 | SCALAR |
-|---|---|---:|---:|---:|---:|---:|---:|
-| 256² | lossy | 33.4 | 31.8 | 0.950 | 33.0 | 31.1 | 0.942 |
-| 256² | lossless | 37.8 | 36.3 | 0.959 | 37.2 | 35.4 | 0.952 |
-| 512² | lossy | 158.7 | 152.1 | 0.958 | 156.4 | 149.1 | 0.952 |
-| 512² | lossless | 174.1 | 167.8 | 0.964 | 171.2 | 164.3 | 0.959 |
-| 1,024² | lossy | 646.6 | 619.8 | 0.959 | 637.8 | 608.3 | 0.953 |
-| 1,024² | lossless | 706.5 | 680.8 | 0.964 | 695.3 | 667.0 | 0.959 |
+| Size | Mode | AVX2 base | AVX2 E1 | AVX2 change | SCALAR base | SCALAR E1 | SCALAR change | Passes gate |
+|---|---|---:|---:|---:|---:|---:|---:|---|
+| 256² | lossy | 33.4 | 31.8 | -5.0 % | 33.0 | 31.1 | -5.8 % | Yes |
+| 256² | lossless | 37.8 | 36.3 | -4.1 % | 37.2 | 35.4 | -4.8 % | Yes |
+| 512² | lossy | 158.7 | 152.1 | -4.2 % | 156.4 | 149.1 | -4.8 % | Yes |
+| 512² | lossless | 174.1 | 167.8 | -3.6 % | 171.2 | 164.3 | -4.1 % | Yes |
+| 1,024² | lossy | 646.6 | 619.8 | -4.1 % | 637.8 | 608.3 | -4.7 % | Yes |
+| 1,024² | lossless | 706.5 | 680.8 | -3.6 % | 695.3 | 667.0 | -4.1 % | Yes |
 
 The whole one-thread encode follows the kernel (the preprocessing is in it, the rest of the encode unchanged):
-AVX2 0.959 and 0.959 (256²), 0.967 and 0.963 (512²), 0.967 and 0.965 (1,024², lossy and lossless); SCALAR 0.956
-and 0.960, 0.963 and 0.964, 0.960 and 0.964. The gate holds on all twelve MSVC kernel configurations. The study's
-prototype measured 0.952 to 0.966 (AVX2) and 0.923 to 0.945 (SCALAR); the scalar build gains less here than there
-(0.942 to 0.959): the stage-6c base moved, and the loop is kept scalar (below).
+AVX2 -4.1 % and -4.1 % (256²), -3.3 % and -3.7 % (512²), -3.3 % and -3.5 % (1,024², lossy and lossless); SCALAR -4.4 %
+and -4.0 %, -3.7 % and -3.6 %, -4.0 % and -3.6 %. The gate holds on all twelve MSVC kernel configurations. The study's
+prototype measured -4.8 % to -3.4 % (AVX2) and -7.7 % to -5.5 % (SCALAR); the scalar build gains less here than there
+(-5.8 % to -4.1 %): the stage-6c base moved, and the loop is kept scalar (below).
 
 **Leaner.** Only in this sense: the loop has no data-dependent branch (the earlier one branched on the sign of
 every sample and again on INT32_MIN in the negative path). It does one more store per positive sample (it writes
@@ -1198,21 +1193,21 @@ used: instruction, branch and miss counts are not measured.
 **MSVC's vectoriser.** The first form of the loop was vectorised by MSVC: with AVX2 by `vpmaxud`, in the
 baseline build by SSE4.1 `pmaxud` behind its run-time CPU check (`__isa_available`), which the `global_state`
 test refuses in a scalar build (a `.bss` word and an instruction above baseline x86-64). Vectorised, the kernel
-was 0.936 to 0.955 (AVX2) and 0.938 to 0.959 (SCALAR). The step is specified as scalar code, so the loop has
+was -6.4 % to -4.5 % (AVX2) and -6.2 % to -4.1 % (SCALAR). The step is specified as scalar code, so the loop has
 `#pragma loop(no_vector)` under MSVC (as `jp2.cpp`'s palette loop has), which costs about one point and keeps
 `global_state` green in both builds.
 
 ### GCC and clang
 
 MinGW GCC 13.2 (`-O2`, kernel only, 64 x 64 code-blocks of the same texture, the library's `enc_t1.cpp` and
-`enc_dwt.cpp` against the base's, three rounds at 512² and 1,024², seven at 256²): baseline x86-64 0.950 and
-0.959 (256²), 0.964 and 0.968 (512²), 0.963 and 0.968 (1,024²); `-march=x86-64-v3` 0.942 and 0.949, 0.951 and
-0.956, 0.952 and 0.961. GCC's nearest cell is 0.968, with one round at 0.971, inside the noise of a three-round
+`enc_dwt.cpp` against the base's, three rounds at 512² and 1,024², seven at 256²): baseline x86-64 -5.0 % and
+-4.1 % (256²), -3.6 % and -3.2 % (512²), -3.7 % and -3.2 % (1,024²); `-march=x86-64-v3` -5.8 % and -5.1 %, -4.9 % and
+-4.4 %, -4.8 % and -3.9 %. GCC's nearest cell is -3.2 %, with one round at -2.9 %, inside the noise of a three-round
 median; the gate is met on the medians, with no margin to speak of.
 
-**clang-cl misses the gate.** The Visual Studio clang (`-T ClangCL`, the same flags as MSVC's), AVX2 build: 0.991
-(256² lossy), 0.994 (256² lossless), 0.994 (512² lossy); the other configurations and its SCALAR build were not
-measured (the run was stopped at that result): 3 of the 12 configurations, 0.991 to 0.994, no gain. Its compiler already compiles the earlier loop's main part without a
+**clang-cl misses the gate.** The Visual Studio clang (`-T ClangCL`, the same flags as MSVC's), AVX2 build: -0.9 %
+(256² lossy), -0.6 % (256² lossless), -0.6 % (512² lossy); the other configurations and its SCALAR build were not
+measured (the run was stopped at that result): 3 of the 12 configurations, -0.9 % to -0.6 %, no gain. Its compiler already compiles the earlier loop's main part without a
 sign branch (selects and `vpmaxsd`, vectorised), so there is no branch for E1 to remove, and the new loop gives about 1 %.
 The output is identical; nothing in the code is left for a Clang-specific form to win.
 
@@ -1223,7 +1218,7 @@ The output is identical; nothing in the code is left for a Clang-specific form t
   bench of stage 6c measures the stage-2 MQ coder, not E1. No GCC or clang whole-encode figure exists, and
   `nj2k_enc_t1_unit` was not run locally with them.
 - The comparison with OpenJPEG 2.5.4 (`nj2k_encode_bench`) was not repeated: the README's and stage 6c's encode rows
-  are before E1; with MSVC E1 takes about 3 to 4 % off the one-thread encode time (0.956 to 0.967 of it). No GCC or clang
+  are before E1; with MSVC E1 takes about 3 to 4 % off the one-thread encode time (-4.4 % to -3.3 % of it). No GCC or clang
   whole-encode figure exists.
 - One machine (Zen 5), one synthetic texture; the machine was not quiet. The harness is on the `studies` branch, not in this branch.
 
@@ -1242,8 +1237,8 @@ constants; both are `NJ2K_FORCE_INLINE` for that (the significance pass also use
 No intrinsics.
 
 **The first form missed, the second passes.** The first form (the study's prototype: a `tzcnt` loop over the set bits
-of `cand`, one iteration a coded row) gave 0.969 to 0.977 of the base kernel on MSVC AVX2 (the gate is 0.97 beyond the
-noise; the study had 0.955 to 0.962 on another base): the loop's exit branch and the runtime row index (variable
+of `cand`, one iteration a coded row) gave -3.1 % to -2.3 % against the base kernel on MSVC AVX2 (the gate is -3.0 % beyond the
+noise; the study had -4.5 % to -3.8 % on another base): the loop's exit branch and the runtime row index (variable
 shifts, the `ci == 0` and `ci == 3` branches of `update_flags`, the sign index) cost what the mask saved. The unrolled
 form is the one committed.
 
@@ -1276,23 +1271,23 @@ encode's texture (the study's dump; `bench/t1_study` and the study harnesses are
 `bench/STUDIES.md`: 75, 210 and 777 blocks at 256², 512², 1,024²; 21 repeats a
 process, 7 at 1,024²; 9 rounds); "encode" is the whole one-thread upload encode (5 rounds, 9 repeats, 3 at 1,024²). The
 harness is a throwaway one (a small timer over the dump and the library's sources, built once from `main` and once from
-this branch), not in the repository. The gate: at most 0.97 of the base kernel on every configuration, beyond the 3 %
+this branch), not in the repository. The gate: at most -3.0 % against the base kernel on every configuration, beyond the 3 %
 noise band.
 
-Kernel, Mcycles and ratio to main (the round-to-round range of the ratio was 0.002 to 0.012):
+Kernel, Mcycles and change against main (minus is faster; the round-to-round range of the change was 0.2 to 1.2 percentage points):
 
-| Size | Mode | AVX2 main | AVX2 E2 | AVX2 | SCALAR main | SCALAR E2 | SCALAR |
-|---|---|---:|---:|---:|---:|---:|---:|
-| 256² | lossy | 31.1 | 29.5 | 0.951 | 31.3 | 29.2 | 0.933 |
-| 256² | lossless | 35.5 | 33.7 | 0.949 | 35.8 | 33.3 | 0.930 |
-| 512² | lossy | 149.1 | 141.8 | 0.951 | 149.9 | 140.1 | 0.934 |
-| 512² | lossless | 164.3 | 155.8 | 0.948 | 165.7 | 154.0 | 0.930 |
-| 1,024² | lossy | 607.6 | 576.9 | 0.950 | 611.0 | 571.8 | 0.936 |
-| 1,024² | lossless | 667.6 | 632.2 | 0.947 | 671.9 | 625.8 | 0.931 |
+| Size | Mode | AVX2 main | AVX2 E2 | AVX2 change | SCALAR main | SCALAR E2 | SCALAR change | Passes gate |
+|---|---|---:|---:|---:|---:|---:|---:|---|
+| 256² | lossy | 31.1 | 29.5 | -4.9 % | 31.3 | 29.2 | -6.7 % | Yes |
+| 256² | lossless | 35.5 | 33.7 | -5.1 % | 35.8 | 33.3 | -7.0 % | Yes |
+| 512² | lossy | 149.1 | 141.8 | -4.9 % | 149.9 | 140.1 | -6.6 % | Yes |
+| 512² | lossless | 164.3 | 155.8 | -5.2 % | 165.7 | 154.0 | -7.0 % | Yes |
+| 1,024² | lossy | 607.6 | 576.9 | -5.0 % | 611.0 | 571.8 | -6.4 % | Yes |
+| 1,024² | lossless | 667.6 | 632.2 | -5.3 % | 671.9 | 625.8 | -6.9 % | Yes |
 
-The gate holds on all twelve MSVC configurations (0.947 to 0.951 AVX2, 0.930 to 0.936 SCALAR). The whole one-thread
-encode follows (the kernel is most of it): AVX2 0.959 and 0.951 (256², lossy and lossless), 0.958 and 0.947 (512²),
-0.958 and 0.950 (1,024²); SCALAR 0.954 and 0.938, 0.950 and 0.938, 0.950 and 0.938.
+The gate holds on all twelve MSVC configurations (-5.3 % to -4.9 % AVX2, -7.0 % to -6.4 % SCALAR). The whole one-thread
+encode follows (the kernel is most of it): AVX2 -4.1 % and -4.9 % (256², lossy and lossless), -4.2 % and -5.3 % (512²),
+-4.2 % and -5.0 % (1,024²); SCALAR -4.6 % and -6.2 %, -5.0 % and -6.2 %, -5.0 % and -6.2 %.
 
 **Leaner.** In this sense: for a column outside run mode the new code builds the mask from one load of the flag word,
 tests one bit a row in a register where the old code reloaded the word and tested two bits of it, and clears the visited
@@ -1308,7 +1303,7 @@ was removed in the fix round.
 change at all with the force-inline change), so the unrolling accounts for the growth there. On MSVC the force-inline of
 the two helpers in the significance pass and in `enc_clnpass_step` was measured as a variant (A: forced only in the
 unrolled rows, via compile-time-row copies of the helpers; B: forced everywhere, as committed): A is 358 bytes (1.3 %)
-smaller (AVX2; 178 bytes SCALAR) and its kernel is 0.996 to 0.998 of B (AVX2) and 0.987 to 0.993 (SCALAR), so within the
+smaller (AVX2; 178 bytes SCALAR) and its kernel is -0.4 % to -0.2 % against B (AVX2) and -1.3 % to -0.7 % (SCALAR), so within the
 noise band; not clearly smaller, so B stays and the helpers are not duplicated. The gain over main is not split between
 the unrolling and the force-inline change.
 
@@ -1317,49 +1312,49 @@ the unrolling and the force-inline change.
 Kernel only, the same dumps (7 rounds), the library's `enc_t1.cpp` (with `enc_dwt.cpp`, `arena.cpp`, `memory.cpp`) of main
 against this branch's:
 
-| Build | 256² lossy | 256² lossless | 512² lossy | 512² lossless | 1,024² lossy | 1,024² lossless |
-|---|---:|---:|---:|---:|---:|---:|
-| clang-cl AVX2 | 0.949 | 0.948 | 0.948 | 0.946 | 0.947 | 0.946 |
-| clang-cl SCALAR | 0.949 | 0.944 | 0.950 | 0.944 | 0.951 | 0.945 |
-| MinGW GCC 13.2 `-O2` (baseline) | 0.952 | 0.951 | 0.952 | 0.951 | 0.952 | 0.951 |
-| MinGW GCC 13.2 `-O2 -march=x86-64-v3` | 0.960 | 0.957 | 0.959 | 0.953 | 0.960 | 0.954 |
+| Build | 256² lossy | 256² lossless | 512² lossy | 512² lossless | 1,024² lossy | 1,024² lossless | Passes gate |
+|---|---:|---:|---:|---:|---:|---:|---|
+| clang-cl AVX2 | -5.1 % | -5.2 % | -5.2 % | -5.4 % | -5.3 % | -5.4 % | Yes |
+| clang-cl SCALAR | -5.1 % | -5.6 % | -5.0 % | -5.6 % | -4.9 % | -5.5 % | Yes |
+| MinGW GCC 13.2 `-O2` (baseline) | -4.8 % | -4.9 % | -4.8 % | -4.9 % | -4.8 % | -4.9 % | Yes |
+| MinGW GCC 13.2 `-O2 -march=x86-64-v3` | -4.0 % | -4.3 % | -4.1 % | -4.7 % | -4.0 % | -4.6 % | Yes |
 
-None misses (the worst cell is 0.960); unlike E1, clang-cl gains as much as MSVC.
+None misses (the worst cell is -4.0 %); unlike E1, clang-cl gains as much as MSVC.
 
 ### Linux, GCC 14, GCC 15 and Clang (E2)
 
 Workflow `bench-kernel-compare.yml`, run 45056793413 (head = `enc-e2-cleanup` at `0459480`, base = main at `a60e153`):
 each of the six jobs builds `nj2k_enc_t1_ratio` for both refs and runs the two binaries alternately on the same machine
-(head, base, head, base, head, base; 3 runs of 41 rounds, 256 blocks of 64 x 64). Each number is a ratio of the
-encoder's kernel to the frozen pre-redesign reference in one process (smaller is faster); E2 / main is the E2 ratio over main's,
+(head, base, head, base, head, base; 3 runs of 41 rounds, 256 blocks of 64 x 64). Each number is the change in the
+encoder's kernel against the frozen pre-redesign reference in one process (minus is faster); E2 / main is the E2 change over main's,
 run by run. These are same-machine ratios, one CPU per job, and are the table of record for Linux; the absolute ratios differ
 from job to job with the CPU. The output is identical (the kernel hash of the lossy and lossless sets is the same for both refs).
 
-E2 / main, the three runs' median (all three runs in brackets), lossless and lossy:
+E2 / main, the three runs' median (change; all three runs in brackets), lossless and lossy:
 
-| Job | CPU | Lossless | Lossy |
+| Job | CPU | Lossless | Lossy | Passes gate |
+|---|---|---|---|---|
+| gcc-14, AVX2 | Intel Xeon Platinum 8573C | -4.6 % (-4.6 %, -4.6 %, -4.8 %) | -4.6 % (-4.6 %, -4.5 %, -4.7 %) | Yes |
+| gcc-14, SCALAR | Intel Xeon 6975P-C | -6.3 % (-6.3 %, -6.3 %, -6.3 %) | -5.5 % (-5.5 %, -5.5 %, -5.5 %) | Yes |
+| gcc-15, AVX2 | AMD EPYC 7763 | -6.0 % (-5.6 %, -6.0 %, -6.0 %) | -5.7 % (-5.4 %, -5.8 %, -5.7 %) | Yes |
+| gcc-15, SCALAR | AMD EPYC 7763 | -6.0 % (-6.0 %, -6.0 %, -6.0 %) | -5.6 % (-5.8 %, -5.6 %, -5.6 %) | Yes |
+| clang, AVX2 | AMD EPYC 7763 | -6.4 % (-6.0 %, -6.5 %, -6.4 %) | -5.5 % (-5.1 %, -5.5 %, -5.5 %) | Yes |
+| clang, SCALAR | Intel Xeon Platinum 8573C | -5.8 % (-6.2 %, -5.8 %, -5.8 %) | -4.8 % (-4.9 %, -4.8 %, -4.8 %) | Yes |
+
+The changes against the frozen reference behind them, E2 against main (the median of three runs, lossless / lossy):
+
+| Job | E2 | main | Passes gate |
 |---|---|---|---|
-| gcc-14, AVX2 | Intel Xeon Platinum 8573C | 0.954 (0.954, 0.954, 0.952) | 0.954 (0.954, 0.955, 0.953) |
-| gcc-14, SCALAR | Intel Xeon 6975P-C | 0.937 (0.937, 0.937, 0.937) | 0.945 (0.945, 0.945, 0.945) |
-| gcc-15, AVX2 | AMD EPYC 7763 | 0.940 (0.944, 0.940, 0.940) | 0.943 (0.946, 0.942, 0.943) |
-| gcc-15, SCALAR | AMD EPYC 7763 | 0.940 (0.940, 0.940, 0.940) | 0.944 (0.942, 0.944, 0.944) |
-| clang, AVX2 | AMD EPYC 7763 | 0.936 (0.940, 0.935, 0.936) | 0.945 (0.949, 0.945, 0.945) |
-| clang, SCALAR | Intel Xeon Platinum 8573C | 0.942 (0.938, 0.942, 0.942) | 0.952 (0.951, 0.952, 0.952) |
+| gcc-14, AVX2 | -49.1 % / -46.6 % | -46.6 % / -44.0 % | n/a |
+| gcc-14, SCALAR | -46.6 % / -43.8 % | -43.0 % / -40.5 % | n/a |
+| gcc-15, AVX2 | -41.2 % / -39.7 % | -37.5 % / -36.1 % | n/a |
+| gcc-15, SCALAR | -31.4 % / -29.8 % | -27.0 % / -25.6 % | n/a |
+| clang, AVX2 | -45.3 % / -42.7 % | -41.6 % / -39.3 % | n/a |
+| clang, SCALAR | -46.9 % / -44.4 % | -43.6 % / -41.5 % | n/a |
 
-The ratios against the frozen reference behind them, E2 against main (the median of three runs, lossless / lossy):
-
-| Job | E2 | main |
-|---|---|---|
-| gcc-14, AVX2 | 0.509 / 0.534 | 0.534 / 0.560 |
-| gcc-14, SCALAR | 0.534 / 0.562 | 0.570 / 0.595 |
-| gcc-15, AVX2 | 0.588 / 0.603 | 0.625 / 0.639 |
-| gcc-15, SCALAR | 0.686 / 0.702 | 0.730 / 0.744 |
-| clang, AVX2 | 0.547 / 0.573 | 0.584 / 0.607 |
-| clang, SCALAR | 0.531 / 0.556 | 0.564 / 0.585 |
-
-E2 gains about 5 to 6 % on all six Linux builds (0.936 to 0.954; the three runs of a job agree within 0.005), clang
-included, unlike E1, which had nothing to gain with clang. gcc-15 SCALAR on that EPYC reads 0.73 to 0.74 on main and 0.69 to
-0.70 with E2 (the level accepted in Stage 6c is about 0.70).
+E2 gains about 5 to 6 % on all six Linux builds (-6.4 % to -4.6 %; the three runs of a job agree within 0.5 percentage points), clang
+included, unlike E1, which had nothing to gain with clang. gcc-15 SCALAR on that EPYC reads -27.0 % to -26.0 % on main and -31.0 % to
+-30.0 % with E2 (the level accepted in Stage 6c is about -30.0 %).
 
 ### Not measured, and the gaps (E2)
 
