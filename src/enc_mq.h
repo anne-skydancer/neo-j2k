@@ -13,17 +13,24 @@
 
 namespace nj2k::detail {
 
+// The coder's hot functions are inlined into every pass step: MSVC's own choice leaves the renormalisation and
+// the decision as calls, with the coder's words and the context slot stored and reloaded around each.
+#if defined(_MSC_VER) && !defined(__clang__)
+#define NJ2K_MQ_INLINE __forceinline
+#else
+#define NJ2K_MQ_INLINE inline __attribute__((always_inline))
+#endif
+
 struct MqEnc {
-    std::uint32_t c, a, ct;
+    std::uint32_t c, a, ct, cx;
     std::uint8_t* bp;
     std::uint8_t* start;
     std::uint8_t* limit;  // the last byte that may be written
     bool overflow;
     const MqState* ctxs[19];
-    const MqState** curctx;
     const std::uint8_t* lut_ctxno_zc_orient;
 
-    void setcurctx(std::uint32_t ctxno) noexcept { curctx = &ctxs[ctxno]; }
+    void setcurctx(std::uint32_t ctxno) noexcept { cx = ctxno; }
 
     void resetstates() noexcept
     {
@@ -61,68 +68,69 @@ struct MqEnc {
             *bp = static_cast<std::uint8_t>(c >> 20);
             c &= 0xfffff;
             ct = 7;
+        } else if ((c & 0x8000000) == 0) {
+            bp++;
+            *bp = static_cast<std::uint8_t>(c >> 19);
+            c &= 0x7ffff;
+            ct = 8;
         } else {
-            if ((c & 0x8000000) == 0) {
+            (*bp)++;
+            if (*bp == 0xff) {
+                c &= 0x7ffffff;
+                bp++;
+                *bp = static_cast<std::uint8_t>(c >> 20);
+                c &= 0xfffff;
+                ct = 7;
+            } else {
                 bp++;
                 *bp = static_cast<std::uint8_t>(c >> 19);
                 c &= 0x7ffff;
                 ct = 8;
-            } else {
-                (*bp)++;
-                if (*bp == 0xff) {
-                    c &= 0x7ffffff;
-                    bp++;
-                    *bp = static_cast<std::uint8_t>(c >> 20);
-                    c &= 0xfffff;
-                    ct = 7;
-                } else {
-                    bp++;
-                    *bp = static_cast<std::uint8_t>(c >> 19);
-                    c &= 0x7ffff;
-                    ct = 8;
-                }
             }
         }
     }
 
-    void renorme() noexcept
+    NJ2K_MQ_INLINE void renorme() noexcept
     {
-        do {
-            a <<= 1;
-            c <<= 1;
-            ct--;
-            if (ct == 0) {
-                byteout();
-            }
-        } while ((a & 0x8000) == 0);
+        // every shift at once (count-leading-zeros) instead of OpenJPEG's one bit a turn: as many as c has
+        // bits left to the next byte-out, which comes where the one-bit loop has it (when ct reaches 0), so
+        // c, ct and the bytes are the loop's at every step
+        std::uint32_t k = mq_shifts(a);
+        a <<= k;
+        while (k >= ct) {
+            c <<= ct;
+            k -= ct;
+            byteout();
+        }
+        c <<= k;
+        ct -= k;
     }
 
-    void encode(std::uint32_t d) noexcept
+    NJ2K_MQ_INLINE void encode(std::uint32_t d) noexcept
     {
-        const MqState* st = *curctx;
+        const MqState* st = ctxs[cx];
+        const std::uint32_t q = st->qeval;
+        a -= q;
         if (st->mps == d) {
-            a -= st->qeval;
-            if ((a & 0x8000) == 0) {
-                if (a < st->qeval) {
-                    a = st->qeval;
-                } else {
-                    c += st->qeval;
-                }
-                *curctx = st->nmps;
-                renorme();
-            } else {
-                c += st->qeval;
+            if (a & 0x8000) {
+                c += q;
+                return;
             }
+            if (a < q) {
+                a = q;
+            } else {
+                c += q;
+            }
+            ctxs[cx] = st->nmps;
         } else {
-            a -= st->qeval;
-            if (a < st->qeval) {
-                c += st->qeval;
+            if (a < q) {
+                c += q;
             } else {
-                a = st->qeval;
+                a = q;
             }
-            *curctx = st->nlps;
-            renorme();
+            ctxs[cx] = st->nlps;
         }
+        renorme();
     }
 
     void setbits() noexcept

@@ -13,6 +13,10 @@
 #include <cstddef>
 #include <cstdint>
 
+#if defined(_MSC_VER) && !defined(__clang__)
+#include <intrin.h>
+#endif
+
 #include "memory.h"
 #include "messages.h"
 
@@ -50,6 +54,25 @@ struct T1Block {
     const Segment* segs;     // the segments with data, real_num_segs of them
     std::uint32_t nsegs;
 };
+
+// The MQ coders' renormalisation shifts for a in [1, 0xffff]: until a reaches 0x8000 (15 - floor(log2 a);
+// 0 when bit 15 is set), with the instructions of the build's floor: lzcnt in the AVX2 build (x86-64-v3
+// has it), bsr in the scalar one (MSVC's std::countl_zero would pick lzcnt at run time, which the scalar
+// build's object check refuses). The decoder (t1.cpp) and the encoder (enc_mq.h) share it.
+inline std::uint32_t mq_shifts(std::uint32_t a) noexcept
+{
+#if defined(_MSC_VER) && !defined(__clang__)
+#if defined(__AVX2__)
+    return _lzcnt_u32(a) - 16U;
+#else
+    unsigned long msb;
+    _BitScanReverse(&msb, a);
+    return 15U - static_cast<std::uint32_t>(msb);
+#endif
+#else
+    return static_cast<std::uint32_t>(__builtin_clz(a)) - 16U;
+#endif
+}
 
 // The MQ decoder state (opj_mqc_t, decoding side).
 struct MqState {

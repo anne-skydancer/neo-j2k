@@ -189,7 +189,7 @@ inline void update_flags(opj_flag_t* flagsp, OPJ_UINT32 ci, OPJ_UINT32 s, OPJ_UI
     }
 }
 
-inline void enc_sigpass_step(EncT1* t1, opj_flag_t* flagsp, const OPJ_INT32* datap, OPJ_INT32 bpno, OPJ_INT32 one,
+NJ2K_MQ_INLINE void enc_sigpass_step(EncT1* t1, opj_flag_t* flagsp, const OPJ_INT32* datap, OPJ_INT32 bpno, OPJ_INT32 one,
                              OPJ_INT32* nmsedec, OPJ_UINT32 ci) noexcept
 {
     MqEnc* mqc = &t1->mqc;
@@ -253,7 +253,7 @@ void enc_sigpass(EncT1* t1, OPJ_INT32 bpno, OPJ_INT32* nmsedec) noexcept
     }
 }
 
-inline void enc_refpass_step(EncT1* t1, OPJ_UINT32 flags, OPJ_UINT32& flagsUpdated, const OPJ_INT32* datap,
+NJ2K_MQ_INLINE void enc_refpass_step(EncT1* t1, OPJ_UINT32 flags, OPJ_UINT32& flagsUpdated, const OPJ_INT32* datap,
                              OPJ_INT32 bpno, OPJ_INT32 one, OPJ_INT32* nmsedec, OPJ_UINT32 ci) noexcept
 {
     MqEnc* mqc = &t1->mqc;
@@ -317,7 +317,7 @@ void enc_refpass(EncT1* t1, OPJ_INT32 bpno, OPJ_INT32* nmsedec) noexcept
 }
 
 // opj_t1_enc_clnpass_step_macro with the viewer's modes (no vertically causal contexts)
-inline void enc_clnpass_step(EncT1* t1, opj_flag_t* flagspIn, const OPJ_INT32* datapIn, OPJ_INT32 bpno,
+NJ2K_MQ_INLINE void enc_clnpass_step(EncT1* t1, opj_flag_t* flagspIn, const OPJ_INT32* datapIn, OPJ_INT32 bpno,
                              OPJ_INT32 one, OPJ_INT32* nmsedec, OPJ_UINT32 agg, OPJ_UINT32 runlen,
                              OPJ_UINT32 lim) noexcept
 {
