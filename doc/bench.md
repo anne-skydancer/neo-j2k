@@ -946,7 +946,7 @@ cycles, interleaved runs, medians. The machine was not quiet. "Kernel" is `enc_t
 of the viewer's upload encode (the synthetic texture of `nj2k_encode_bench`): the library's against the earlier
 source compiled in its own object (which timed within 1 % of the earlier library). "Encode" is the whole
 one-thread upload encode, the new library against the one at bee41d4 (5 rotations of 11 to 15 runs). The
-harness is the study's `bench/t1_study`, on the `studies` branch (see `bench/STUDIES.md` there); the Linux
+harness is the study's `bench/t1_study` (archived at the tag `archive/studies`, see `doc/studies/README.md`); the Linux
 kernel bench, `bench/nj2k_enc_t1_ratio.cpp`, is in the repository.
 
 AVX2 build, Mcycles and change against today's (minus is faster):
@@ -1164,8 +1164,8 @@ x86-64), one thread pinned to CPU 7, TSC cycles, the two builds interleaved in a
 (21 repeats a round, 7 at 1,024²), the median of the rounds' ratios. "Kernel" is `enc_t1_encode` over the
 code-blocks of the upload encode's texture (the study's dump, `bench/t1_study`), the earlier library against this
 one, in separate processes; "encode" is the whole one-thread upload encode (5 rounds, 9 repeats, 3 at 1,024²).
-The harness is the study's (`bench/t1_study` and `bench/ebcotng_study`, on the `studies` branch, see
-`bench/STUDIES.md`), not in this branch. The gate: at most -3.0 % against the base kernel on every
+The harness is the study's (`bench/t1_study` and `bench/ebcotng_study`, archived at the tag `archive/studies`, see
+`doc/studies/README.md`), not in this tree. The gate: at most -3.0 % against the base kernel on every
 configuration, beyond the 3 % noise band.
 
 Kernel, Mcycles and change against the stage-6c base (minus is faster; the round-to-round range of the change was 0.2 to 1.0 percentage points):
@@ -1220,7 +1220,7 @@ The output is identical; nothing in the code is left for a Clang-specific form t
 - The comparison with OpenJPEG 2.5.4 (`nj2k_encode_bench`) was not repeated: the README's and stage 6c's encode rows
   are before E1; with MSVC E1 takes about 3 to 4 % off the one-thread encode time (-4.4 % to -3.3 % of it). No GCC or clang
   whole-encode figure exists.
-- One machine (Zen 5), one synthetic texture; the machine was not quiet. The harness is on the `studies` branch, not in this branch.
+- One machine (Zen 5), one synthetic texture; the machine was not quiet. The harness is archived at the tag `archive/studies` (`doc/studies/README.md`).
 
 ## Stage 6f (E2): the cleanup pass from a mask fixed at the column's start (2026-11-22)
 
@@ -1267,8 +1267,8 @@ see the gaps.
 **Method.** As stage 6e: Ryzen 9 9950X3D, MSVC 14.51 (the library's flags, `/O2 /arch:AVX2` or baseline x86-64), one
 thread pinned to CPU 7, TSC cycles, main (`ca64528`) and E2 in separate processes run alternately (the order swapped
 every round), the median of the rounds' ratios. "Kernel" is `enc_t1_encode` alone over the code-blocks of the upload
-encode's texture (the study's dump; `bench/t1_study` and the study harnesses are on the `studies` branch, see
-`bench/STUDIES.md`: 75, 210 and 777 blocks at 256², 512², 1,024²; 21 repeats a
+encode's texture (the study's dump; `bench/t1_study` and the study harnesses are archived at the tag `archive/studies`, see
+`doc/studies/README.md`: 75, 210 and 777 blocks at 256², 512², 1,024²; 21 repeats a
 process, 7 at 1,024²; 9 rounds); "encode" is the whole one-thread upload encode (5 rounds, 9 repeats, 3 at 1,024²). The
 harness is a throwaway one (a small timer over the dump and the library's sources, built once from `main` and once from
 this branch), not in the repository. The gate: at most -3.0 % against the base kernel on every configuration, beyond the 3 %
@@ -1524,4 +1524,4 @@ variants of that change against E3: no variant helped clang (+0.5 % to +5.4 % sl
 E3 on every compiler, and the code grew (`enc_t1` text +0.8 % on clang, +2.1 % on MSVC AVX2). The plain
 `encode_pairs` change is byte-identical and is offered as PR 28 with those numbers; the variants, the table and
 the reproduction steps are archived (tags `archive/bench-clang-linux` and `archive/enc-e3-clang`, and
-`doc/e3_clang_study.md` on the `studies` branch).
+`doc/studies/e3_clang_study.md`).
