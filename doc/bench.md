@@ -1226,3 +1226,101 @@ The output is identical; nothing in the code is left for a Clang-specific form t
   are before E1; with MSVC E1 takes about 3 to 4 % off the one-thread encode time (0.956 to 0.967 of it). No GCC or clang
   whole-encode figure exists.
 - One machine (Zen 5), one synthetic texture; the machine was not quiet. The harness is on the `studies` branch, not in this branch.
+
+## Stage 6f (E2): the cleanup pass from a mask fixed at the column's start (2026-11-22)
+
+Step E2 of the EBCOT-NG plan, on `main` after E1 (#23): the cleanup pass (`enc_clnpass`, `src/enc_t1.cpp`) takes a
+column outside run mode (a full stripe, a non-zero flag word) from one mask computed at the column's start,
+`cand = ~((f >> 4) | (f >> 21)) & 0x249` (row r at bit 3r: significance at bit 4 + 3r, visited at 21 + 3r). The
+rows that are neither are coded. A row becomes significant only by being coded itself (coding row r sets that row's
+own sigma and its neighbours' neighbour bits, never another row's sigma or pi), so the set is the same at the
+column's start and when each row is reached: the pass codes the same decisions in the same order. One pi clear per
+column replaces four flag reloads, tests and clears, and the "all significant and visited" case is `cand = 0`.
+Run-mode columns and the partial stripe are as before. The four rows are unrolled (`enc_clnpass_row<ci>`, a template
+on the row), so each row's shifts and the `ci` branches of `update_flags` and of the sign-context index are
+constants; both are `NJ2K_FORCE_INLINE` for that (the significance pass also uses them, with literal rows already).
+No intrinsics.
+
+**The first form missed, the second passes.** The first form (the study's prototype: a `tzcnt` loop over the set bits
+of `cand`, one iteration a coded row) gave 0.969 to 0.977 of the base kernel on MSVC AVX2 (the gate is 0.97 beyond the
+noise; the study had 0.955 to 0.962 on another base): the loop's exit branch and the runtime row index (variable
+shifts, the `ci == 0` and `ci == 3` branches of `update_flags`, the sign index) cost what the mask saved. The unrolled
+form is the one committed.
+
+**Exactness.** Output byte-identical: the codestream and each pass's rate, length, termination and distortion (bit for
+bit) are the earlier code's. `nj2k_enc_t1_unit` compares `enc_t1_encode` with the frozen reference
+(`tests/unit/enc_t1_frozen.cpp`, unchanged) on 8,292 more blocks built for the cleanup pass (`test_encode_cleanup`):
+(a) 2,304 blocks, every pair of 4-bit row masks (rows significant early, rows at the middle plane, the others small;
+rotated by the column so that the neighbours differ), four sign patterns (positive, negative, checkerboard, random), on
+nine sizes (whole stripes and partial ones), all orientations and both wavelets over the pairs: columns with 0, 1, 2,
+3 and 4 candidates in every position; (b) 5,888 blocks, every size 1..64 x 1..64 (the edge sizes in all 8 orientation
+and wavelet combinations), each sample with a leading bit-plane of its own, the block at 0 to 25 planes (each count
+has at least 100 blocks, asserted); (c) 100 dense 64 x 64 blocks of one magnitude (the all-significant, all-visited
+columns), 25 plane counts x 4 sign patterns. Mutations tried, each makes `enc_t1_unit` fail: the mask without the
+visited bits, without the significance bits, without the visited-bit clear at the end, and a row left out of the mask
+(the older generated blocks of `test_encode` fail first; the new sets were not reached after the first failure). The
+nightly `enc_t1_exhaustive` (`--exhaustive-full`: all 2^32 preprocessing inputs and the 4.4 billion MQ decisions)
+passes. The one-thread upload encode's codestream (size and hash) equals main's at 256², 512² and 1,024², lossy and
+lossless, in both builds, and the kernel's passes and bytes (hashed over every dumped block) are equal in every build
+measured. Every ctest passes on MSVC AVX2 (133), MSVC SCALAR (133, `global_state` included) and clang-cl (133); MSVC
+with AddressSanitizer: see the gaps.
+
+**Method.** As stage 6e: Ryzen 9 9950X3D, MSVC 14.51 (the library's flags, `/O2 /arch:AVX2` or baseline x86-64), one
+thread pinned to CPU 7, TSC cycles, main (`ca64528`) and E2 in separate processes run alternately (the order swapped
+every round), the median of the rounds' ratios. "Kernel" is `enc_t1_encode` alone over the code-blocks of the upload
+encode's texture (the study's dump, `bench/t1_study`: 75, 210 and 777 blocks at 256², 512², 1,024²; 21 repeats a
+process, 7 at 1,024²; 9 rounds); "encode" is the whole one-thread upload encode (5 rounds, 9 repeats, 3 at 1,024²). The
+harness is a throwaway one (a small timer over the dump and the library's sources, built once from `main` and once from
+this branch), not in the repository. The gate: at most 0.97 of the base kernel on every configuration, beyond the 3 %
+noise band.
+
+Kernel, Mcycles and ratio to main (the round-to-round range of the ratio was 0.002 to 0.012):
+
+| Size | Mode | AVX2 main | AVX2 E2 | AVX2 | SCALAR main | SCALAR E2 | SCALAR |
+|---|---|---:|---:|---:|---:|---:|---:|
+| 256² | lossy | 31.1 | 29.5 | 0.951 | 31.3 | 29.2 | 0.933 |
+| 256² | lossless | 35.5 | 33.7 | 0.949 | 35.8 | 33.3 | 0.930 |
+| 512² | lossy | 149.1 | 141.8 | 0.951 | 149.9 | 140.1 | 0.934 |
+| 512² | lossless | 164.3 | 155.8 | 0.948 | 165.7 | 154.0 | 0.930 |
+| 1,024² | lossy | 607.6 | 576.9 | 0.950 | 611.0 | 571.8 | 0.936 |
+| 1,024² | lossless | 667.6 | 632.2 | 0.947 | 671.9 | 625.8 | 0.931 |
+
+The gate holds on all twelve MSVC configurations (0.947 to 0.951 AVX2, 0.930 to 0.936 SCALAR). The whole one-thread
+encode follows (the kernel is most of it): AVX2 0.959 and 0.951 (256², lossy and lossless), 0.958 and 0.947 (512²),
+0.958 and 0.950 (1,024²); SCALAR 0.954 and 0.938, 0.950 and 0.938, 0.950 and 0.938.
+
+**Leaner.** In this sense: for a column outside run mode the new code builds the mask from one load of the flag word,
+tests one bit a row in a register where the old code reloaded the word and tested two bits of it, and clears the visited
+bits once per column instead of once per row; the shifts and the branches on `ci` in `update_flags` and the sign index
+are constants. Fewer instructions and flag reloads; the row's own branch (is it a candidate) remains, as in the old
+code. No hardware counters were used: instruction, branch and miss counts are not measured.
+
+### GCC and clang (E2)
+
+Kernel only, the same dumps (7 rounds), the library's `enc_t1.cpp` (with `enc_dwt.cpp`, `arena.cpp`, `memory.cpp`) of main
+against this branch's:
+
+| Build | 256² lossy | 256² lossless | 512² lossy | 512² lossless | 1,024² lossy | 1,024² lossless |
+|---|---:|---:|---:|---:|---:|---:|
+| clang-cl AVX2 | 0.949 | 0.948 | 0.948 | 0.946 | 0.947 | 0.946 |
+| clang-cl SCALAR | 0.949 | 0.944 | 0.950 | 0.944 | 0.951 | 0.945 |
+| MinGW GCC 13.2 `-O2` (baseline) | 0.952 | 0.951 | 0.952 | 0.951 | 0.952 | 0.951 |
+| MinGW GCC 13.2 `-O2 -march=x86-64-v3` | 0.960 | 0.957 | 0.959 | 0.953 | 0.960 | 0.954 |
+
+None misses (the worst cell is 0.960); unlike E1, clang-cl gains as much as MSVC. The Linux numbers (GCC 14, GCC 15 and
+Clang on Ubuntu, AVX2 and scalar) are not in this document yet: the throwaway branch `bench-e2-linux` runs
+`nj2k_enc_t1_ratio` (the current encoder against the frozen pre-redesign reference, one process, 41 rounds, 3 runs) for
+this branch and, in the same workflow run, for main; the E2 effect on Linux is the ratio of its result to main's, per
+compiler and build.
+
+### Not measured, and the gaps (E2)
+
+- No Linux or WSL here: the `linux-*` presets, UBSan, TSan and libFuzzer were not run locally (the repository's CI runs
+  them), and the E2 Linux numbers wait for the `bench-e2-linux` run. `nj2k_enc_t1_unit` was not run locally with GCC or
+  clang (the ctest on clang-cl was).
+- MSVC ASan: the ctest ran with `decode_unit`, `decode_threads` and `fuzz_replay.decode*` excluded (the decoder is not
+  touched, and those tests ran for over an hour under AddressSanitizer here without finishing); every encoder test,
+  `enc_t1_unit` among them, ran.
+- The comparison with OpenJPEG 2.5.4 (`nj2k_encode_bench`) was not repeated: the README's rows are before E1 and E2.
+- One machine (Zen 5), one synthetic texture; the machine was not quiet. The partial stripe (height not a multiple of
+  4) and the run-mode columns are not changed; the share of columns outside run mode on real images is not measured.
