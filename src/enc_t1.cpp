@@ -279,13 +279,15 @@ NJ2K_FORCE_INLINE void enc_refpass_step(EncT1* t1, OPJ_UINT32 flags, OPJ_UINT32&
     }
 }
 
-// the magnitude context of getctxno_mag as bit arithmetic: MAG + 2 when the sample was refined before (mu),
-// else MAG + 1 when any neighbour is significant, else MAG
-NJ2K_FORCE_INLINE OPJ_UINT32 getctxno_mag_arith(OPJ_UINT32 f) noexcept
+// the magnitude context of getctxno_mag, doubled (ctx << 1, the pair byte's high bits), by (mu << 1 | any neighbour
+// significant): MAG + 2 when the sample was refined before, else MAG + 1 when a neighbour is significant, else MAG
+constexpr std::uint8_t kMagPair[4] = {T1_CTXNO_MAG * 2, T1_CTXNO_MAG * 2 + 2, T1_CTXNO_MAG * 2 + 4,
+                                      T1_CTXNO_MAG * 2 + 4};
+
+NJ2K_FORCE_INLINE OPJ_UINT32 mag_pair(OPJ_UINT32 f) noexcept
 {
     const OPJ_UINT32 nb = ((f & T1_SIGMA_NEIGHBOURS) != 0U) ? 1U : 0U;
-    const OPJ_UINT32 mu = (f >> 20) & 1U;
-    return T1_CTXNO_MAG + ((nb & ~mu) | (mu << 1));
+    return kMagPair[nb | ((f >> 19) & 2U)];
 }
 
 // one row of a full-stripe column of the refinement pass: its (context, bit) pair is stored whatever the row
@@ -299,7 +301,7 @@ NJ2K_FORCE_INLINE void enc_refpass_row(std::uint8_t* list, OPJ_UINT32& n, OPJ_UI
     const OPJ_UINT32 e = (m >> (4U + 3U * ci)) & 1U;
     const OPJ_UINT32 x = smr_abs(datap[ci]);
     const OPJ_UINT32 v = (x & one) ? 1U : 0U;
-    list[n] = static_cast<std::uint8_t>((getctxno_mag_arith(f >> (3U * ci)) << 1) | v);
+    list[n] = static_cast<std::uint8_t>(mag_pair(f >> (3U * ci)) | v);
     n += e;
     nm += static_cast<OPJ_INT32>(nt[(x >> nsh) & ((1U << T1_NMSEDEC_BITS) - 1U)]) &
           static_cast<OPJ_INT32>(0U - e);
@@ -338,26 +340,33 @@ void enc_refpass(EncT1* t1, OPJ_INT32 bpno, OPJ_INT32* nmsedec) noexcept
         }
     }
 
+    if (k < t1->h) {
+        // the partial last stripe through the same list: its rows in order, after the full stripes'
+        const OPJ_UINT32 remaining_lines = t1->h - k;
+        for (i = 0; i < t1->w; ++i, ++f) {
+            const OPJ_UINT32 flags = *f;
+            const OPJ_UINT32 m = flags & ~(flags >> 17) & 0x2490U;
+            if (m == 0U) {
+                datap += remaining_lines;
+                continue;
+            }
+            for (OPJ_UINT32 j = 0; j < remaining_lines; j++, datap++) {
+                const OPJ_UINT32 e = (m >> (4U + 3U * j)) & 1U;
+                const OPJ_UINT32 x = smr_abs(*datap);
+                list[n] = static_cast<std::uint8_t>(mag_pair(flags >> (3U * j)) | ((x & one) ? 1U : 0U));
+                n += e;
+                nm += static_cast<OPJ_INT32>(nt[(x >> nsh) & ((1U << T1_NMSEDEC_BITS) - 1U)]) &
+                      static_cast<OPJ_INT32>(0U - e);
+            }
+            *f = flags | (m << 16);
+        }
+    }
+
     MqEnc* mqc = &t1->mqc;
     for (OPJ_UINT32 j = 0; j < n; ++j) {
         const OPJ_UINT32 p = list[j];
         mqc->setcurctx(p >> 1);
         mqc->encode(p & 1U);
-    }
-
-    if (k < t1->h) {
-        OPJ_UINT32 j;
-        const OPJ_UINT32 remaining_lines = t1->h - k;
-        for (i = 0; i < t1->w; ++i, ++f) {
-            if ((*f & (T1_SIGMA_4 | T1_SIGMA_7 | T1_SIGMA_10 | T1_SIGMA_13)) == 0) {
-                /* none significant */
-                datap += remaining_lines;
-                continue;
-            }
-            for (j = 0; j < remaining_lines; j++, datap++) {
-                enc_refpass_step(t1, *f, *f, &datap[0], bpno, static_cast<OPJ_INT32>(one), &nm, j);
-            }
-        }
     }
     *nmsedec = nm;
 }
