@@ -2,10 +2,10 @@
 # Copyright (c) 2026, Anne Skydancer (neo-j2k)
 #
 # The encoder's Tier-1 kernel on real Linux: the redesigned MQ coder against its frozen earlier version,
-# in one process, interleaved rounds, for GCC 14, GCC 15 and Clang, the AVX2 build and the scalar one
+# in one process, interleaved rounds, for GCC 14 and GCC 15, the AVX2 build and the scalar one
 # (bench/nj2k_enc_t1_ratio.cpp). GitHub's runners are shared and noisy, so the metric is the single-process
 # ratio new/old (median, p10, p90 of the rounds); the absolute Mcycles are printed as a sanity check. The
-# log has every round; the job summary has one row per run. Run on the throwaway branch bench-enc-linux
+# log has every round; the job summary has one row per run. Variants 0 to 13 of the GCC path of src/enc_mq.h are compared (variant 0 is the committed form). Run on the throwaway branch bench-enc-linux
 # (push) or by hand (workflow_dispatch).
 name: Bench encoder kernel (Linux)
 
@@ -30,8 +30,6 @@ jobs:
           - { runner: ubuntu-24.04, cc: gcc-14, cxx: g++-14, preset: linux-gcc, packages: g++-14, simd: SCALAR }
           - { runner: ubuntu-26.04, cc: gcc-15, cxx: g++-15, preset: linux-gcc, packages: g++-15, simd: AVX2 }
           - { runner: ubuntu-26.04, cc: gcc-15, cxx: g++-15, preset: linux-gcc, packages: g++-15, simd: SCALAR }
-          - { runner: ubuntu-26.04, cc: clang, cxx: clang++, preset: linux-clang, packages: "clang lld", simd: AVX2 }
-          - { runner: ubuntu-26.04, cc: clang, cxx: clang++, preset: linux-clang, packages: "clang lld", simd: SCALAR }
     env:
       CC: ${{ matrix.cc }}
       CXX: ${{ matrix.cxx }}
@@ -47,30 +45,44 @@ jobs:
           "$CC" --version | head -n 1
           cmake --version | head -n 1
       - name: Configure
-        run: cmake --preset ${{ matrix.preset }} -DNJ2K_BUILD_TESTS=OFF -DNJ2K_SIMD=${{ matrix.simd }}
-      - name: Build the bench only
-        run: cmake --build --preset ${{ matrix.preset }} --target nj2k_enc_t1_ratio --parallel 2
-      - name: Bench (3 runs)
+        run: cmake --preset ${{ matrix.preset }} -DNJ2K_BUILD_TESTS=OFF -DNJ2K_SIMD=${{ matrix.simd }} -DNJ2K_BENCH_ENC_VARIANTS=ON
+      - name: Build the bench programs only
+        run: cmake --build --preset ${{ matrix.preset }} --target nj2k_enc_t1_ratio nj2k_enc_t1_ratio_v0 nj2k_enc_t1_ratio_v1 nj2k_enc_t1_ratio_v2 nj2k_enc_t1_ratio_v3 nj2k_enc_t1_ratio_v4 nj2k_enc_t1_ratio_v5 nj2k_enc_t1_ratio_v6 nj2k_enc_t1_ratio_v7 nj2k_enc_t1_ratio_v8 nj2k_enc_t1_ratio_v9 nj2k_enc_t1_ratio_v10 nj2k_enc_t1_ratio_v11 nj2k_enc_t1_ratio_v12 nj2k_enc_t1_ratio_v13 --parallel 4
+      - name: Bench (3 runs of every variant, interleaved)
         env:
           CONFIG: ${{ matrix.cc }}, ${{ matrix.simd }}
         run: |
           set -euo pipefail
-          {
-            echo "### ${CONFIG}"
-            echo
-            echo "| run | set | ratio median | p10 | p90 | old Mcycles | new Mcycles |"
-            echo "|---|---|---:|---:|---:|---:|---:|"
-          } >> "$GITHUB_STEP_SUMMARY"
+          bin=build/${{ matrix.preset }}/bench
+          nproc
           for run in 1 2 3; do
-            echo "::group::run $run (${CONFIG})"
-            build/${{ matrix.preset }}/bench/nj2k_enc_t1_ratio --rounds 41 --blocks 256 | tee "bench-$run.txt"
-            echo "::endgroup::"
-            awk -v run="$run" '/^RESULT /{ for (i = 2; i <= NF; i++) { split($i, kv, "="); v[kv[1]] = kv[2] }
-              printf "| %s | %s | %s | %s | %s | %s | %s |\n", run, v["set"], v["ratio_median"], v["ratio_p10"], v["ratio_p90"], v["old_mcyc"], v["new_mcyc"] }' \
-              "bench-$run.txt" >> "$GITHUB_STEP_SUMMARY"
+            for v in 0 1 2 3 4 5 6 7 8 9 10 11 12 13; do
+              echo "::group::run $run variant $v (${CONFIG})"
+              "$bin/nj2k_enc_t1_ratio_v$v" --rounds 31 --blocks 256 | tee "bench-$run-v$v.txt"
+              echo "::endgroup::"
+            done
           done
-          {
-            echo
-            head -n 3 bench-1.txt | sed 's/^nj2k_enc_t1_ratio: /- /'
-            echo
-          } >> "$GITHUB_STEP_SUMMARY"
+          # the summary: per variant the median over the 3 runs of each run's ratio median (lossless / lossy),
+          # and the spread of the three
+          python3 -I - >> "$GITHUB_STEP_SUMMARY" <<'PY'
+          import os, re, statistics
+          cfg = os.environ["CONFIG"]
+          res = {}
+          for run in (1, 2, 3):
+              for v in range(14):
+                  for line in open(f"bench-{run}-v{v}.txt"):
+                      if line.startswith("RESULT "):
+                          kv = dict(x.split("=") for x in line.split()[1:])
+                          res.setdefault(v, {}).setdefault(kv["set"], []).append(float(kv["ratio_median"]))
+          head = open("bench-1-v0.txt").read().splitlines()[:3]
+          print(f"### {cfg}")
+          print()
+          print("| variant | lossless median | lossless runs | lossy median | lossy runs |")
+          print("|---:|---:|---|---:|---|")
+          for v in range(14):
+              ll, ly = res[v]["lossless"], res[v]["lossy"]
+              print(f"| {v} | **{statistics.median(ll):.3f}** | {' '.join(f'{x:.3f}' for x in ll)} | **{statistics.median(ly):.3f}** | {' '.join(f'{x:.3f}' for x in ly)} |")
+          print()
+          for l in head:
+              print("- " + l.replace("nj2k_enc_t1_ratio: ", ""))
+          PY
