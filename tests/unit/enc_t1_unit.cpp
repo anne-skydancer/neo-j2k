@@ -575,15 +575,20 @@ void test_encode_planes()
 
 // E2 (the cleanup pass's fixed candidate mask per column) end to end, on blocks built for it. A column outside run
 // mode codes the rows that are neither significant nor visited, the set fixed at the column's start: 0, 1, 2, 3 or 4
-// rows, in every position, with the neighbours' significance (the zero-coding context), the sign (the sign context
-// and its prediction) and the bit-plane (the distortion tables of plane 0 and the rest) all varying. Three sets:
+// rows, with the neighbours' significance (the zero-coding context), the sign (the sign context
+// and its prediction) and the bit-plane (the distortion tables of plane 0 and the rest) all varying. Of the 16
+// possible candidate sets of a column, 11 are reachable (0, 1, 2, 3, 4, 6, 7, 8, 12, 14, 15 as 4-bit row masks); 5, 9,
+// 10, 11 and 13 cannot occur (argued in the audit of E2, with zero hits over about 55 million columns), so the
+// reachable ones are what the blocks aim at (coverage of each set was not instrumented here). Three sets:
 //   a. every (high rows, mid rows) pair of 4-bit row masks, four sign patterns, all orientations and both wavelets
 //      over the pairs, on sizes with whole stripes (4 and 8 high, 64 x 64, 64 x 4) and partial ones (3, 5, 7, 9, 1
 //      high): rows of a column are significant early (the high mask: a leading bit three planes above), at the
 //      middle plane (the mid mask) or small, the masks rotated by the column so that neighbours differ;
 //   b. every size 1..64 x 1..64 (edge sizes in all 8 orientation and wavelet combinations), every sample with a
-//      leading bit plane of its own, the blocks' plane count from 0 (all samples below 2^6) to 25 (the largest
-//      sample forced to it, and checked: each count has at least 100 blocks);
+//      leading bit plane of its own, the blocks' plane count from 0 (every sample below 2^6, so that no
+//      pass runs: all zero in the integer part, while a nonzero maximum under 2^6 wraps numbps as in OpenJPEG and
+//      gives no pass) to 25 (the largest sample forced to it; the count is the requested one, exact by
+//      construction, and each count has at least 100 blocks);
 //   c. dense blocks of 64 x 64: every sample the same magnitude, the signs by a pattern (the all-significant,
 //      all-visited column, whose candidate set is empty).
 void test_encode_cleanup()
@@ -603,10 +608,11 @@ void test_encode_cleanup()
         return neg ? -m : m;
     };
     // a. every pair of row masks
+    const u32 sizes[][2] = {{6, 4}, {5, 8}, {64, 4}, {7, 5}, {9, 3}, {4, 1}, {3, 7}, {12, 9}, {64, 64}};
+    const u32 nsizes = sizeof sizes / sizeof sizes[0];
     {
-        const u32 sizes[][2] = {{6, 4}, {5, 8}, {64, 4}, {7, 5}, {9, 3}, {4, 1}, {3, 7}, {12, 9}, {64, 64}};
         const u32 planes[] = {0, 1, 4};  // the plane of the mid rows (0: the distortion table of the last plane)
-        for (u32 si = 0; si < 9 && g_failures == 0; ++si) {
+        for (u32 si = 0; si < nsizes && g_failures == 0; ++si) {
             const u32 w = sizes[si][0], h = sizes[si][1];
             std::vector<std::int32_t> v(w * h);
             for (u32 hi = 0; hi < 16 && g_failures == 0; ++hi) {
@@ -656,7 +662,7 @@ void test_encode_cleanup()
                     // the plane count: 0 (all samples under 2^6) and 1 to 25, in rotation
                     const u32 planes = (w * 64u + h + r * 7u) % 26u;
                     std::vector<std::int32_t> v(w * h);
-                    const u32 style = rng.u(4);  // leading planes: free; thinned on three rows of four; all high; mostly 1
+                    const u32 style = rng.u(4);  // leading planes: free; halved off the diagonal ((x + y) & 3 != 0); all high; mostly 0 or 1
                     const u32 top_at = rng.u(w * h);
                     for (u32 y = 0; y < h; ++y) {
                         for (u32 x = 0; x < w; ++x) {
@@ -710,7 +716,7 @@ void test_encode_cleanup()
         ++blocks_c;
     }
     if (g_failures == 0) {
-        CHECK_MSG(blocks_a == 9u * 256u, "cleanup set a: %llu blocks", static_cast<unsigned long long>(blocks_a));
+        CHECK_MSG(blocks_a == nsizes * 256u, "cleanup set a: %llu blocks", static_cast<unsigned long long>(blocks_a));
         u32 low = ~0u;
         for (u32 p = 0; p <= 25; ++p) {
             low = per_plane[p] < low ? per_plane[p] : low;

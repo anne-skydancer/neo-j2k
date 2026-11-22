@@ -333,48 +333,36 @@ NJ2K_FORCE_INLINE void enc_clnpass_step(EncT1* t1, opj_flag_t* flagspIn, const O
     OPJ_UINT32 ci;
     opj_flag_t* const flagsp = flagspIn;
     const OPJ_INT32* l_datap = datapIn;
-    const OPJ_UINT32 check =
-        (T1_SIGMA_4 | T1_SIGMA_7 | T1_SIGMA_10 | T1_SIGMA_13 | T1_PI_0 | T1_PI_1 | T1_PI_2 | T1_PI_3);
-
-    if ((*flagsp & check) == check) {
-        if (runlen == 0) {
-            *flagsp &= ~(T1_PI_0 | T1_PI_1 | T1_PI_2 | T1_PI_3);
-        } else if (runlen == 1) {
-            *flagsp &= ~(T1_PI_1 | T1_PI_2 | T1_PI_3);
-        } else if (runlen == 2) {
-            *flagsp &= ~(T1_PI_2 | T1_PI_3);
-        } else if (runlen == 3) {
-            *flagsp &= ~(T1_PI_3);
-        }
-    } else {
-        for (ci = runlen; ci < lim; ++ci) {
-            bool goto_PARTIAL = false;
-            if ((agg != 0) && (ci == runlen)) {
+    // (OpenJPEG's shortcut for a column whose rows are all significant and visited is gone: the step runs only
+    // from a run-mode column, whose flag word was 0, and for the partial stripe, which has no row 3 and so never
+    // all four sigma bits)
+    for (ci = runlen; ci < lim; ++ci) {
+        bool goto_PARTIAL = false;
+        if ((agg != 0) && (ci == runlen)) {
+            goto_PARTIAL = true;
+        } else if (!(*flagsp & ((T1_SIGMA_THIS | T1_PI_THIS) << (ci * 3U)))) {
+            OPJ_UINT32 ctxt1 = getctxno_zc(mqc, *flagsp >> (ci * 3U));
+            mqc->setcurctx(ctxt1);
+            v = (smr_abs(*l_datap) & static_cast<OPJ_UINT32>(one)) ? 1 : 0;
+            mqc->encode(v);
+            if (v) {
                 goto_PARTIAL = true;
-            } else if (!(*flagsp & ((T1_SIGMA_THIS | T1_PI_THIS) << (ci * 3U)))) {
-                OPJ_UINT32 ctxt1 = getctxno_zc(mqc, *flagsp >> (ci * 3U));
-                mqc->setcurctx(ctxt1);
-                v = (smr_abs(*l_datap) & static_cast<OPJ_UINT32>(one)) ? 1 : 0;
-                mqc->encode(v);
-                if (v) {
-                    goto_PARTIAL = true;
-                }
             }
-            if (goto_PARTIAL) {
-                OPJ_UINT32 ctxt2, spb;
-                OPJ_UINT32 lu = getctxtno_sc_or_spb_index(*flagsp, flagsp[-1], flagsp[1], ci);
-                *nmsedec += getnmsedec_sig(smr_abs(*l_datap), static_cast<OPJ_UINT32>(bpno));
-                ctxt2 = kLutCtxnoSc[lu];
-                mqc->setcurctx(ctxt2);
-
-                v = smr_sign(*l_datap);
-                spb = kLutSpb[lu];
-                mqc->encode(v ^ spb);
-                update_flags(flagsp, ci, v, t1->w + 2U);
-            }
-            *flagsp &= ~(T1_PI_THIS << (3U * ci));
-            l_datap++;
         }
+        if (goto_PARTIAL) {
+            OPJ_UINT32 ctxt2, spb;
+            OPJ_UINT32 lu = getctxtno_sc_or_spb_index(*flagsp, flagsp[-1], flagsp[1], ci);
+            *nmsedec += getnmsedec_sig(smr_abs(*l_datap), static_cast<OPJ_UINT32>(bpno));
+            ctxt2 = kLutCtxnoSc[lu];
+            mqc->setcurctx(ctxt2);
+
+            v = smr_sign(*l_datap);
+            spb = kLutSpb[lu];
+            mqc->encode(v ^ spb);
+            update_flags(flagsp, ci, v, t1->w + 2U);
+        }
+        *flagsp &= ~(T1_PI_THIS << (3U * ci));
+        l_datap++;
     }
 }
 
@@ -430,8 +418,9 @@ void enc_clnpass(EncT1* t1, OPJ_INT32 bpno, OPJ_INT32* nmsedec) noexcept
             } else {
                 // a column outside run mode: its candidates are fixed here, at its start. A row is coded
                 // (zero coding, and sign coding when it turns significant) when it is neither significant
-                // nor visited, and coding a row sets the significance of that row alone (its neighbours' flags
-                // change, not the other rows' own sigma and pi), so the set cannot change inside the column.
+                // nor visited, and coding a row sets that row's own sigma and the neighbour bits of the adjacent rows
+                // in the same word (how row r + 1 sees row r: the contexts read the live *f), not another row's own
+                // sigma and pi bits, so the set cannot change inside the column.
                 // Row r is bit 3r of cand (sigma at bit 4 + 3r, pi at bit 21 + 3r of the word); the rows are
                 // unrolled, so that each one's shifts and its update_flags branches are constants.
                 const OPJ_UINT32 cand = ~((*f >> 4) | (*f >> 21)) & 0x249U;
