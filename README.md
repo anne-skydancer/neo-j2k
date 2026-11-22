@@ -5,7 +5,8 @@
 
 > **[Download neo-j2k 0.1.2 for Windows x64 (ZIP)](https://github.com/anne-skydancer/neo-j2k/releases/download/v0.1.2/neoj2k-viewer-0.1.2-win-x64.zip)**
 >
-> Prerelease for 64-bit Windows viewers that load a separate `openjp2.dll`. Requires AVX2.
+> Prerelease for 64-bit Windows viewers that load a separate `openjp2.dll`. Requires AVX2. Not for the official Firestorm
+> releases, which link Kakadu statically and have no `openjp2.dll`: it works in Firestorm builds compiled without Kakadu.
 > [Installation instructions](modules/openjp2/INSTALL.md) · [Release notes and checksums](https://github.com/anne-skydancer/neo-j2k/releases/tag/v0.1.2)
 
 A JPEG 2000 Part 1 codec (decode and encode, lossless 5/3 and lossy 9/7) in C++20, built as a static library or
