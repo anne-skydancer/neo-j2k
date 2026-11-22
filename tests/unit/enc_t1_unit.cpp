@@ -39,6 +39,7 @@
 //      built for the pass: every size 1..64 x 1..64 with 0 to 25 planes and dense, sparse, staggered and striped
 //      significance, every pair of early and late row masks, and dense blocks (see test_encode_refine).
 // Usage: nj2k_enc_t1_unit [--exhaustive-full] [--no-exhaustive] [--refine-only]
+//   --refine-only runs test 7 alone (the mutation checks of E3 use it) and ignores --exhaustive-full and --no-exhaustive.
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
@@ -982,7 +983,7 @@ int main(int argc, char** argv)
         } else if (std::strcmp(argv[i], "--no-exhaustive") == 0) {
             exhaustive = false;
         } else {
-            std::fprintf(stderr, "usage: nj2k_enc_t1_unit [--exhaustive-full] [--no-exhaustive]\n");
+            std::fprintf(stderr, "usage: nj2k_enc_t1_unit [--exhaustive-full] [--no-exhaustive] [--refine-only]\n");
             return 2;
         }
     }
