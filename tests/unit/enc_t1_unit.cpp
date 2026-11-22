@@ -5,18 +5,23 @@
 // before the MQ redesign: enc_mq_frozen.h, enc_t1_frozen.cpp). The redesign must leave every byte, every
 // pass end and the overflow flag as they were, so each test runs both coders on the same input:
 //   1. streams: random decision streams over the 19 contexts, pass ends every few hundred decisions;
-//      after every decision the coders' a, c, ct, bytes written, overflow flag and context state agree;
-//      at every pass end numbytes() agrees; after the flush the bytes agree; at full capacity and at
+//      after every decision the coders' a, c, ct, bytes written (their count), overflow flag and context
+//      state agree; at every pass end numbytes() and the overflow flag agree; after the flush all the
+//      bytes of the buffer agree; at full capacity and at
 //      short ones (the output clamp at every byte position of a short buffer, and around the length of
 //      the whole stream);
 //   2. single decisions: one decision from a chosen state over every interval a in [0x8000, 0xffff],
 //      every state (94), both bits, every bit counter ct in [1, 12], the low word c, the previous byte
-//      (0x00, 0xFE, 0xFF: plain, carry into 0xFF, stuffing) and the output limit at the previous byte
-//      or not. The default run takes one pseudo-random combination of c, previous byte and limit for
-//      each (a, state, bit, ct); --exhaustive-full takes all 24 (1.77 billion decisions, about 20 s);
+//      (0x00, 0xFE, 0xFF: plain, carry into 0xFF, stuffing) and the output limit at the previous byte,
+//      1, 2 or 3 bytes after it (inside a renormalisation with several byte-outs) or out of reach. The
+//      default run takes one pseudo-random combination of c, previous byte and limit for each (a, state,
+//      bit, ct); --exhaustive-full takes all 60 (4.4 billion decisions, a few minutes);
 //   3. enc_t1_encode on generated code-blocks: every size 1..64 a side, heights that are no multiple of
 //      four, every orientation, 5/3 and 9/7, samples from nothing (numbps 0) to the full range: the
-//      passes (rate, len, term, distortion bit for bit), numbps and the committed bytes.
+//      passes (rate, len, term, distortion bit for bit), numbps and the committed bytes. The output
+//      clamp is not expected to be reachable through it (a code-block's buffer holds four bytes a
+//      sample and the coder writes about one and a half at most): the run counts the blocks refused
+//      for overflow and asserts none; the clamp is tested in 1 and 2.
 // Usage: nj2k_enc_t1_unit [--exhaustive-full] [--no-exhaustive]
 #include <cstdint>
 #include <cstdio>
@@ -204,7 +209,7 @@ struct One {
 };
 
 // One decision of both coders from the given state; false when they differ.
-bool one_decision(u32 a, u32 state, u32 bit, u32 ct, u32 c, u8 prev, bool limit_at_prev)
+bool one_decision(u32 a, u32 state, u32 bit, u32 ct, u32 c, u8 prev, u32 limit_off)
 {
     u8 rb[8], nb[8];
     std::memset(rb, prev, sizeof rb);
@@ -224,15 +229,17 @@ bool one_decision(u32 a, u32 state, u32 bit, u32 ct, u32 c, u8 prev, bool limit_
     neo.bp = nb + 2;
     ref.start = rb + 3;
     neo.start = nb + 3;
-    ref.limit = rb + (limit_at_prev ? 2 : 6);
-    neo.limit = nb + (limit_at_prev ? 2 : 6);
+    ref.limit = rb + 2 + limit_off;
+    neo.limit = nb + 2 + limit_off;
     ref.overflow = neo.overflow = false;
     ref.encode(bit);
     neo.encode(bit);
     return same_coder(ref, neo) && ref.bp - rb == neo.bp - nb && std::memcmp(rb, nb, sizeof rb) == 0;
 }
 
-// the low words: 0, under the carry bit (27), at it, and mixed; one is taken at a time
+// the low words: 0, under the carry bit (27), at it, and mixed; one is taken at a time. A combination is
+// (c, previous byte, limit offset) = (combo % 4, (combo / 4) % 3, combo / 12): 4 x 3 x 5 (limit at the
+// previous byte, 1, 2, 3 bytes after it, and out of reach: offset 4 writes at most to rb[6])
 constexpr u32 kC[4] = {0u, 0x7fffff0u, 0x8000000u, 0x35a5a5au};
 constexpr u8 kPrev[3] = {0x00, 0xfe, 0xff};
 
@@ -243,11 +250,11 @@ bool test_single(bool full)
         for (u32 state = 0; state < 94; ++state) {
             for (u32 bit = 0; bit < 2; ++bit) {
                 // a pseudo-random combination (c, previous byte, limit) for the default run
-                const u32 pick = (a * 2654435761u + state * 40503u + bit * 977u) % 24u;
+                const u32 pick = (a * 2654435761u + state * 40503u + bit * 977u) % 60u;
                 for (u32 ct = 1; ct <= 12; ++ct) {
                     if (full) {
-                        for (u32 combo = 0; combo < 24; ++combo) {
-                            if (!one_decision(a, state, bit, ct, kC[combo & 3], kPrev[(combo >> 2) % 3], (combo >> 3) & 1)) {
+                        for (u32 combo = 0; combo < 60; ++combo) {
+                            if (!one_decision(a, state, bit, ct, kC[combo & 3], kPrev[(combo >> 2) % 3], combo / 12)) {
                                 std::fprintf(stderr, "single decision differs: a=%04x state=%u bit=%u ct=%u combo=%u\n", a, state,
                                              bit, ct, combo);
                                 ++g_failures;
@@ -256,8 +263,8 @@ bool test_single(bool full)
                             ++n;
                         }
                     } else {
-                        const u32 combo = (pick + ct * 5u) % 24u;
-                        if (!one_decision(a, state, bit, ct, kC[combo & 3], kPrev[(combo >> 2) % 3], (combo >> 3) & 1)) {
+                        const u32 combo = (pick + ct * 5u) % 60u;
+                        if (!one_decision(a, state, bit, ct, kC[combo & 3], kPrev[(combo >> 2) % 3], combo / 12)) {
                             std::fprintf(stderr, "single decision differs: a=%04x state=%u bit=%u ct=%u combo=%u\n", a, state, bit,
                                          ct, combo);
                             ++g_failures;
@@ -320,6 +327,8 @@ void fill_block(std::int32_t* data, u32 w, u32 h, Rng& rng)
     }
 }
 
+u32 g_driver_false = 0;  // blocks both coders refused (the output clamp through the driver)
+
 bool encode_block(fz::EncT1* ref, d::EncT1* neo, u32 w, u32 h, u32 orient, bool reversible, Rng& rng, const nj2k::detail::Allocator& alloc)
 {
     std::vector<std::int32_t> samples(w * h);
@@ -338,7 +347,11 @@ bool encode_block(fz::EncT1* ref, d::EncT1* neo, u32 w, u32 h, u32 orient, bool 
     if (okr != okn || cr.numbps != cn.numbps || cr.totalpasses != cn.totalpasses) {
         return false;
     }
-    if (!okr || cr.totalpasses == 0) {
+    if (!okr) {
+        ++g_driver_false;
+        return true;
+    }
+    if (cr.totalpasses == 0) {
         return true;
     }
     nj2k::detail::Arena arena;
@@ -400,7 +413,9 @@ void test_encode()
         }
         ++blocks;
     }
-    std::printf("enc_t1_encode: %llu code-blocks identical\n", static_cast<unsigned long long>(blocks));
+    std::printf("enc_t1_encode: %llu code-blocks identical, %u refused for overflow (expected 0: unreachable here)\n",
+                static_cast<unsigned long long>(blocks), g_driver_false);
+    CHECK_MSG(g_driver_false == 0, "%u blocks overflowed the output buffer; the clamp is now reachable through the driver", g_driver_false);
 done:
     fz::enc_t1_destroy(ref, alloc);
     d::enc_t1_destroy(neo, alloc);

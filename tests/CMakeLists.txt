@@ -150,7 +150,7 @@ endforeach()
 nj2k_add_test(oracle_layers nj2k_diff layers --a oracle --files "${NJ2K_CORPUS}"
               --ref "${CMAKE_CURRENT_SOURCE_DIR}/oracle-known-defects.txt")
 if(NJ2K_TEST_NIGHTLY)
-  # every MQ decision of the redesigned encoder against the frozen one: 1.77 billion, about 20 s
+  # every MQ decision of the redesigned encoder against the frozen one: 4.4 billion, a few minutes
   nj2k_add_test(enc_t1_exhaustive nj2k_enc_t1_unit --exhaustive-full)
 endif()
 if(NJ2K_TEST_NIGHTLY)

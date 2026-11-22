@@ -1,12 +1,17 @@
 // SPDX-License-Identifier: BSD-2-Clause
 // Copyright (c) 2026, Anne Skydancer (neo-j2k)
 //
-// The encoder's Tier-1 (stage 6a), ported from OpenJPEG 2.5.4 at the oracle's pin (oracle/PIN): the MQ
-// encoder (mqc.c, mqc_inl.h), the context tables (t1_luts.h; t1_tables.h, enc_luts.h) and the three
-// encoding passes with the code-block driver (t1.c) are OpenJPEG's code with the same operations, so
-// the bytes and the rates are OpenJPEG's, for the code-blocks the viewer's streams hold (64 x 64, no
-// mode switches: the RAW (BYPASS) coder, the terminations and the vertically causal contexts of the
-// other modes belong to the j2k-extra module). The MQ coder's output is bounded here, where OpenJPEG
+// The encoder's Tier-1 (stage 6a), ported from OpenJPEG 2.5.4 at the oracle's pin (oracle/PIN): the
+// context tables (t1_luts.h; t1_tables.h, enc_luts.h) and the three encoding passes with the code-block
+// driver (t1.c) are OpenJPEG's code with the same operations, for the code-blocks the viewer's streams hold
+// (64 x 64, no mode switches: the RAW (BYPASS) coder, the terminations and the vertically causal contexts
+// of the other modes belong to the j2k-extra module). The MQ encoder (mqc.c, mqc_inl.h) lives in enc_mq.h
+// and is the same function in a different formulation: renormalisation by count-leading-zeros, a context's
+// state a byte index into a compile-time table, and the decision (interval, conditional exchange, state
+// update) as selects, or as masks where GCC would branch on selects. The output is the same, so the bytes
+// and the rates are OpenJPEG's: tests/unit/enc_t1_unit.cpp pins it against a frozen copy of the
+// earlier operations (every single decision, every pass end, the bytes and the overflow flag) and
+// tests/unit/encode_unit.cpp against the oracle. The MQ coder's output is bounded here, where OpenJPEG
 // writes without a bound (OD-4). OpenJPEG's notice:
 //
 //
@@ -189,8 +194,8 @@ inline void update_flags(opj_flag_t* flagsp, OPJ_UINT32 ci, OPJ_UINT32 s, OPJ_UI
     }
 }
 
-NJ2K_MQ_INLINE void enc_sigpass_step(EncT1* t1, opj_flag_t* flagsp, const OPJ_INT32* datap, OPJ_INT32 bpno, OPJ_INT32 one,
-                             OPJ_INT32* nmsedec, OPJ_UINT32 ci) noexcept
+NJ2K_FORCE_INLINE void enc_sigpass_step(EncT1* t1, opj_flag_t* flagsp, const OPJ_INT32* datap, OPJ_INT32 bpno,
+                                        OPJ_INT32 one, OPJ_INT32* nmsedec, OPJ_UINT32 ci) noexcept
 {
     MqEnc* mqc = &t1->mqc;
     OPJ_UINT32 v;
@@ -253,8 +258,9 @@ void enc_sigpass(EncT1* t1, OPJ_INT32 bpno, OPJ_INT32* nmsedec) noexcept
     }
 }
 
-NJ2K_MQ_INLINE void enc_refpass_step(EncT1* t1, OPJ_UINT32 flags, OPJ_UINT32& flagsUpdated, const OPJ_INT32* datap,
-                             OPJ_INT32 bpno, OPJ_INT32 one, OPJ_INT32* nmsedec, OPJ_UINT32 ci) noexcept
+NJ2K_FORCE_INLINE void enc_refpass_step(EncT1* t1, OPJ_UINT32 flags, OPJ_UINT32& flagsUpdated,
+                                        const OPJ_INT32* datap, OPJ_INT32 bpno, OPJ_INT32 one,
+                                        OPJ_INT32* nmsedec, OPJ_UINT32 ci) noexcept
 {
     MqEnc* mqc = &t1->mqc;
     OPJ_UINT32 v;
@@ -317,9 +323,9 @@ void enc_refpass(EncT1* t1, OPJ_INT32 bpno, OPJ_INT32* nmsedec) noexcept
 }
 
 // opj_t1_enc_clnpass_step_macro with the viewer's modes (no vertically causal contexts)
-NJ2K_MQ_INLINE void enc_clnpass_step(EncT1* t1, opj_flag_t* flagspIn, const OPJ_INT32* datapIn, OPJ_INT32 bpno,
-                             OPJ_INT32 one, OPJ_INT32* nmsedec, OPJ_UINT32 agg, OPJ_UINT32 runlen,
-                             OPJ_UINT32 lim) noexcept
+NJ2K_FORCE_INLINE void enc_clnpass_step(EncT1* t1, opj_flag_t* flagspIn, const OPJ_INT32* datapIn,
+                                        OPJ_INT32 bpno, OPJ_INT32 one, OPJ_INT32* nmsedec, OPJ_UINT32 agg,
+                                        OPJ_UINT32 runlen, OPJ_UINT32 lim) noexcept
 {
     MqEnc* mqc = &t1->mqc;
     OPJ_UINT32 v;

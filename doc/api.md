@@ -258,8 +258,11 @@ length is known before it is written). A stream has a buffer, as in OpenJPEG (`n
 may take fewer bytes than it is given, the rest is offered again, and one that takes none fails the stream (DP-17). The tile's memory is released when `nj2k_encode` returns.
 
 The stages are OpenJPEG's, ported with the same operations in the same order (`src/enc_dwt.cpp`,
-`src/enc_t1.cpp`, `src/enc_t2.cpp`, `src/encode.cpp`; the MQ coder's states and the context tables are shared
-with the decoder, `src/t1_tables.h`): the DC level shift, the colour transform, the forward wavelet
+`src/enc_t1.cpp`, `src/enc_t2.cpp`, `src/encode.cpp`; the context tables are shared with the decoder,
+`src/t1_tables.h`), but for the MQ coder (`src/enc_mq.h`), which gives the same output in a different
+formulation (renormalisation by count-leading-zeros, byte-index states in a compile-time table built from the
+decoder's 94 states, the decision by selects or masks; `tests/unit/enc_t1_unit.cpp` pins it against a frozen
+copy of the earlier operations): the DC level shift, the colour transform, the forward wavelet
 (OpenJPEG's lifting in its order, eight columns at a time for the vertical pass), the quantization of the 9/7
 coefficients (`lrintf` to nearest even, as `opj_lrintf` on x86-64) and Tier-1 per code-block with the
 distortion estimates in doubles, the layer allocation (the bisection on the slope threshold with a Tier-2

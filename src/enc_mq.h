@@ -2,10 +2,13 @@
 // Copyright (c) 2026, Anne Skydancer (neo-j2k)
 //
 // The encoder's MQ coder (OpenJPEG 2.5.4's mqc.c and mqc_inl.h, encoding side; their notice is in
-// enc_t1.cpp), a header so that the tests can drive it alone. The coder's output is bounded here,
-// where OpenJPEG writes without a bound (OD-4).
+// enc_t1.cpp), a header so that the tests can drive it alone. It gives OpenJPEG's output in a different
+// formulation (renormalisation by count-leading-zeros, byte-index states, the decision by selects or
+// masks); tests/unit/enc_t1_unit.cpp checks it against a frozen copy of the earlier operations. The
+// coder's output is bounded here, where OpenJPEG writes without a bound (OD-4).
 #pragma once
 
+#include <cassert>
 #include <cstdint>
 
 #include "enc_luts.h"
@@ -14,12 +17,13 @@
 
 namespace nj2k::detail {
 
-// The coder's hot functions are inlined into every pass step: MSVC's own choice leaves the renormalisation and
-// the decision as calls, with the coder's words and the context slot stored and reloaded around each.
+// The coder's hot functions and the pass steps are inlined whatever the compiler's own choice: MSVC leaves the
+// renormalisation and the decision as calls, with the coder's words and the context slot stored and reloaded
+// around each. (Used by enc_t1.cpp's pass steps too.)
 #if defined(_MSC_VER) && !defined(__clang__)
-#define NJ2K_MQ_INLINE __forceinline
+#define NJ2K_FORCE_INLINE __forceinline
 #else
-#define NJ2K_MQ_INLINE inline __attribute__((always_inline))
+#define NJ2K_FORCE_INLINE inline __attribute__((always_inline))
 #endif
 
 struct MqEnc {
@@ -91,7 +95,7 @@ struct MqEnc {
         }
     }
 
-    NJ2K_MQ_INLINE void renorme() noexcept
+    NJ2K_FORCE_INLINE void renorme() noexcept
     {
         // every shift at once (count-leading-zeros) instead of OpenJPEG's one bit a turn: as many as c has
         // bits left to the next byte-out, which comes where the one-bit loop has it (when ct reaches 0), so
@@ -108,38 +112,37 @@ struct MqEnc {
     }
 
     // The encoder knows its bit, so the choice of the interval, the conditional exchange and the state
-    // update are selects, not branches. With a' = a - qe and x = (a' < qe), the MPS takes qe as its
-    // interval when x and adds qe to c otherwise, the LPS the opposite; an MPS whose a' keeps bit 15
-    // neither renormalises (renorme shifts by 0) nor changes state: the same function as OpenJPEG's
-    // three branches (mqc.c opj_mqc_encode, codeMPS and codeLPS).
-    NJ2K_MQ_INLINE void encode(std::uint32_t d) noexcept
+    // update are selects (masks where GCC would turn selects into branches), not branches. With a' = a - qe
+    // and x = (a' < qe), the MPS takes qe as its interval when x and adds qe to c otherwise, the LPS the
+    // opposite; an MPS whose a' keeps bit 15 neither renormalises (renorme shifts by 0) nor changes state:
+    // the same function as OpenJPEG's three branches (mqc.c opj_mqc_encode, codeMPS and codeLPS).
+    // Precondition: d is 0 or 1.
+    NJ2K_FORCE_INLINE void encode(std::uint32_t d) noexcept
     {
-#if defined(__GNUC__) && !defined(__clang__)
-// GCC turns these selects back into branches (measured: 0.95 of the old coder against 0.70 with masks)
+        assert(d <= 1U);
         const std::uint32_t i = ctxs[cx];
         const MqEncState e = kMqEncStates.t[i];
         const std::uint32_t q = e.qe;
         const std::uint32_t lps = (i ^ d) & 1U;
         const std::uint32_t an = a - q;
         const std::uint32_t swap = static_cast<std::uint32_t>(an < q) ^ lps;
+#if defined(__GNUC__) && !defined(__clang__)
+        // GCC turns the selects below back into branches (measured: 0.95 of the old coder against 0.70)
         const std::uint32_t mswap = 0U - swap;
         a = an ^ ((an ^ q) & mswap);
         c += q & ~mswap;
         const std::uint32_t mlps = 0U - lps;
         const std::uint32_t next = e.nmps ^ ((e.nmps ^ e.nlps) & mlps);
-        const std::uint32_t mkeep = 0U - static_cast<std::uint32_t>((lps | (an & 0x8000U)) == 0x8000U);
+        // an MPS whose a' keeps bit 15 keeps its state (as a bit expression: GCC branches on `!lps && ...`)
+        const std::uint32_t mkeep = 0U - (((an >> 15) & ~lps) & 1U);
         ctxs[cx] = static_cast<std::uint8_t>(next ^ ((next ^ i) & mkeep));
 #else
-        const std::uint32_t i = ctxs[cx];
-        const MqEncState e = kMqEncStates.t[i];
-        const std::uint32_t q = e.qe;
-        const std::uint32_t lps = (i ^ d) & 1U;
-        const std::uint32_t an = a - q;
-        const std::uint32_t swap = static_cast<std::uint32_t>(an < q) ^ lps;
         a = swap ? q : an;
         c += swap ? 0U : q;
-        const bool keep = (lps | (an & 0x8000U)) == 0x8000U;
         const std::uint32_t next = lps ? e.nlps : e.nmps;
+        // an MPS (lps == 0) whose a' keeps bit 15 keeps its state; written as one compare, since MSVC turns
+        // `!lps && (an & 0x8000U)` into a branch
+        const bool keep = (lps | (an & 0x8000U)) == 0x8000U;
         ctxs[cx] = static_cast<std::uint8_t>(keep ? i : next);
 #endif
         renorme();
