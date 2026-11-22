@@ -22,11 +22,14 @@
 //      clamp is not expected to be reachable through it (a code-block's buffer holds four bytes a
 //      sample and the coder writes about one and a half at most): the run counts the blocks refused
 //      for overflow and asserts none; the clamp is tested in 1 and 2.
-//   0. enc_preprocess (E1, the branch-free sign-magnitude conversion and block maximum, src/enc_pre.h)
+//   4. enc_preprocess (E1, the branch-free sign-magnitude conversion and block maximum, src/enc_pre.h)
 //      against OpenJPEG's per-sample branch: every output word and the maximum, over blocks of 4,096
-//      samples: a trimmed pass by default (the neighbourhoods of 0, INT32_MIN, INT32_MAX and every power
-//      of two, a stride over the whole range, random blocks), all 2^32 inputs with --exhaustive-full; and
-//      test 3 also on blocks of every bit-plane count from 0 to 25, with INT32_MIN in them;
+//      samples (64 in the random pass). The default run is a trimmed pass: the 2^17 inputs around 0 and
+//      around INT32_MIN, a window of 4,096 around every power of two and its negative, a stride of 61
+//      from 0 (about 0xF4000000, not the top of the range), and random blocks; --exhaustive-full takes
+//      all 2^32 inputs, which covers the rest;
+//   5. enc_t1_encode through E1 on blocks whose largest magnitude gives each bit-plane count from 0 to
+//      25, with INT32_MIN in them, every size, orientation and wavelet combination of a set of eight sizes.
 // Usage: nj2k_enc_t1_unit [--exhaustive-full] [--no-exhaustive]
 #include <algorithm>
 #include <cstdint>
@@ -227,7 +230,7 @@ bool preprocess_range(std::uint64_t first, std::uint64_t count, u32 step)
 }
 
 // Full: all 2^32 inputs, in order (nightly, a few seconds). Default: a trimmed pass: every input
-// within 2^16 of 0 and of INT32_MIN, 33 values on each side of every power of two and its negative, a stride
+// within 2^16 of 0 and of INT32_MIN, 2,048 values on each side of every power of two and of its negative (a window of 4,096), a stride
 // of 61 over the whole range, and random blocks (a block's maximum with a negative INT32_MIN in it among
 // the positives and the other way round, at every position of a block).
 void test_preprocess(bool full)
@@ -475,10 +478,11 @@ bool encode_block(fz::EncT1* ref, d::EncT1* neo, u32 w, u32 h, u32 orient, bool 
     return encode_samples(ref, neo, samples, w, h, orient, reversible, rng, alloc);
 }
 
-// E1 end to end: blocks whose largest magnitude puts numbps at each of 1 to 25 (the sample range's whole
-// span: numbps = floorlog2(max) + 1 - 6), with both signs, the largest sample negative or positive, and at
-// 25 the INT32_MIN of the preprocessing's one special case, alone and among others; plus a block of
-// nothing and one of INT32_MIN only. Sizes and orientations rotate.
+// E1 end to end: blocks whose largest magnitude puts numbps at each of 1 to 25 (numbps = floorlog2(max) + 1 - 6;
+// the sample range's whole span), the largest sample negative or positive and every other sample smaller, and at
+// 25 the INT32_MIN of the preprocessing's one special case, alone and among others; plus numbps 0 (the largest
+// under 2^6), a block of nothing and one of INT32_MIN only. Every one of the 8 sizes x 4 orientations x 2
+// wavelets for each count (asserted).
 void test_encode_planes()
 {
     const nj2k::detail::Allocator alloc = nj2k::detail::Allocator::system();
@@ -491,30 +495,32 @@ void test_encode_planes()
     Rng rng(20261123);
     const u32 sizes[][2] = {{64, 64}, {64, 1}, {1, 64}, {33, 17}, {5, 7}, {64, 63}, {4, 4}, {1, 1}};
     std::uint64_t blocks = 0;
+    bool seen[8][4][2] = {};
     for (u32 planes = 0; planes <= 25 && g_failures == 0; ++planes) {
-        for (u32 k = 0; k < 24; ++k) {
-            const u32 w = sizes[k % 8][0], h = sizes[k % 8][1];
+        // every size, orientation and wavelet for each bit-plane count: the three indices are independent
+        for (u32 k = 0; k < 64; ++k) {
+            const u32 si = k % 8, orient = (k / 8) % 4, rev = k / 32;
+            seen[si][orient][rev] = true;
+            const u32 w = sizes[si][0], h = sizes[si][1];
             std::vector<std::int32_t> v(w * h);
-            // the top magnitude: 2^(planes+5) .. 2^(planes+6) - 1 for numbps = planes; planes = 0 is under 2^6
+            // the largest magnitude: 2^(planes+5) .. 2^(planes+6) - 1 gives numbps = planes (hi <= 2^31); every other
+            // sample is below lo, so the largest is the one at top_at, negative or positive by chance.
+            // planes = 0: all samples below 2^6, so floorlog2(max) + 1 - 6 is numbps 0 for an all-zero block and
+            // otherwise wraps as an unsigned in OpenJPEG, the frozen reference and the new code alike (no pass
+            // runs; production's 9/7 path reaches it, encode.cpp), so the blocks are compared as they are.
             const std::uint64_t lo = planes ? (1ull << (planes + 5)) : 0, hi = planes ? (1ull << (planes + 6)) : (1ull << 6);
-            const std::uint64_t span = hi - lo;
+            const std::uint64_t below = planes ? lo : hi;
+            const bool dense = rng.u(2) != 0;
             const u32 top_at = rng.u(w * h);
             for (u32 i = 0; i < w * h; ++i) {
-                std::uint64_t m = rng.next() % (hi > 1 ? hi : 1);
-                if (k & 8) {
+                std::uint64_t m = rng.next() % below;
+                if (dense) {
                     m &= rng.next();  // many small ones, as a high band
                 }
-                if (i == top_at) {
-                    m = lo + rng.next() % span;
-                    if (m > 0x7fffffffull) {
-                        m = 0x7fffffffull;
-                    }
+                if (i == top_at && planes) {
+                    m = lo + rng.next() % (hi - lo);
                 }
-                if (m >= hi && i != top_at) {
-                    m = hi - 1;
-                }
-                const bool neg = (k & 16) ? (i == top_at) : (rng.u(2) != 0);
-                v[i] = neg ? -static_cast<std::int32_t>(m) : static_cast<std::int32_t>(m);
+                v[i] = rng.u(2) ? -static_cast<std::int32_t>(m) : static_cast<std::int32_t>(m);
             }
             if (planes == 25) {
                 // INT32_MIN among the samples, and at times INT32_MAX with it
@@ -523,13 +529,22 @@ void test_encode_planes()
                     v[(top_at + 1) % (w * h)] = INT32_MAX;
                 }
             }
-            if (!encode_samples(ref, neo, v, w, h, k & 3u, (k >> 2) & 1u, rng, alloc)) {
-                std::fprintf(stderr, "enc_t1_encode differs: %u bit-planes, %u x %u, variant %u\n", planes, w, h, k);
+            if (!encode_samples(ref, neo, v, w, h, orient, rev, rng, alloc)) {
+                std::fprintf(stderr, "enc_t1_encode differs: largest magnitude 2^%u.., %u x %u, orientation %u, %s\n", planes ? planes + 5 : 0, w, h, orient, rev ? "5/3" : "9/7");
                 ++g_failures;
                 break;
             }
             ++blocks;
         }
+    }
+    if (g_failures == 0) {
+        u32 combos = 0;
+        for (auto& a : seen) {
+            for (auto& b : a) {
+                combos += b[0] + b[1];
+            }
+        }
+        CHECK_MSG(combos == 64, "%u of 64 size, orientation and wavelet combinations covered", combos);
     }
     for (u32 k = 0; k < 8 && g_failures == 0; ++k) {
         const u32 w = sizes[k][0], h = sizes[k][1];
@@ -547,7 +562,7 @@ void test_encode_planes()
         ++blocks;
     }
     CHECK_MSG(g_driver_false == 0, "%u blocks overflowed the output buffer", g_driver_false);
-    std::printf("enc_t1_encode, 0 to 25 bit-planes and INT32_MIN: %llu code-blocks identical\n", static_cast<unsigned long long>(blocks));
+    std::printf("enc_t1_encode, bit-planes 0 to 25 and INT32_MIN: %llu code-blocks identical\n", static_cast<unsigned long long>(blocks));
     fz::enc_t1_destroy(ref, alloc);
     d::enc_t1_destroy(neo, alloc);
 }

@@ -11,7 +11,7 @@
 //   out = a | (x & 0x80000000)      the sign back in bit 31
 // A magnitude is at most 0x7FFFFFFF, so the maximum is the same unsigned or signed. The function is the
 // same as the earlier one for all 2^32 inputs: tests/unit/enc_t1_unit.cpp checks that exhaustively.
-// Kept apart from enc_tile.h so that the test can call it alone; it needs <cstdint> only.
+// A header of its own, with <cstdint> only, so that enc_t1.cpp and the test share the one function.
 #pragma once
 
 #include <cstdint>
@@ -24,7 +24,9 @@ inline std::int32_t enc_preprocess(std::int32_t* data, std::uint32_t n) noexcept
     std::uint32_t mx = 0;
 #if defined(_MSC_VER) && !defined(__clang__)
     // scalar code, as the step is specified: MSVC would otherwise vectorise the maximum (pmaxud) behind a
-    // run-time CPU check (__isa_available), which a scalar build must not hold (global_state)
+    // run-time CPU check (__isa_available), which a scalar build must not hold (global_state). The pragma
+    // also costs the AVX2 build about one point (kernel 0.950-0.964 against 0.936-0.955 vectorised); accepted:
+    // the step is scalar code with no intrinsics (owner decision)
 #pragma loop(no_vector)
 #endif
     for (std::uint32_t i = 0; i < n; ++i) {
