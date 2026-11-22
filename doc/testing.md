@@ -166,6 +166,14 @@ outside the planes, every allocation given back, no difference the departures do
 file (a SOT declaring more than 64 MiB) from the oracle. The outcome table names private textures, so it
 stays off the repository.
 
+## Comparing two refs on Linux (kernel bench)
+
+`.github/workflows/bench-kernel-compare.yml` (manual only) measures the encoder's Tier-1 kernel of one ref against another on real
+Linux, for GCC 14, GCC 15 and Clang, the AVX2 and the scalar builds: `gh workflow run bench-kernel-compare.yml -f head_ref=<branch or sha>`
+(`-f base_ref=<ref>`, default `main`). Each of the six jobs builds `nj2k_enc_t1_ratio` from both refs (the current encoder against the frozen
+pre-redesign reference, in one process) and runs the two binaries alternately, 3 runs of 41 rounds; the summary lists head / base. GitHub's runners are
+shared and differ from job to job, so only the ratios inside one job count; do not compare numbers across jobs or workflow runs.
+
 ## The corpora
 
 - **Generated** (`corpus/generated`, committed, 63 files, 236 KB): written by `nj2k_corpus_gen` with the
