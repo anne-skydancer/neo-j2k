@@ -1369,3 +1369,101 @@ included, unlike E1, which had nothing to gain with clang. gcc-15 SCALAR on that
 - The comparison with OpenJPEG 2.5.4 (`nj2k_encode_bench`) was not repeated: the README's rows are before E1 and E2.
 - One machine (Zen 5), one synthetic texture; the machine was not quiet. The partial stripe (height not a multiple of
   4) and the run-mode columns are not changed; the share of columns outside run mode on real images is not measured.
+
+## Stage 6g (E3): the refinement pass as a list of (context, bit) pairs (2026-11-22)
+
+Step E3 of the EBCOT-NG plan, on `main` after E2 (#26): the refinement pass (`enc_refpass`, `src/enc_t1.cpp`) changes no
+significance or visited bit, so the samples it codes, their order and their contexts are fixed by the flags at its
+start. One scan over the stripes builds a branch-free list of (context, bit) pairs and one tight MQ loop codes it.
+For each column of a full stripe, `m = f & ~(f >> 17) & 0x2490` marks the rows that are significant and not visited
+(sigma at bit 4 + 3r, pi at 21 + 3r). When `m` is non-zero, the four rows are unrolled (`enc_refpass_row<ci>`, a
+template on the row): each stores its pair byte (`ctx << 1 | bit`) at `list[n]` whatever the row, then `n += (m >> (4 + 3r)) & 1`,
+so a row that is not refined is overwritten by the next one; nmsedec is added masked, from the table chosen once for the
+pass. `f |= m << 16` sets the refinement (mu) bits at once. The magnitude context (14, 15, or 16 once refined) comes from a
+four-entry table indexed by (mu, any neighbour significant) (`kMagPair`). The partial last stripe appends to the same
+list (its rows in order, after the full stripes), so the pass has one MQ loop and one MQ path. The list is
+`EncT1::reflist`, 4,096 bytes (a pass refines each sample at most once), in the per-job scratch: no heap allocation, no
+new global state. The pass end (`numbytes() + 3`), the distortion and the rates are the earlier code's. No intrinsics.
+
+**What it took.** The first form (the study's prototype: a bit-arithmetic magnitude context, the partial stripe coded
+directly after the loop) gave -5.0 % to -2.5 % on MSVC AVX2, with -2.5 % and -2.6 % on the 512² and 1,024² lossless cells (-2.5 % and
+-2.7 % SCALAR), below the gate (-3.0 %). Coding the partial stripe through the list changed nothing measurable; the table for the context
+instead of bit arithmetic moved every cell by about 1 percentage point and passed all twelve. The refinement decisions are
+a larger share of all decisions on lossless than on lossy (counted over the dumps: 30 % of 512² lossy, 37 % of 512²
+lossless, 37 % of 1,024² lossless), so the earlier reading, that lossless gains less because its refinement share is
+smaller, was wrong: what the pass saves (the per-sample eligibility branch and the flag reloads) is a fixed cost a
+sample, and the MQ coding of the lossless bits, which are nearly random, costs more a decision and dilutes it.
+
+**Exactness.** Output byte-identical: the codestream and each pass's rate, length, termination and distortion (bit for
+bit) are the earlier code's. `nj2k_enc_t1_unit` compares `enc_t1_encode` with the frozen reference
+(`tests/unit/enc_t1_frozen.cpp`, unchanged) on 8,292 more blocks built for the refinement pass (`test_encode_refine`,
+`--refine-only` runs it alone): (a) 5,888 blocks, every size 1..64 x 1..64 (the edge sizes in all 8 orientation and
+wavelet combinations), 0 to 25 bit-planes (each count has at least 100 blocks, asserted), four kinds of significance
+(dense, sparse isolated samples, staggered leading planes: first refinements and later ones in one column, and whole
+rows or columns), partial last stripes in every height that is no multiple of four; (b) 2,304 blocks, every pair of
+4-bit row masks (early rows, which refine in two or more passes, late rows, at their first refinement, small rows), four
+sign patterns, all orientations and both wavelets, on nine sizes, whole and partial stripes; (c) 100 dense 64 x 64 blocks
+of one magnitude (columns whose four rows are all refined). Mutations tried, each caught by `enc_t1_unit --refine-only`
+alone (15 of 15): the context of index 3 (mu and a neighbour), the neighbour context dropped, the mu shift, the mask without
+the visited bits, with the visited shift 18, a row left out of the mask (full stripe and partial), mu not set (full and
+partial), `n` advanced for every row (full and partial), the nmsedec tables swapped, nmsedec not masked, the bit read at
+the wrong plane, and the last row of the partial stripe dropped. The nightly `enc_t1_exhaustive` (`--exhaustive-full`: all
+2^32 preprocessing inputs and the 4.4 billion MQ decisions) passes. The kernel's passes and bytes (hashed over every
+dumped block) are equal to main's in every build measured (MSVC, clang-cl and MinGW GCC, 12 configurations each). Every
+ctest passes on MSVC AVX2 (129 tests registered without the openjpeg-data checkout, 2 skipped: the class 1 conformance
+tests), on MSVC SCALAR (the encoder, `global_state`, the exports, the fuzz replays of the encoder and the Tier-1, the
+oracle corpus regeneration), and with MSVC AddressSanitizer (`enc_t1_unit`, `encode_unit`, `corpus_regenerates`, the
+encoder and Tier-1 fuzz replays).
+
+**Method.** As stage 6f: Ryzen 9 9950X3D, MSVC 14.51 (the library's flags, `/O2 /arch:AVX2` or baseline x86-64), one
+thread pinned to CPU 7, TSC cycles, main (`18e9a6e`) and E3 in separate processes run alternately (the order swapped
+every round), the median of 9 rounds' changes. "Kernel" is `enc_t1_encode` alone over the code-blocks of the upload
+encode's texture (the study's dump, 75, 210 and 777 blocks at 256², 512², 1,024²; 21 repeats a process, 7 at 1,024²).
+The harness is a throwaway one, not in the repository. The gate: byte-identical output, and the kernel at least 3.0 %
+faster than main (at most -3.0 %) on every MSVC configuration, AVX2 and SCALAR.
+
+Gate: byte-identical output Yes. Kernel, Mcycles and change against main (minus is faster; the round-to-round range of
+the change was 0.1 to 0.5 percentage points):
+
+| Size | Mode | AVX2 main | AVX2 E3 | AVX2 change | SCALAR main | SCALAR E3 | SCALAR change | Passes gate |
+|---|---|---:|---:|---:|---:|---:|---:|---|
+| 256² | lossy | 29.3 | 27.7 | -5.6 % | 29.4 | 27.7 | -5.9 % | Yes |
+| 256² | lossless | 33.3 | 31.9 | -4.3 % | 33.5 | 31.9 | -4.6 % | Yes |
+| 512² | lossy | 140.4 | 133.8 | -4.7 % | 140.3 | 133.8 | -4.6 % | Yes |
+| 512² | lossless | 154.2 | 148.9 | -3.4 % | 154.5 | 149.0 | -3.5 % | Yes |
+| 1,024² | lossy | 571.7 | 545.0 | -4.6 % | 573.7 | 547.5 | -4.6 % | Yes |
+| 1,024² | lossless | 625.7 | 604.4 | -3.4 % | 627.8 | 605.3 | -3.6 % | Yes |
+
+The gate holds on all twelve MSVC configurations (-5.6 % to -3.4 % AVX2, -5.9 % to -3.5 % SCALAR), with the
+lossless 512² and 1,024² cells the narrowest (0.4 to 0.6 percentage points beyond the gate, about the round-to-round
+range). The whole one-thread encode was not measured.
+
+### GCC and clang (E3)
+
+Kernel only, the same dumps (7 rounds), the library's `enc_t1.cpp` (with `enc_dwt.cpp`, `arena.cpp`, `memory.cpp`) of main
+against this branch's:
+
+| Build | 256² lossy | 256² lossless | 512² lossy | 512² lossless | 1,024² lossy | 1,024² lossless | Passes gate |
+|---|---:|---:|---:|---:|---:|---:|---|
+| clang-cl AVX2 | -8.1 % | -6.0 % | -6.8 % | -5.0 % | -6.2 % | -4.8 % | Yes |
+| clang-cl SCALAR | -5.7 % | -3.4 % | -4.1 % | -2.5 % | -4.0 % | -2.5 % | No (512² and 1,024² lossless) |
+| MinGW GCC 13.2 `-O2` (baseline) | -6.7 % | -5.9 % | -5.8 % | -4.9 % | -5.6 % | -4.7 % | Yes |
+| MinGW GCC 13.2 `-O2 -march=x86-64-v3` | -7.0 % | -5.6 % | -6.1 % | -5.3 % | -5.9 % | -5.0 % | Yes |
+
+The gate is stated for MSVC; clang-cl SCALAR misses it on the two large lossless cells (-2.5 %), the other cells hold.
+
+### Linux
+
+Not measured yet: the numbers come from the dispatch-only workflow `bench-kernel-compare.yml` (head = `enc-e3-refinement`).
+
+### Costs and gaps (E3)
+
+- Scratch: +4,096 bytes of `EncT1` per concurrent encoder job (`reflist`).
+- Code size, MSVC `enc_t1.obj` `.text`: AVX2 27,651 to 26,029 bytes (-5.9 %), SCALAR 27,260 to 25,656 bytes (-5.9 %). E2 had
+  cost +45 %; E3 gives back part of it. GCC and clang object sizes were not measured.
+- No Linux or WSL here: UBSan, TSan, libFuzzer and `nj2k_enc_t1_unit` with GCC or clang were not run locally. The
+  decode tests under AddressSanitizer (`decode_unit`, `decode_threads`, the decode fuzz replays) were not run: the decoder
+  is not touched.
+- One machine (Zen 5), one synthetic texture. The share of refinement decisions on real images is not measured. The two
+  lossless cells at 512² and 1,024² pass by 0.4 to 0.6 percentage points, so a different texture or machine may sit on
+  the gate; the same holds for clang-cl SCALAR, which misses it.
