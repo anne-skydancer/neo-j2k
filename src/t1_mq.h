@@ -4,8 +4,8 @@
 // The MQ decoder's decision (ISO 15444-1 C.3.2 DECODE with RENORMD and BYTEIN of C.3.4) as macros, the form
 // OpenJPEG 2.5.4's mqc_inl.h has and t1.cpp's passes expand on their locals (a, c, ct and the slot of the context
 // being decided). The operations differ from OpenJPEG's; the decisions, the registers and the bytes read are the
-// same (tests/unit/t1_unit.cpp runs every interval and state against the standard's model and the frozen copy of
-// OpenJPEG's text):
+// same (tests/unit/t1_unit.cpp compares single decisions with the standard's model and the frozen copy of OpenJPEG's
+// text: every state and a spread of intervals in ctest, every interval nightly):
 //   - a context's state is one 32-bit word in its slot: the interval's qe (bits 0-15), the MPS (bit 16), the
 //     index of the next state on an MPS (bits 17-23) and on an LPS (bits 24-30), so a decision loads no second
 //     record, and a change of state is one load from the 94 words of kMqWords;
@@ -13,6 +13,7 @@
 //     exchange, the state change, the interval and the code register are computed from the comparisons and the
 //     renormalisation is always run: no shift when bit 15 of a is set, the shifts at once when the code register
 //     has the bits, OpenJPEG's loop with its byte-in only when a byte must come in (0.07-0.11 a decision).
+// The macros are OpenJPEG 2.5.4's mqc_inl.h reformulated; their notice is in t1.cpp.
 // kMqWords is built at compile time from kMqcStates (t1_tables.h), the standard's Table C.2, which the encoder
 // reads too; its own state-index convention (state * 2 + MPS) is the table's.
 #pragma once
@@ -83,11 +84,16 @@ inline constexpr MqContexts kMqContextsInit = mq_contexts_init();
 
 // The Tier-1 trace of the lane-per-code-block MQ prototype bench (bench/nj2k_mq_lanes.cpp, stage 4): a copy of the
 // library built with NJ2K_T1_TRACE reports every MQ segment and decision. The library itself is built without it, and
-// the hook compiles to nothing.
+// the hook compiles to nothing. The cleanup pass's run of AGG decisions takes n columns without deciding them one at a
+// time; a trace build reports each of them as a decision of 0 on the AGG context, so a replay sees the decisions one at
+// a time, as before the run existed.
 #if defined(NJ2K_T1_TRACE)
+#define NJ2K_T1_TRACE_AGG_RUN(n) \
+    for (std::uint32_t t_ = 0; t_ < (n); ++t_) NJ2K_T1_TRACE_DECISION(T1_CTXNO_AGG, 0U)
 #define NJ2K_T1_TRACE_DECISION(ctx, d)     nj2k::detail::g_t1_trace.decision(nj2k::detail::g_t1_trace.user, static_cast<std::uint32_t>(ctx), (d))
 #else
 #define NJ2K_T1_TRACE_DECISION(ctx, d)
+#define NJ2K_T1_TRACE_AGG_RUN(n)
 #endif
 
 // BYTEIN (C.3.4): a byte into c, or the 0xFF 0xFF marker stuffed in as 1s; bp stops at a marker. The decoder's
@@ -147,8 +153,10 @@ inline constexpr MqContexts kMqContextsInit = mq_contexts_init();
 // register is in the LPS sub-interval, flip_ whether the symbol is the less probable one (an LPS-interval hit that
 // the exchange leaves an MPS, or an MPS-interval hit that the exchange makes an LPS), the state changes (to the
 // next-LPS state when flip_, else the next-MPS state) when the interval is the LPS one or a has lost bit 15.
-#if defined(__GNUC__) && !defined(__clang__)
-// GCC turns the selects of the form below back into branches, so the same operations as masks and shifts
+#if (defined(__GNUC__) && !defined(__clang__)) || defined(NJ2K_MQ_FORCE_MASKS)
+// GCC turns the selects of the form below back into branches, so the same operations as masks and shifts (measured on
+// MinGW GCC 13.2 only; other GCC versions were not tried). NJ2K_MQ_FORCE_MASKS, for tests only (the t1_unit_masks
+// test builds t1.cpp with it), takes this form on any compiler so that both forms are tested everywhere
 #define opj_mqc_decode_macro(d, mqc, curctx, a, c, ct) \
 { \
     const std::uint32_t w_ = *(curctx); \
@@ -209,5 +217,6 @@ inline constexpr MqContexts kMqContextsInit = mq_contexts_init();
         } \
         a -= used_; \
         c -= used_ << 16; \
+        NJ2K_T1_TRACE_AGG_RUN(n); \
     } \
 }

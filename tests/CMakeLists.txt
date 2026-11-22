@@ -38,6 +38,11 @@ nj2k_simd(nj2k_enc_t1_unit)
 # redesign (coefficient identity); the vectors are code-blocks as Tier-1 receives them (tests/vectors/t1)
 nj2k_test_program(nj2k_t1_unit unit/t1_unit.cpp unit/t1_frozen.cpp)
 nj2k_simd(nj2k_t1_unit)
+# the same with the mask form of the MQ decision (the form GCC gets) compiled in on any compiler: t1.cpp is built into the
+# test (its objects take precedence over the library's), so both forms are tested everywhere
+nj2k_test_program(nj2k_t1_unit_masks unit/t1_unit.cpp unit/t1_frozen.cpp ../src/t1.cpp)
+target_compile_definitions(nj2k_t1_unit_masks PRIVATE NJ2K_MQ_FORCE_MASKS=1)
+nj2k_simd(nj2k_t1_unit_masks)
 # the Rust twin's plan, findings C2 (memory-limit outcomes and the codec's history: none found) and
 # C3 (the host's workers' floating-point environment reaches the samples: fixed, held as same), each held as today's
 # behaviour (unit/findings_unit.cpp)
@@ -95,6 +100,7 @@ nj2k_add_test(decode_threads nj2k_decode_unit "${NJ2K_CORPUS}" --threads)
 nj2k_add_test(encode_unit nj2k_encode_unit "${NJ2K_CORPUS}")
 nj2k_add_test(enc_t1_unit nj2k_enc_t1_unit)
 nj2k_add_test(t1_unit nj2k_t1_unit "${PROJECT_SOURCE_DIR}/tests/vectors/t1")
+nj2k_add_test(t1_unit_masks nj2k_t1_unit_masks "${PROJECT_SOURCE_DIR}/tests/vectors/t1")
 # NJ2K_T1_VECTORS: a folder of the study's dumps of more files (the conformance set's 35,390 code-blocks), run too
 set(NJ2K_T1_VECTORS "$ENV{NJ2K_T1_VECTORS}" CACHE PATH "Folder of .blk code-block dumps for t1_unit_more (not committed)")
 if(NJ2K_T1_VECTORS)

@@ -2,8 +2,8 @@
 // Copyright (c) 2026, Anne Skydancer (neo-j2k)
 //
 // Tier-1 decoding of one code-block: the MQ and raw (BYPASS) decoders and the three coding passes,
-// ported from OpenJPEG 2.5.4 (t1.c, mqc.c, mqc_inl.h, t1_luts.h; their notice is in t1.cpp) with
-// the same operations, so the coefficients are OpenJPEG's. The interface is neo-j2k's: one
+// ported from OpenJPEG 2.5.4 (t1.c, mqc.c, mqc_inl.h, t1_luts.h; their notice is in t1.cpp), so the
+// coefficients are OpenJPEG's; the MQ decision and the cleanup pass's run of AGG decisions are reformulated (t1_mq.h). The interface is neo-j2k's: one
 // code-block's data chunks and segments in, its coefficients in the decoder's scratch, then written
 // into the tile-component's buffer with dequantisation (and the ROI shift) as OpenJPEG does.
 // The code-block's bytes are always copied into the decoder's padded buffer first, so the MQ
@@ -102,14 +102,17 @@ struct Mqc {
 };
 
 // A decoder's Tier-1 scratch, kept between code-blocks and decodes.
-struct T1 {
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4324)  // padded to a whole cache line, as intended (a part's scratch shares none with the next part's)
+#endif
+struct alignas(64) T1 {
     Mqc mqc;
     std::int32_t* data = nullptr;    // w x h coefficients of the current code-block
     std::uint32_t* flags = nullptr;  // (h + 3) / 4 + 2 rows of w + 2
     std::uint32_t w = 0, h = 0;
     std::uint8_t* cblkdata = nullptr;  // the code-block's bytes and 2 bytes of padding
     std::size_t cblkdata_size = 0;
-    std::uint8_t pad_[8] = {};         // 192 bytes, whole cache lines: a part's scratch shares none with the next part's
 
     static constexpr std::size_t kMaxData = 4096;   // samples of the largest code-block
     static constexpr std::size_t kMaxFlags = 3078;  // (1024 + 2) x (4 / 4 + 2), the largest flag area
@@ -121,6 +124,9 @@ struct T1 {
     void release(const Allocator& alloc) noexcept;
     std::size_t bytes() const noexcept;
 };
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
 
 // Decodes the code-block into t1.data (row-major, t1.w x t1.h), as opj_t1_decode_cblk; false when
 // OpenJPEG refuses it (bit-planes plus ROI shift at or above 31), after the same warning. The

@@ -1090,7 +1090,7 @@ bool t1_decode_cblk(T1& t1_ref, const T1Block& b, const Messages& msg) noexcept
     for (OPJ_UINT32 segno = 0; segno < b.nsegs; ++segno) {
         const Segment* seg = &b.segs[segno];
         // The one length check of a block: a segment longer than the bytes that are left is cut to them (Tier-2 gives
-        // segments that fit; the decoder's sentinel write below must not land past the buffer whatever it is given)
+        // segments that fit; the decoder's sentinel write below must not write past the buffer whatever it is given; what a hostile segment makes the decoder read is another matter)
         const OPJ_UINT32 seglen = seg->len < cblk_len - cblkdataindex ? seg->len : cblk_len - cblkdataindex;
 
         /* BYPASS mode */

@@ -1006,7 +1006,7 @@ the reverse 0.86; all the masks gave 0.70, and the state-keep as a bit expressio
 - The kernel ratios are against the earlier source compiled in its own object, the encode ratios against the
   earlier library; the two agree to about 2 %.
 
-## Stage 7: the decoder's MQ decoder (2026-11-22)
+## Stage 6d: the decoder's MQ decoder, MQ-NG (2026-11-22)
 
 The decoder's Tier-1 (`src/t1.cpp`, `src/t1_mq.h`) decodes to OpenJPEG's coefficients with a different MQ decision, in
 two steps after the tests (each its own commit). Stage 1: a context's state is one 32-bit word in its slot (the
@@ -1026,15 +1026,17 @@ segment). The dead `end_of_byte_stream_counter` is gone. The `T1` scratch is 192
 
 **Exactness.** `nj2k_t1_unit` compares the library's Tier-1 with a frozen copy of the decoder before the redesign
 (`tests/unit/t1_frozen.cpp`; coefficients and the refusal of a code-block) on: the 3,927 code-blocks of
-`tests/vectors/t1` (the generated corpus and the 256² study images, dumped by the MQ-NG study's tool), 21,164
+`tests/vectors/t1` (3,777 of the generated corpus and 150 of the 256² study images, dumped from real decodes), 21,164
 generated code-blocks (every size 1..64, the shapes 1024 x 4, 4 x 1024 and kin, every style 0 to 63, bit-planes 0 to
 31, ROI shifts, split chunks, all-0xFF, markers inside a segment, zero-length segments, 109 one-byte segments), 1,500
-with over-long segments (against the frozen decode of the cut lengths), and, with a folder of the study's dumps
-(`NJ2K_T1_VECTORS`, test `t1_unit_more`), 37,424 code-blocks of 115 files (the 35,390 of the mode-switch corpus and the
-six study images: styles 00, 01, 04, 05, 0a, 10, 12, 19, 20, 28, 2f, 34 and 3f). Single decisions are compared with a model
-of ISO 15444-1 C.3.2 written in the test, in the frozen decoder and in the new one: 6.5 million in ctest (every 17th
-interval), 887 million nightly (`t1_exhaustive`: every interval and state, `c_hi` at `qe - 1`, `qe` and `qe + 1`, bit
-counters 0 to 8, next bytes from 00, 7F, 8F, 90, FE, FF). The state table is checked against Table C.2 written out in
+with over-long segments (against the frozen decode of the cut lengths), and, with the full dump set
+(`NJ2K_T1_VECTORS`, test `t1_unit_more`), 37,424 code-blocks of 115 files (the 35,390 of the mode-switch corpus, which
+contains the 3,777 generated ones, plus the 2,034 of the six study images; code-block styles 00, 01, 04, 05, 0a, 10, 12, 19, 20, 28, 2f, 34 and 3f). Single decisions are compared with a model
+of ISO 15444-1 C.3.2 written in the test, in the frozen decoder and in the new one: 6.55 million in ctest (every 17th
+interval and, per state, the intervals around the exchange and renormalisation edges), 887 million nightly (`t1_exhaustive`: every interval and state, `c_hi` at `qe - 1`, `qe` and `qe + 1`, bit
+counters 0 to 8, next bytes from 00, 7F, 8F, 90, FE, FF). Each block is also decoded on a buffer of exactly its bytes and two (the library's rounds up), so a write past the sentinel
+is the sanitizers' to see, and `t1_unit_masks` runs the whole test with the mask form of the decision (GCC's) compiled in.
+The state table is checked against Table C.2 written out in
 the test. The AGG run is checked against the decisions one at a time (2.7 million cases, runs stopped by a column with
 flags). The new fuzz target `fuzz_t1` runs the library and the frozen copy on any bytes; its seeds are real
 code-blocks. All of it passes on MSVC AVX2 (the whole ctest, 126 tests), MSVC SCALAR and clang-cl (`t1_unit` and the
@@ -1046,8 +1048,8 @@ is `nj2k_t1_dec` (`bench/nj2k_t1_dec.cpp`): `t1_decode_cblk` of the library agai
 same flags, over the dumped code-blocks of the study's texture (256², 512², 1,024², lossy and lossless; the viewer's
 upload parameters; the two objects hold the same text before stage 1 and time 0.97 to 1.00 of each other), 9 to 11
 rounds. "Whole decode" is the study's `mqng_profile` (7 decodes a run, 5 alternating runs of each library; the image
-hashes are equal): the new library against the one at 41c4048. The study's tools (`bench/mqng_study`,
-`bench/t1_study`) are not in the repository.
+hashes are equal): the new library against the one at 41c4048. The harness around them (the profile and the
+code-block dumper) is the author's study tooling, recorded in the author's study notes, not in the repository.
 
 Tier-1 time against the frozen decoder (stage 1 / stage 2), lower is faster:
 
@@ -1100,4 +1102,6 @@ lossless and 0.91 lossy at 1,024²). GCC meets the lossy target only with stage 
   the new one can read past the buffer's end. Tier-2 cannot build such a segment (all segments but the last are full
   and their types follow the pass counts), so a stream cannot reach it; the tests and the fuzz target give segments
   as Tier-2 does.
-- No hardware counters: the branch counts are derived (`doc/mqng_study.md`).
+- No hardware counters: the branch counts of the study (a last-outcome predictor over the recorded decision stream:
+  23 to 25 % misses a decision on the LPS-interval branch lossy, 40 to 42 % lossless) are derived, not read; the study's
+  notes are the author's, not in the repository.

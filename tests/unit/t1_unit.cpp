@@ -5,9 +5,10 @@
 // driver) against the frozen reference (the text of src/t1.cpp as it was before the MQ-NG redesign: t1_frozen.cpp).
 // The redesign must leave every coefficient and the refusal of a code-block as they were, so each test runs both
 // decoders on the same input:
-//   1. vectors: the code-blocks of real files as Tier-1 received them, dumped by the MQ-NG study's tool ("MQNG" files:
-//      tests/vectors/t1 holds the blocks of corpus/generated and of the 256 x 256 study images; the 35,390 blocks of
-//      the mode-switch corpus, the conformance files with them, are run when a folder of dumps is named);
+//   1. vectors: the code-blocks of real files as Tier-1 received them, dumped from real decodes ("MQNG" files, tests/vectors/t1/README.md:
+//      tests/vectors/t1 holds 3,927 blocks, those of corpus/generated and of the 256 x 256 study images; the full
+//      dump set, 37,424 blocks (the 35,390 of the mode-switch corpus, conformance files included, and the 2,034 of
+//      the six study images), is run when a folder of dumps is named);
 //   2. generated code-blocks: every size 1..64 a side, the shapes 1024 x 4 and 4 x 1024 and their kin, every
 //      code-block style 0..63, every orientation, bit-planes 0..31 and ROI shifts, split chunks, and adversarial
 //      bytes (all 0xFF, markers 0xFF 0x90 inside a segment, zero-length segments, 109 one-byte segments);
@@ -16,9 +17,10 @@
 //   3. the tables: the 94 MQ states against the standard's Table C.2 written out here;
 //   4. single decisions: one decision from a chosen state, every interval a in [0x8000, 0xffff] and every state (94),
 //      c_hi around qe, every bit counter ct in [0, 8] and the next two bytes (from 00, 7F, 8F, 90, FE, FF), in the frozen
-//      decoder against a model of ISO 15444-1 C.3.2 written out here (and in the redesigned one when it exists): the
+//      decoder against a model of ISO 15444-1 C.3.2 written out here and in the redesigned one (src/t1_mq.h): the
 //      decoded bit, a, c, ct, the byte position and the context's next state agree. The default run takes every 17th
-//      interval and the ends; --exhaustive-full takes every interval and more bytes;
+//      interval, the ends, and at each state the intervals around the exchange (a = 2 qe) and the renormalisation
+//      (a = 0x8000 + qe) edges; --exhaustive-full takes every interval and more bytes;
 //   5. the run of AGG decisions: the cleanup pass's column of an empty stripe taken at once equals the same decisions
 //      one at a time (a, c and the byte position).
 // Usage: nj2k_t1_unit [--exhaustive-full] [--no-exhaustive] [PATH ...]   (PATH: a .blk file or a folder of them)
@@ -28,6 +30,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -145,6 +148,23 @@ struct Runner {
         ++blocks;
         refused += okr ? 0 : 1;
         const std::size_t n = std::size_t(s.w) * s.h;
+        // again on a buffer of exactly the bytes and the two of padding (T1::reserve rounds up, so the sentinel's two
+        // bytes past the data would land in slack): a write past it is the sanitizers' to see
+        bool oke = true;
+        if (okn && okr) {
+            std::unique_ptr<u8[]> exact(new u8[s.bytes.size() + 2]);
+            u8* keep = lib.cblkdata;
+            const std::size_t keep_size = lib.cblkdata_size;
+            lib.cblkdata = exact.get();
+            lib.cblkdata_size = s.bytes.size() + 2;
+            oke = d::t1_decode_cblk(lib, b, quiet) && std::memcmp(ref.t.data, lib.data, n * sizeof(std::int32_t)) == 0;
+            lib.cblkdata = keep;
+            lib.cblkdata_size = keep_size;
+        }
+        if (!oke) {
+            std::fprintf(stderr, "%s: the decode on an exact-size buffer differs (%u x %u style %02x numbps %u roi %u, %zu segs, %zu bytes)\n", what, s.w, s.h, s.cblksty, s.numbps, s.roishift, s.len.size(), s.bytes.size());
+            return false;
+        }
         if (okr != okn || (okr && std::memcmp(ref.t.data, lib.data, n * sizeof(std::int32_t)) != 0)) {
             std::fprintf(stderr, "%s: block differs: %u x %u orient %u numbps %u roi %u style %02x, %zu segments, %zu bytes: result %d / %d\n",
                          what, s.w, s.h, s.orient, s.numbps, s.roishift, s.cblksty, s.len.size(), s.bytes.size(), okr, okn);
@@ -545,37 +565,62 @@ bool one_decision(u32 a, u32 state, u32 chi, u32 clo, u32 ct, const u8* by)
 bool test_single(bool full)
 {
     std::uint64_t n = 0;
+    // every state at the interval a: c_hi around qe, every bit counter, a few low words and byte quadruples
+    auto at = [&](u32 a, u32 state) {
+        const u32 qe = d::kMqcStates[state].qeval;
+        const u32 chis[4] = {qe ? qe - 1 : 0, qe, qe + 1, (a * 2654435761u + state * 40503u) & 0xFFFFu};
+        for (u32 ct = 0; ct <= 8; ++ct) {
+            for (u32 k = 0; k < 4; ++k) {
+                const u32 pick = a * 31u + state * 7u + ct * 13u + k * 5u;
+                const u32 clo = (k & 1) ? 0xFFFFu : (pick * 2246822519u) & 0xFFFFu;
+                const u32 pairs = full ? 4u : 1u;
+                for (u32 p = 0; p < pairs; ++p) {
+                    u32 q = pick * 2654435761u + p * 40503u;
+                    u8 by[4];
+                    for (u8& x : by) {
+                        x = kBytes[(q >> 8) % 6];
+                        q = q * 1664525u + 1013904223u;
+                    }
+                    if (!one_decision(a, state, chis[k], clo, ct, by)) {
+                        return false;
+                    }
+                    ++n;
+                }
+            }
+        }
+        return true;
+    };
     const u32 step = full ? 1u : 17u;
     for (u32 a0 = 0; a0 <= 0x7FFF; a0 += step) {
         for (int end = 0; end < (full || a0 + step > 0x7FFF ? 2 : 1); ++end) {
             const u32 a = end ? 0xFFFFu - a0 : 0x8000u + a0;
             for (u32 state = 0; state < 94; ++state) {
-                const u32 qe = d::kMqcStates[state].qeval;
-                const u32 chis[4] = {qe ? qe - 1 : 0, qe, qe + 1, (a * 2654435761u + state * 40503u) & 0xFFFFu};
-                for (u32 ct = 0; ct <= 8; ++ct) {
-                    for (u32 k = 0; k < 4; ++k) {
-                        const u32 pick = a * 31u + state * 7u + ct * 13u + k * 5u;
-                        const u32 clo = (k & 1) ? 0xFFFFu : (pick * 2246822519u) & 0xFFFFu;
-                        const u32 pairs = full ? 4u : 1u;
-                        for (u32 p = 0; p < pairs; ++p) {
-                            u32 q = pick * 2654435761u + p * 40503u;
-                            u8 by[4];
-                            for (u8& x : by) {
-                                x = kBytes[(q >> 8) % 6];
-                                q = q * 1664525u + 1013904223u;
-                            }
-                            if (!one_decision(a, state, chis[k], clo, ct, by)) {
-                                ++g_failures;
-                                return false;
-                            }
-                            ++n;
-                        }
+                if (!at(a, state)) {
+                    ++g_failures;
+                    return false;
+                }
+            }
+        }
+    }
+    if (!full) {
+        // the intervals where the choices change, state by state (the full run has them all): a - qe < qe (a = 2 qe)
+        // is the conditional exchange, a - qe < 0x8000 (a = 0x8000 + qe) the renormalisation, each with its neighbours
+        for (u32 state = 0; state < 94; ++state) {
+            const u32 qe = d::kMqcStates[state].qeval;
+            const u32 edges[2] = {2 * qe, 0x8000u + qe};
+            for (u32 e : edges) {
+                for (u32 delta = 0; delta < 5; ++delta) {
+                    const u32 a = e + delta - 2;  // e - 2 .. e + 2 (wraps far above 0xFFFF when e < 2: skipped below)
+                    if (a >= 0x8000u && a <= 0xFFFFu && !at(a, state)) {
+                        ++g_failures;
+                        return false;
                     }
                 }
             }
         }
     }
-    std::printf("single decisions: %llu identical (%s)\n", static_cast<unsigned long long>(n), full ? "every interval" : "every 17th interval");
+    std::printf("single decisions: %llu identical (%s)\n", static_cast<unsigned long long>(n),
+                full ? "every interval" : "every 17th interval and the intervals at each state's exchange and renormalisation edges");
     return true;
 }
 

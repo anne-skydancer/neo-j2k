@@ -52,10 +52,11 @@ Stage 5, threads in one image: the library starts no thread; a host lends it an 
 with the same output at any thread count. The host lends only when it has idle cores (stage 5b,
 `doc/api.md`).
 
-Stage 7, the MQ decoder, with the same coefficients: a context's state as one 32-bit word, the decision by selects with
+Stage 6d, the MQ decoder (MQ-NG), with the same coefficients: a context's state as one 32-bit word, the decision by selects with
 the renormalisation always run, and the cleanup pass's runs of empty columns taken at once. One-thread Tier-1 takes
 0.71 to 0.72 of the time lossless and 0.78 to 0.85 lossy with MSVC (0.77 and 0.81 to 0.84 with clang-cl), the whole
-decode 0.71 to 0.73 and 0.80 to 0.88 (`doc/bench.md`, "Stage 7").
+decode 0.71 to 0.73 lossless and 0.80 to 0.88 lossy (MSVC AVX2; MSVC SCALAR 0.72 to 0.74 and 0.82 to 0.88, clang-cl
+0.76 to 0.77 and 0.81 to 0.86; `doc/bench.md`, "Stage 6d").
 
 The encoder takes the settings the Second Life viewer encodes with (RLCP, 64 x 64 code-blocks, 5/3 lossless or
 9/7 with rate layers, the colour transform, 8-bit components of up to 4,096 samples a side), through OpenJPEG's
