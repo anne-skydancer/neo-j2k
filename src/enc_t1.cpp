@@ -113,6 +113,7 @@ struct EncT1 {
     alignas(64) OPJ_INT32 data[kMaxSamples];
     alignas(64) opj_flag_t flags[kFlagCount];
     EncPass passes[kMaxPasses];
+    std::uint8_t reflist[kMaxSamples];  // the refinement pass's (context, bit) pairs, one byte a sample at most (E3)
     std::uint8_t out[1 + kOutCapacity];  // out[0] is the fake byte before the code-block's
 };
 #if defined(_MSC_VER)
@@ -144,27 +145,12 @@ NJ2K_FORCE_INLINE OPJ_UINT32 getctxtno_sc_or_spb_index(OPJ_UINT32 fX, OPJ_UINT32
     return lu;
 }
 
-inline OPJ_UINT32 getctxno_mag(OPJ_UINT32 f) noexcept
-{
-    OPJ_UINT32 tmp = (f & T1_SIGMA_NEIGHBOURS) ? T1_CTXNO_MAG + 1 : T1_CTXNO_MAG;
-    OPJ_UINT32 tmp2 = (f & T1_MU_0) ? T1_CTXNO_MAG + 2 : tmp;
-    return tmp2;
-}
-
 inline std::int16_t getnmsedec_sig(OPJ_UINT32 x, OPJ_UINT32 bitpos) noexcept
 {
     if (bitpos > 0) {
         return kNmsedecSig[(x >> (bitpos)) & ((1 << T1_NMSEDEC_BITS) - 1)];
     }
     return kNmsedecSig0[x & ((1 << T1_NMSEDEC_BITS) - 1)];
-}
-
-inline std::int16_t getnmsedec_ref(OPJ_UINT32 x, OPJ_UINT32 bitpos) noexcept
-{
-    if (bitpos > 0) {
-        return kNmsedecRef[(x >> (bitpos)) & ((1 << T1_NMSEDEC_BITS) - 1)];
-    }
-    return kNmsedecRef0[x & ((1 << T1_NMSEDEC_BITS) - 1)];
 }
 
 // opj_t1_update_flags with vsc = 0
@@ -260,68 +246,91 @@ void enc_sigpass(EncT1* t1, OPJ_INT32 bpno, OPJ_INT32* nmsedec) noexcept
     }
 }
 
-NJ2K_FORCE_INLINE void enc_refpass_step(EncT1* t1, OPJ_UINT32 flags, OPJ_UINT32& flagsUpdated,
-                                        const OPJ_INT32* datap, OPJ_INT32 bpno, OPJ_INT32 one,
-                                        OPJ_INT32* nmsedec, OPJ_UINT32 ci) noexcept
+// The magnitude context of the refinement pass (OpenJPEG's getctxno_mag: MAG + 2 when the sample was refined
+// before (mu), else MAG + 1 when a neighbour is significant, else MAG) as the pair byte's context part, doubled
+// (ctx << 1, the bit goes in bit 0), looked up by (mu << 1 | any neighbour significant) so that no select or branch
+// is left to the compiler. A pair byte holds ctx << 1 | bit, so the contexts must stay under 128.
+constexpr std::uint8_t kMagPair[4] = {T1_CTXNO_MAG * 2, T1_CTXNO_MAG * 2 + 2, T1_CTXNO_MAG * 2 + 4,
+                                      T1_CTXNO_MAG * 2 + 4};
+static_assert(T1_CTXNO_MAG * 2 + 4 < 128, "a refinement pair (ctx << 1 | bit) must fit a byte");
+static_assert(sizeof(EncT1::reflist) == kMaxSamples, "a pass refines each sample at most once");
+
+NJ2K_FORCE_INLINE OPJ_UINT32 mag_pair(OPJ_UINT32 f) noexcept
 {
-    MqEnc* mqc = &t1->mqc;
-    OPJ_UINT32 v;
-    if ((flags & ((T1_SIGMA_THIS | T1_PI_THIS) << ((ci) * 3U))) == (T1_SIGMA_THIS << ((ci) * 3U))) {
-        const OPJ_UINT32 shift_flags = (flags >> ((ci) * 3U));
-        OPJ_UINT32 ctxt = getctxno_mag(shift_flags);
-        OPJ_UINT32 abs_data = smr_abs(*datap);
-        *nmsedec += getnmsedec_ref(abs_data, static_cast<OPJ_UINT32>(bpno));
-        v = (static_cast<OPJ_INT32>(abs_data) & one) ? 1 : 0;
-        mqc->setcurctx(ctxt);
-        mqc->encode(v);
-        flagsUpdated |= T1_MU_THIS << ((ci) * 3U);
-    }
+    const OPJ_UINT32 nb = ((f & T1_SIGMA_NEIGHBOURS) != 0U) ? 1U : 0U;
+    return kMagPair[nb | ((f >> 19) & 2U)];
 }
 
+// One row (ci) of a column of the refinement pass: its (context, bit) pair is stored whatever the row (the byte at
+// list[n] is rewritten by the next pair when the row is not refined), and n advances by 1 when the bit of the
+// column's mask m says it is refined. nmsedec is added masked. ci is a constant in the full stripes' unrolled calls.
+NJ2K_FORCE_INLINE void enc_refpass_row(std::uint8_t* __restrict list, OPJ_UINT32& n, OPJ_UINT32 f, OPJ_UINT32 m,
+                                       const OPJ_INT32* datap, OPJ_UINT32 ci, OPJ_UINT32 one,
+                                       const std::int16_t* nt, OPJ_UINT32 nsh, OPJ_INT32& nm) noexcept
+{
+    const OPJ_UINT32 e = (m >> (4U + 3U * ci)) & 1U;
+    const OPJ_UINT32 x = smr_abs(datap[ci]);
+    const OPJ_UINT32 v = (x & one) ? 1U : 0U;
+    list[n] = static_cast<std::uint8_t>(mag_pair(f >> (3U * ci)) | v);
+    n += e;
+    nm += static_cast<OPJ_INT32>(nt[(x >> nsh) & ((1U << T1_NMSEDEC_BITS) - 1U)]) &
+          static_cast<OPJ_INT32>(0U - e);
+}
+
+// The refinement pass changes no significance or visited bit, so the samples it codes, their order and their
+// contexts are fixed by the flags at its start: one scan lists the (context, bit) pairs of every stripe, the full
+// ones unrolled and the partial last one by rows (t1->reflist, one byte a sample at most), and one loop codes the list.
 void enc_refpass(EncT1* t1, OPJ_INT32 bpno, OPJ_INT32* nmsedec) noexcept
 {
     OPJ_UINT32 i, k;
-    const OPJ_INT32 one = 1 << (bpno + T1_NMSEDEC_FRACBITS);
+    const OPJ_UINT32 w = t1->w, h = t1->h;
+    const OPJ_UINT32 one = 1U << (bpno + T1_NMSEDEC_FRACBITS);
+    const std::int16_t* const nt = bpno > 0 ? kNmsedecRef : kNmsedecRef0;
+    const OPJ_UINT32 nsh = bpno > 0 ? static_cast<OPJ_UINT32>(bpno) : 0U;
     opj_flag_t* f = &T1_FLAGS(0, 0);
     const OPJ_UINT32 extra = 2U;
     const OPJ_INT32* datap = t1->data;
+    std::uint8_t* __restrict const list = t1->reflist;
+    OPJ_UINT32 n = 0;
+    OPJ_INT32 nm = 0;
 
-    *nmsedec = 0;
-    for (k = 0; k < (t1->h & ~3U); k += 4, f += extra) {
-        for (i = 0; i < t1->w; ++i, f++, datap += 4) {
+    for (k = 0; k < (h & ~3U); k += 4, f += extra) {
+        for (i = 0; i < w; ++i, f++, datap += 4) {
             const OPJ_UINT32 flags = *f;
-            OPJ_UINT32 flagsUpdated = flags;
-            if ((flags & (T1_SIGMA_4 | T1_SIGMA_7 | T1_SIGMA_10 | T1_SIGMA_13)) == 0) {
-                /* none significant */
+            // rows that are significant and not visited: sigma at bit 4 + 3r, pi at bit 21 + 3r
+            const OPJ_UINT32 m = flags & ~(flags >> 17) & 0x2490U;
+            if (m == 0U) {
                 continue;
             }
-            if ((flags & (T1_PI_0 | T1_PI_1 | T1_PI_2 | T1_PI_3)) == (T1_PI_0 | T1_PI_1 | T1_PI_2 | T1_PI_3)) {
-                /* all processed by sigpass */
+            enc_refpass_row(list, n, flags, m, datap, 0, one, nt, nsh, nm);
+            enc_refpass_row(list, n, flags, m, datap, 1, one, nt, nsh, nm);
+            enc_refpass_row(list, n, flags, m, datap, 2, one, nt, nsh, nm);
+            enc_refpass_row(list, n, flags, m, datap, 3, one, nt, nsh, nm);
+            *f = flags | (m << 16);
+        }
+    }
+    if (k < h) {
+        const OPJ_UINT32 remaining_lines = h - k;
+        for (i = 0; i < w; ++i, ++f, datap += remaining_lines) {
+            const OPJ_UINT32 flags = *f;
+            const OPJ_UINT32 m = flags & ~(flags >> 17) & 0x2490U;
+            if (m == 0U) {
                 continue;
             }
-
-            enc_refpass_step(t1, flags, flagsUpdated, &datap[0], bpno, one, nmsedec, 0);
-            enc_refpass_step(t1, flags, flagsUpdated, &datap[1], bpno, one, nmsedec, 1);
-            enc_refpass_step(t1, flags, flagsUpdated, &datap[2], bpno, one, nmsedec, 2);
-            enc_refpass_step(t1, flags, flagsUpdated, &datap[3], bpno, one, nmsedec, 3);
-            *f = flagsUpdated;
+            for (OPJ_UINT32 j = 0; j < remaining_lines; j++) {
+                enc_refpass_row(list, n, flags, m, datap, j, one, nt, nsh, nm);
+            }
+            *f = flags | (m << 16);
         }
     }
 
-    if (k < t1->h) {
-        OPJ_UINT32 j;
-        const OPJ_UINT32 remaining_lines = t1->h - k;
-        for (i = 0; i < t1->w; ++i, ++f) {
-            if ((*f & (T1_SIGMA_4 | T1_SIGMA_7 | T1_SIGMA_10 | T1_SIGMA_13)) == 0) {
-                /* none significant */
-                datap += remaining_lines;
-                continue;
-            }
-            for (j = 0; j < remaining_lines; j++, datap++) {
-                enc_refpass_step(t1, *f, *f, &datap[0], bpno, one, nmsedec, j);
-            }
-        }
+    MqEnc* mqc = &t1->mqc;
+    for (OPJ_UINT32 j = 0; j < n; ++j) {
+        const OPJ_UINT32 p = list[j];
+        mqc->setcurctx(p >> 1);
+        mqc->encode(p & 1U);
     }
+    *nmsedec = nm;
 }
 
 // opj_t1_enc_clnpass_step_macro with the viewer's modes (no vertically causal contexts)

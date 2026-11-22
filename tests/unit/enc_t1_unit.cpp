@@ -35,7 +35,11 @@
 //      pass: every pair of row masks (significant early, significant at a middle plane) with sign patterns,
 //      every size 1..64 x 1..64 with a leading bit-plane of its own for each sample and 0 to 25 planes, and dense
 //      blocks of one magnitude (see test_encode_cleanup).
-// Usage: nj2k_enc_t1_unit [--exhaustive-full] [--no-exhaustive]
+//   7. enc_t1_encode through E3 (the refinement pass as a list of (context, bit) pairs and one MQ loop) on blocks
+//      built for the pass: every size 1..64 x 1..64 with 0 to 25 planes and dense, sparse, staggered and striped
+//      significance, every pair of early and late row masks, and dense blocks (see test_encode_refine).
+// Usage: nj2k_enc_t1_unit [--exhaustive-full] [--no-exhaustive] [--refine-only]
+//   --refine-only runs test 7 alone (the mutation checks of E3 use it) and ignores --exhaustive-full and --no-exhaustive.
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
@@ -741,6 +745,178 @@ void test_encode_cleanup()
     d::enc_t1_destroy(neo, alloc);
 }
 
+// E3 (the refinement pass as a list of (context, bit) pairs, then one MQ loop) end to end, on blocks built for it.
+// The pass codes the samples that are significant and not visited by the significance pass, in the order of the
+// stripes, with the magnitude context by the neighbours' significance (14, 15) and by whether the sample was
+// refined before (16: its first refinement and the later ones differ), and the distortion table of plane 0 and
+// of the rest. Three sets:
+//   a. every size 1..64 x 1..64 (edge sizes in all 8 orientation and wavelet combinations), 0 to 25 bit-planes
+//      (the largest sample forced to it), four kinds of significance: dense (nearly every sample leads in the top
+//      planes, so that every plane refines full columns of samples that were refined before), sparse (isolated
+//      leading samples whose neighbours are not significant: context 14 at the first refinement, 16 after),
+//      staggered (each sample leads at a plane of its own: first refinements and later ones in the same column)
+//      and stripes (whole rows or columns lead), with partial last stripes in the heights that are no multiple of four;
+//   b. every (early rows, late rows) pair of 4-bit row masks, four sign patterns, all orientations and both
+//      wavelets over the pairs, on whole and partial stripes: the early rows lead three planes above the middle
+//      plane, so they refine in two or more passes (context 16), the late rows lead at the middle plane (first
+//      refinement) and the others are small (coded little or not at all);
+//   c. dense blocks of 64 x 64, every sample the same magnitude with signs by a pattern, 1 to 25 planes (the
+//      columns whose four rows are all refined).
+void test_encode_refine()
+{
+    const nj2k::detail::Allocator alloc = nj2k::detail::Allocator::system();
+    fz::EncT1* ref = fz::enc_t1_create(alloc);
+    d::EncT1* neo = d::enc_t1_create(alloc);
+    CHECK_MSG(ref && neo, "no memory");
+    if (!ref || !neo) {
+        return;
+    }
+    Rng rng(20261125);
+    std::uint64_t blocks_a = 0, blocks_b = 0, blocks_c = 0;
+    auto sample = [&rng](std::uint32_t lvl, bool neg) {
+        const std::int32_t m = static_cast<std::int32_t>((static_cast<std::uint64_t>(lvl) << 6) | rng.u(64));
+        return neg ? -m : m;
+    };
+    // a. every size, four kinds of significance
+    u32 per_plane[26] = {};
+    {
+        const u32 edge[] = {1, 2, 3, 4, 5, 7, 8, 9, 15, 16, 17, 31, 32, 33, 63, 64};
+        for (u32 h = 1; h <= 64 && g_failures == 0; ++h) {
+            for (u32 w = 1; w <= 64 && g_failures == 0; ++w) {
+                bool is_edge = false, is_edge_w = false;
+                for (u32 e : edge) {
+                    is_edge |= e == h;
+                    is_edge_w |= e == w;
+                }
+                const u32 reps = (is_edge && is_edge_w) ? 8u : 1u;
+                for (u32 r = 0; r < reps && g_failures == 0; ++r) {
+                    const u32 combo = reps == 8 ? r : (w * 3u + h) % 8u;
+                    const u32 planes = (w * 64u + h + r * 7u) % 26u;  // 0 and 1 to 25, in rotation
+                    const u32 kind = (w + 2u * h + r) % 4u;
+                    std::vector<std::int32_t> v(w * h);
+                    for (u32 y = 0; y < h; ++y) {
+                        for (u32 x = 0; x < w; ++x) {
+                            std::uint32_t lvl = 0;
+                            if (planes != 0) {
+                                const u32 top = planes - 1;  // the leading plane of the largest sample
+                                switch (kind) {
+                                case 0:  // dense: nearly every sample leads in the top plane
+                                    lvl = rng.u(8) == 0 ? rng.u(1u << top) : ((1u << top) | rng.u(1u << top));
+                                    break;
+                                case 1:  // sparse: an isolated leading sample every 4th row and 5th column
+                                    lvl = (y % 4 == 1 && x % 5 == 2) ? ((1u << top) | rng.u(1u << top))
+                                                                     : rng.u(1u << (top / 2));
+                                    break;
+                                case 2: {  // staggered: a leading plane of its own
+                                    const u32 lead = rng.u(planes);
+                                    lvl = (1u << lead) | (lead ? rng.u(1u << lead) : 0u);
+                                    break;
+                                }
+                                default:  // stripes: whole rows or columns lead, the others stay small
+                                    lvl = ((y & 4) != 0 || (x % 3) == 0) ? ((1u << top) | rng.u(1u << top))
+                                                                         : rng.u(1u << (top / 2));
+                                    break;
+                                }
+                            }
+                            v[y * w + x] = sample(lvl, rng.u(2) != 0);
+                        }
+                    }
+                    if (planes != 0) {
+                        const u32 at = rng.u(w * h);
+                        const std::uint32_t lvl = (1u << (planes - 1)) | (planes > 1 ? rng.u(1u << (planes - 1)) : 0u);
+                        v[at] = sample(lvl, rng.u(2) != 0);
+                    }
+                    if (!encode_samples(ref, neo, v, w, h, combo & 3u, (combo >> 2) & 1u, rng, alloc)) {
+                        std::fprintf(stderr,
+                                     "enc_t1_encode differs (refinement a): %u x %u, %u planes, kind %u, "
+                                     "orientation %u, %s\n",
+                                     w, h, planes, kind, combo & 3u, ((combo >> 2) & 1u) ? "5/3" : "9/7");
+                        ++g_failures;
+                    }
+                    ++per_plane[planes];
+                    ++blocks_a;
+                }
+            }
+        }
+    }
+    // b. every pair of row masks
+    const u32 sizes[][2] = {{6, 4}, {5, 8}, {64, 4}, {7, 5}, {9, 3}, {4, 1}, {3, 7}, {12, 9}, {64, 64}};
+    const u32 nsizes = sizeof sizes / sizeof sizes[0];
+    {
+        const u32 planes[] = {1, 3, 8};  // the middle plane of the late rows; the early rows lead three planes above
+        for (u32 si = 0; si < nsizes && g_failures == 0; ++si) {
+            const u32 w = sizes[si][0], h = sizes[si][1];
+            std::vector<std::int32_t> v(w * h);
+            for (u32 early = 0; early < 16 && g_failures == 0; ++early) {
+                for (u32 late = 0; late < 16 && g_failures == 0; ++late) {
+                    const u32 sign_kind = (early * 16 + late) % 4;  // all positive, all negative, checkerboard, random
+                    const u32 pl = planes[(early + late + si) % 3];
+                    for (u32 y = 0; y < h; ++y) {
+                        for (u32 x = 0; x < w; ++x) {
+                            const u32 r = (y + x) & 3;
+                            std::uint32_t lvl;
+                            if ((early >> r) & 1) {
+                                lvl = (1u << (pl + 3)) | rng.u(1u << (pl + 3));
+                            } else if ((late >> r) & 1) {
+                                lvl = (1u << pl) | rng.u(1u << pl);
+                            } else {
+                                lvl = rng.u(1u << (pl > 0 ? pl - 1 : 0));
+                            }
+                            const bool neg = sign_kind == 0   ? false
+                                             : sign_kind == 1 ? true
+                                             : sign_kind == 2 ? ((x ^ y) & 1) != 0
+                                                              : rng.u(2) != 0;
+                            v[y * w + x] = sample(lvl, neg);
+                        }
+                    }
+                    const u32 orient = (early + late) & 3, rev = ((early ^ late) >> 2) & 1;
+                    if (!encode_samples(ref, neo, v, w, h, orient, rev, rng, alloc)) {
+                        std::fprintf(stderr,
+                                     "enc_t1_encode differs (refinement b): %u x %u, early %u, late %u, signs %u, "
+                                     "orientation %u, %s\n",
+                                     w, h, early, late, sign_kind, orient, rev ? "5/3" : "9/7");
+                        ++g_failures;
+                    }
+                    ++blocks_b;
+                }
+            }
+        }
+    }
+    // c. dense blocks of one magnitude
+    for (u32 k = 0; k < 100 && g_failures == 0; ++k) {
+        const u32 w = 64, h = 64;
+        const u32 planes = 1 + k % 25;
+        const u32 pattern = k / 25;  // all positive, all negative, rows alternate, columns alternate
+        std::vector<std::int32_t> v(w * h);
+        for (u32 y = 0; y < h; ++y) {
+            for (u32 x = 0; x < w; ++x) {
+                const bool neg = pattern == 1 || (pattern == 2 && (y & 1)) || (pattern == 3 && (x & 1));
+                v[y * w + x] = sample((1u << planes) - 1u, neg);
+            }
+        }
+        if (!encode_samples(ref, neo, v, w, h, k & 3u, (k >> 2) & 1u, rng, alloc)) {
+            std::fprintf(stderr, "enc_t1_encode differs (refinement c): %u planes, pattern %u\n", planes, pattern);
+            ++g_failures;
+        }
+        ++blocks_c;
+    }
+    if (g_failures == 0) {
+        CHECK_MSG(blocks_b == nsizes * 256u, "refinement set b: %llu blocks", static_cast<unsigned long long>(blocks_b));
+        u32 low = ~0u;
+        for (u32 p = 0; p <= 25; ++p) {
+            low = per_plane[p] < low ? per_plane[p] : low;
+        }
+        CHECK_MSG(low >= 100, "refinement set a: a plane count has only %u blocks", low);
+        CHECK_MSG(blocks_c == 100, "refinement set c: %llu blocks", static_cast<unsigned long long>(blocks_c));
+    }
+    CHECK_MSG(g_driver_false == 0, "%u blocks overflowed the output buffer", g_driver_false);
+    std::printf("enc_t1_encode, refinement-pass blocks: %llu + %llu + %llu code-blocks identical\n",
+                static_cast<unsigned long long>(blocks_a), static_cast<unsigned long long>(blocks_b),
+                static_cast<unsigned long long>(blocks_c));
+    fz::enc_t1_destroy(ref, alloc);
+    d::enc_t1_destroy(neo, alloc);
+}
+
 void test_encode()
 {
     const nj2k::detail::Allocator alloc = nj2k::detail::Allocator::system();
@@ -798,17 +974,23 @@ int main(int argc, char** argv)
     nj2k::test::console_reports();
     bool full = false;
     bool exhaustive = true;
+    bool refine_only = false;
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--exhaustive-full") == 0) {
             full = true;
+        } else if (std::strcmp(argv[i], "--refine-only") == 0) {
+            refine_only = true;
         } else if (std::strcmp(argv[i], "--no-exhaustive") == 0) {
             exhaustive = false;
         } else {
-            std::fprintf(stderr, "usage: nj2k_enc_t1_unit [--exhaustive-full] [--no-exhaustive]\n");
+            std::fprintf(stderr, "usage: nj2k_enc_t1_unit [--exhaustive-full] [--no-exhaustive] [--refine-only]\n");
             return 2;
         }
     }
-    if (full) {
+    if (refine_only) {
+        // E3's blocks alone (what the mutation checks run)
+        test_encode_refine();
+    } else if (full) {
         // the nightly run: only the exhaustive comparisons
         test_preprocess(true);
         test_single(true);
@@ -821,6 +1003,7 @@ int main(int argc, char** argv)
         test_encode();
         test_encode_planes();
         test_encode_cleanup();
+        test_encode_refine();
     }
     if (g_failures) {
         std::fprintf(stderr, "enc_t1_unit: %d failures\n", g_failures);
