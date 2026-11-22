@@ -1,3 +1,6 @@
+<!-- SPDX-License-Identifier: BSD-2-Clause -->
+<!-- Copyright (c) 2026, Anne Skydancer (neo-j2k) -->
+
 # Next-Generation codec program (alternative) vs the staged MQ plans
 
 Status: under comparison, nothing decided. Written 2026-11-22.

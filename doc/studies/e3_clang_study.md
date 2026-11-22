@@ -1,3 +1,6 @@
+<!-- SPDX-License-Identifier: BSD-2-Clause -->
+<!-- Copyright (c) 2026, Anne Skydancer (neo-j2k) -->
+
 # E3 on clang: the follow-up that did not pay (archive)
 
 Status: closed, 2026-11-23. Archived at the tags `archive/bench-clang-linux` (variants harness and the Linux

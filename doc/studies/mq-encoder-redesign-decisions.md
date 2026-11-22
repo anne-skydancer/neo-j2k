@@ -1,3 +1,6 @@
+<!-- SPDX-License-Identifier: BSD-2-Clause -->
+<!-- Copyright (c) 2026, Anne Skydancer (neo-j2k) -->
+
 # MQ encoder redesign: owner decisions
 
 Status: decided, not started. Idea A of two being compared (idea B is still to come).
