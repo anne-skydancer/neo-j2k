@@ -1097,11 +1097,11 @@ lossless and 0.91 lossy at 1,024²). GCC meets the lossy target only with stage 
   code-blocks, of which the committed vectors hold the generated corpus's.
 - The 35,390 code-blocks of the conformance set are not committed (18 MB of dumps): `NJ2K_T1_VECTORS` runs them where
   they exist. The fuzz seeds are 28 code-blocks of the committed vectors.
-- Observation, not changed: an arithmetic-coded pass started on a segment that was initialised for raw (BYPASS)
-  decoding (a cleanup pass in a segment the style types raw) reads the coder's stale registers, and the old decoder and
-  the new one can read past the buffer's end. Tier-2 cannot build such a segment (all segments but the last are full
-  and their types follow the pass counts), so a stream cannot reach it; the tests and the fuzz target give segments
-  as Tier-2 does.
+- Observation, fixed in its own commit: an arithmetic-coded pass started on a segment that was initialised for raw
+  (BYPASS) decoding (a cleanup pass in a segment the style types raw) ran the coder on registers nobody initialised, and
+  OpenJPEG's text, the frozen copy and the first version here could read past the buffer's end. Tier-2 cannot build such
+  a segment (all segments but the last are full and their types follow the pass counts), so the guard (a raw segment's
+  passes end at its cleanup pass) changes results only for streams Tier-2 cannot produce.
 - No hardware counters: the branch counts of the study (a last-outcome predictor over the recorded decision stream:
   23 to 25 % misses a decision on the LPS-interval branch lossy, 40 to 42 % lossless) are derived, not read; the study's
   notes are the author's, not in the repository.

@@ -80,6 +80,7 @@ struct Rng {
 struct Spec {
     u32 w = 0, h = 0, numbps = 0, orient = 0, roishift = 0, cblksty = 0;
     std::vector<u32> len, passes;  // the segments
+    std::vector<u32> ref_passes;   // the pass counts the frozen reference is given, when they differ (raw segments with a cleanup pass)
     std::vector<u32> ref_len;      // the lengths the frozen reference is given, when the segments are longer than the bytes
     std::vector<u8> bytes;         // the chunks' bytes, gathered
     u32 split = 1;                 // the bytes arrive in this many chunks
@@ -122,6 +123,9 @@ struct Runner {
         ref_segs = segs;
         for (std::size_t i = 0; i < s.ref_len.size(); ++i) {
             ref_segs[i].len = s.ref_len[i];
+        }
+        for (std::size_t i = 0; i < s.ref_passes.size(); ++i) {
+            ref_segs[i].numpasses = ref_segs[i].real_num_passes = s.ref_passes[i];
         }
         b = d::T1Block{s.w, s.h, s.numbps, s.orient, s.roishift, s.cblksty, chunks.data(),
                        static_cast<u32>(chunks.size()), segs.data(), static_cast<u32>(segs.size())};
@@ -414,6 +418,43 @@ void test_overlong()
     }
     std::printf("overlong segments: %llu code-blocks identical to the frozen decode of the cut lengths\n",
                 static_cast<unsigned long long>(r.blocks));
+}
+
+// A segment that BYPASS types raw holds significance and refinement passes only (Tier-2 gives at most two). Hand-built
+// ones with a third, a cleanup pass, would start the arithmetic decoder on registers nobody initialised: the old text read
+// past the bytes there. The library ends such a segment's passes at the cleanup pass, so it equals the frozen decode of
+// the same block with the raw segments' passes cut to two (and nothing else differs).
+void test_raw_cleanup()
+{
+    Runner r;
+    Rng rng(99);
+    u32 raw_segments = 0;
+    for (u32 i = 0; i < 600; ++i) {
+        Spec s;
+        s.w = 1 + rng.u(64), s.h = 1 + rng.u(64);
+        s.cblksty = d::kCblkLazy | (rng.u(2) ? d::kCblkReset : 0) | (rng.u(2) ? d::kCblkVsc : 0) | (rng.u(2) ? d::kCblkSegsym : 0);
+        s.orient = rng.u(4);
+        s.numbps = 5 + rng.u(10);
+        const u32 nsegs = 2 + rng.u(7);
+        u32 total = 0;
+        for (u32 k = 0; k < nsegs; ++k) {
+            const u32 len = rng.u(s.w * s.h / 3 + 24);
+            const bool raw = k % 2 == 1;
+            s.len.push_back(len);
+            s.passes.push_back(k == 0 ? 10u : raw ? 3u : 1u);
+            s.ref_passes.push_back(k == 0 ? 10u : raw ? 2u : 1u);
+            raw_segments += raw;
+            total += len;
+        }
+        s.bytes.resize(total);
+        fill_bytes(s.bytes, rng, rng.u(7));
+        if (!r.run(s, "raw segment with a cleanup pass")) {
+            ++g_failures;
+            return;
+        }
+    }
+    std::printf("raw segments with a cleanup pass: %llu code-blocks (%u raw segments) identical to the frozen decode with two passes\n",
+                static_cast<unsigned long long>(r.blocks), raw_segments);
 }
 
 // ---- 3. the tables ----
@@ -714,6 +755,7 @@ int main(int argc, char** argv)
         }
         test_generated();
         test_overlong();
+        test_raw_cleanup();
         if (exhaustive) {
             test_single(false);
         }

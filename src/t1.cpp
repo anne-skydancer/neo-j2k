@@ -1121,6 +1121,12 @@ bool t1_decode_cblk(T1& t1_ref, const T1Block& b, const Messages& msg) noexcept
         cblkdataindex += seglen;
 
         for (OPJ_UINT32 passno = 0; (passno < seg->real_num_passes) && (bpno_plus_one >= 1); ++passno) {
+            // A segment that BYPASS types raw holds significance and refinement passes only (Tier-2 gives it at most two).
+            // A cleanup pass would run the arithmetic decoder on registers nobody initialised and could read past the
+            // bytes; OpenJPEG does that. The passes of such a segment end here.
+            if (type == T1_TYPE_RAW && passtype == 2) {
+                break;
+            }
             switch (passtype) {
             case 0:
                 if (type == T1_TYPE_RAW) {
