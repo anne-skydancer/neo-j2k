@@ -113,6 +113,7 @@ struct EncT1 {
     alignas(64) OPJ_INT32 data[kMaxSamples];
     alignas(64) opj_flag_t flags[kFlagCount];
     EncPass passes[kMaxPasses];
+    std::uint8_t reflist[kMaxSamples];  // the refinement pass's (context, bit) pairs (E3)
     std::uint8_t out[1 + kOutCapacity];  // out[0] is the fake byte before the code-block's
 };
 #if defined(_MSC_VER)
@@ -278,34 +279,70 @@ NJ2K_FORCE_INLINE void enc_refpass_step(EncT1* t1, OPJ_UINT32 flags, OPJ_UINT32&
     }
 }
 
+// the magnitude context of getctxno_mag as bit arithmetic: MAG + 2 when the sample was refined before (mu),
+// else MAG + 1 when any neighbour is significant, else MAG
+NJ2K_FORCE_INLINE OPJ_UINT32 getctxno_mag_arith(OPJ_UINT32 f) noexcept
+{
+    const OPJ_UINT32 nb = ((f & T1_SIGMA_NEIGHBOURS) != 0U) ? 1U : 0U;
+    const OPJ_UINT32 mu = (f >> 20) & 1U;
+    return T1_CTXNO_MAG + ((nb & ~mu) | (mu << 1));
+}
+
+// one row of a full-stripe column of the refinement pass: its (context, bit) pair is stored whatever the row
+// (the byte at list[n] is rewritten by the next pair when the row is not refined), and n advances by 1 when
+// the bit e of the column's mask m says it is refined. nmsedec is added masked.
+template <OPJ_UINT32 ci>
+NJ2K_FORCE_INLINE void enc_refpass_row(std::uint8_t* list, OPJ_UINT32& n, OPJ_UINT32 f, OPJ_UINT32 m,
+                                       const OPJ_INT32* datap, OPJ_UINT32 one, const std::int16_t* nt,
+                                       OPJ_UINT32 nsh, OPJ_INT32& nm) noexcept
+{
+    const OPJ_UINT32 e = (m >> (4U + 3U * ci)) & 1U;
+    const OPJ_UINT32 x = smr_abs(datap[ci]);
+    const OPJ_UINT32 v = (x & one) ? 1U : 0U;
+    list[n] = static_cast<std::uint8_t>((getctxno_mag_arith(f >> (3U * ci)) << 1) | v);
+    n += e;
+    nm += static_cast<OPJ_INT32>(nt[(x >> nsh) & ((1U << T1_NMSEDEC_BITS) - 1U)]) &
+          static_cast<OPJ_INT32>(0U - e);
+}
+
+// The refinement pass changes no significance or visited bit, so the samples it codes, their order and their
+// contexts are fixed by the flags at its start: one scan lists the (context, bit) pairs of the full stripes
+// (t1->reflist, one byte ctx << 1 | bit, at most one pair a sample), one loop codes the list, and the partial
+// last stripe, whose pairs come after in the stream, is coded as before.
 void enc_refpass(EncT1* t1, OPJ_INT32 bpno, OPJ_INT32* nmsedec) noexcept
 {
     OPJ_UINT32 i, k;
-    const OPJ_INT32 one = 1 << (bpno + T1_NMSEDEC_FRACBITS);
+    const OPJ_UINT32 one = 1U << (bpno + T1_NMSEDEC_FRACBITS);
+    const std::int16_t* const nt = bpno > 0 ? kNmsedecRef : kNmsedecRef0;
+    const OPJ_UINT32 nsh = bpno > 0 ? static_cast<OPJ_UINT32>(bpno) : 0U;
     opj_flag_t* f = &T1_FLAGS(0, 0);
     const OPJ_UINT32 extra = 2U;
     const OPJ_INT32* datap = t1->data;
+    std::uint8_t* const list = t1->reflist;
+    OPJ_UINT32 n = 0;
+    OPJ_INT32 nm = 0;
 
-    *nmsedec = 0;
     for (k = 0; k < (t1->h & ~3U); k += 4, f += extra) {
         for (i = 0; i < t1->w; ++i, f++, datap += 4) {
             const OPJ_UINT32 flags = *f;
-            OPJ_UINT32 flagsUpdated = flags;
-            if ((flags & (T1_SIGMA_4 | T1_SIGMA_7 | T1_SIGMA_10 | T1_SIGMA_13)) == 0) {
-                /* none significant */
+            // rows that are significant and not visited: sigma at bit 4 + 3r, pi at bit 21 + 3r
+            const OPJ_UINT32 m = flags & ~(flags >> 17) & 0x2490U;
+            if (m == 0U) {
                 continue;
             }
-            if ((flags & (T1_PI_0 | T1_PI_1 | T1_PI_2 | T1_PI_3)) == (T1_PI_0 | T1_PI_1 | T1_PI_2 | T1_PI_3)) {
-                /* all processed by sigpass */
-                continue;
-            }
-
-            enc_refpass_step(t1, flags, flagsUpdated, &datap[0], bpno, one, nmsedec, 0);
-            enc_refpass_step(t1, flags, flagsUpdated, &datap[1], bpno, one, nmsedec, 1);
-            enc_refpass_step(t1, flags, flagsUpdated, &datap[2], bpno, one, nmsedec, 2);
-            enc_refpass_step(t1, flags, flagsUpdated, &datap[3], bpno, one, nmsedec, 3);
-            *f = flagsUpdated;
+            enc_refpass_row<0>(list, n, flags, m, datap, one, nt, nsh, nm);
+            enc_refpass_row<1>(list, n, flags, m, datap, one, nt, nsh, nm);
+            enc_refpass_row<2>(list, n, flags, m, datap, one, nt, nsh, nm);
+            enc_refpass_row<3>(list, n, flags, m, datap, one, nt, nsh, nm);
+            *f = flags | (m << 16);
         }
+    }
+
+    MqEnc* mqc = &t1->mqc;
+    for (OPJ_UINT32 j = 0; j < n; ++j) {
+        const OPJ_UINT32 p = list[j];
+        mqc->setcurctx(p >> 1);
+        mqc->encode(p & 1U);
     }
 
     if (k < t1->h) {
@@ -318,10 +355,11 @@ void enc_refpass(EncT1* t1, OPJ_INT32 bpno, OPJ_INT32* nmsedec) noexcept
                 continue;
             }
             for (j = 0; j < remaining_lines; j++, datap++) {
-                enc_refpass_step(t1, *f, *f, &datap[0], bpno, one, nmsedec, j);
+                enc_refpass_step(t1, *f, *f, &datap[0], bpno, static_cast<OPJ_INT32>(one), &nm, j);
             }
         }
     }
+    *nmsedec = nm;
 }
 
 // opj_t1_enc_clnpass_step_macro with the viewer's modes (no vertically causal contexts)
