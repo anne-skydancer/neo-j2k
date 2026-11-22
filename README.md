@@ -161,7 +161,7 @@ largest component has at least 2^18 samples (512 x 512).
 
 The Second Life viewer's upload settings, three components, byte for byte OpenJPEG's codestream. Load 28 %
 mean. This table is from before the MQ coder redesign (stage 6c in `doc/bench.md`), which made the one-thread
-encode about 0.61 to 0.67 of these times (1,024²: 183.7 ms lossy and 178.8 ms lossless, against OpenJPEG's 240.4
+encode about 0.60 to 0.65 of these times (1,024²: 183.7 ms lossy and 178.8 ms lossless, against OpenJPEG's 240.4
 and 253.9 in a later run). The adaptive multi-core results follow in `doc/bench.md`.
 
 | Size | Mode | OpenJPEG ms | neo-j2k ms | Ratio | Peak MB, OpenJPEG / neo-j2k |

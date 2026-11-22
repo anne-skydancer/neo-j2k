@@ -920,8 +920,8 @@ state machine, are the profitable lanes. No encoder-only AVX2 path is kept witho
 
 ## Stage 6c: the encoder's MQ coder (2026-11-22)
 
-The encoder's MQ coder (`src/enc_mq.h`) gives OpenJPEG's output in a different formulation, in two commits after
-the tests: renormalisation by count-leading-zeros (`mq_shifts`, shared with the decoder through `t1.h`), then a
+The encoder's MQ coder (`src/enc_mq.h`) gives OpenJPEG's output in a different formulation, in two steps after
+the tests (each its own commit, followed by a review-fix commit): renormalisation by count-leading-zeros (`mq_shifts`, shared with the decoder through `t1.h`), then a
 context's state as a byte index into a 376-byte compile-time table (`kMqEncStates`, `enc_luts.h`) with the
 decision (interval, conditional exchange, state update) as selects. A decision has no data-dependent branch
 left; the byte-out loop's compare and the byte-out itself are the only ones. The per-block context state
