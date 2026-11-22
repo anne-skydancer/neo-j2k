@@ -128,7 +128,8 @@ inline std::uint8_t getctxno_zc(const MqEnc* mqc, OPJ_UINT32 f) noexcept
     return mqc->lut_ctxno_zc_orient[(f & T1_SIGMA_NEIGHBOURS)];
 }
 
-NJ2K_FORCE_INLINE OPJ_UINT32 getctxtno_sc_or_spb_index(OPJ_UINT32 fX, OPJ_UINT32 pfX, OPJ_UINT32 nfX, OPJ_UINT32 ci) noexcept
+NJ2K_FORCE_INLINE OPJ_UINT32 getctxtno_sc_or_spb_index(OPJ_UINT32 fX, OPJ_UINT32 pfX, OPJ_UINT32 nfX,
+                                                       OPJ_UINT32 ci) noexcept
 {
     OPJ_UINT32 lu = (fX >> (ci * 3U)) & (T1_SIGMA_1 | T1_SIGMA_3 | T1_SIGMA_5 | T1_SIGMA_7);
 

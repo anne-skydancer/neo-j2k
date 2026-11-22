@@ -630,13 +630,18 @@ void test_encode_cleanup()
                             } else {
                                 lvl = rng.u(1u << pl);
                             }
-                            const bool neg = sign_kind == 0 ? false : sign_kind == 1 ? true : sign_kind == 2 ? ((x ^ y) & 1) != 0 : rng.u(2) != 0;
+                            const bool neg = sign_kind == 0   ? false
+                                             : sign_kind == 1 ? true
+                                             : sign_kind == 2 ? ((x ^ y) & 1) != 0
+                                                              : rng.u(2) != 0;
                             v[y * w + x] = sample(lvl, neg);
                         }
                     }
                     const u32 orient = (hi + mid) & 3, rev = ((hi ^ mid) >> 2) & 1;
                     if (!encode_samples(ref, neo, v, w, h, orient, rev, rng, alloc)) {
-                        std::fprintf(stderr, "enc_t1_encode differs (cleanup a): %u x %u, high %u, mid %u, signs %u, orientation %u, %s\n",
+                        std::fprintf(stderr,
+                                     "enc_t1_encode differs (cleanup a): %u x %u, high %u, mid %u, signs %u, "
+                                     "orientation %u, %s\n",
                                      w, h, hi, mid, sign_kind, orient, rev ? "5/3" : "9/7");
                         ++g_failures;
                     }
@@ -662,7 +667,8 @@ void test_encode_cleanup()
                     // the plane count: 0 (all samples under 2^6) and 1 to 25, in rotation
                     const u32 planes = (w * 64u + h + r * 7u) % 26u;
                     std::vector<std::int32_t> v(w * h);
-                    const u32 style = rng.u(4);  // leading planes: free; halved off the diagonal ((x + y) & 3 != 0); all high; mostly 0 or 1
+                    // leading planes: free; halved off the diagonal ((x + y) & 3 != 0); all high; mostly 0 or 1
+                    const u32 style = rng.u(4);
                     const u32 top_at = rng.u(w * h);
                     for (u32 y = 0; y < h; ++y) {
                         for (u32 x = 0; x < w; ++x) {
@@ -687,8 +693,10 @@ void test_encode_cleanup()
                         v[top_at] = sample(lvl, rng.u(2) != 0);
                     }
                     if (!encode_samples(ref, neo, v, w, h, combo & 3u, (combo >> 2) & 1u, rng, alloc)) {
-                        std::fprintf(stderr, "enc_t1_encode differs (cleanup b): %u x %u, %u planes, style %u, orientation %u, %s\n", w, h,
-                                     planes, style, combo & 3u, ((combo >> 2) & 1u) ? "5/3" : "9/7");
+                        std::fprintf(stderr,
+                                     "enc_t1_encode differs (cleanup b): %u x %u, %u planes, style %u, "
+                                     "orientation %u, %s\n",
+                                     w, h, planes, style, combo & 3u, ((combo >> 2) & 1u) ? "5/3" : "9/7");
                         ++g_failures;
                     }
                     ++per_plane[planes];
@@ -725,8 +733,9 @@ void test_encode_cleanup()
         CHECK_MSG(blocks_c == 100, "cleanup set c: %llu blocks", static_cast<unsigned long long>(blocks_c));
     }
     CHECK_MSG(g_driver_false == 0, "%u blocks overflowed the output buffer", g_driver_false);
-    std::printf("enc_t1_encode, cleanup-pass blocks: %llu + %llu + %llu code-blocks identical\n", static_cast<unsigned long long>(blocks_a),
-                static_cast<unsigned long long>(blocks_b), static_cast<unsigned long long>(blocks_c));
+    std::printf("enc_t1_encode, cleanup-pass blocks: %llu + %llu + %llu code-blocks identical\n",
+                static_cast<unsigned long long>(blocks_a), static_cast<unsigned long long>(blocks_b),
+                static_cast<unsigned long long>(blocks_c));
     fz::enc_t1_destroy(ref, alloc);
     d::enc_t1_destroy(neo, alloc);
 }
