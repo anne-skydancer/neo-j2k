@@ -997,9 +997,9 @@ first run (the masks, with the next state by mask) on the same harness:
 The byte load is 2.7 to 3.9 % lower than the masks on all four GCC jobs. Where the build ends up:
 
 - GCC 14 AVX2 meets the -38.0 % target (-43.5 % / -40.1 %); clang is at it (-40.5 % to -36.0 %).
-- **GCC 15, the compiler of the `linux-gcc` preset, AVX2 ends at -34.0 % to -31.0 %**, above the -38.0 % target; the
+- **GCC 15, the compiler of the `linux-gcc` preset, AVX2 ends at -34.4 % to -31.5 %**, above the -38.0 % target; the
   owner accepted about -30.0 % or better.
-- **GCC 15 SCALAR ends at -25.0 % to -22.0 %**, above the accepted -30.0 %, and GCC 14 SCALAR at -33.0 % to -31.0 %. No
+- **GCC 15 SCALAR ends at -24.7 % to -22.5 %**, above the accepted -30.0 %, and GCC 14 SCALAR at -33.1 % to -30.6 %. No
   candidate gained there (below). The same masks cost 8 to 10 percentage points more on GCC 15 than on GCC 14.
 
 **The candidates (relative ranking only).** The second CI run built 14 candidate formulations of the GCC path,
@@ -1103,8 +1103,8 @@ lossless equal or 1 to 2 % faster. It stays.
 
 GCC turns the select form back into branches (stage 1 with it: +2.0 % to +5.0 % against today's Tier-1 on lossy, -8.0 % to -7.0 %
 on lossless), so for GCC the decision computes the same function with masks and a shift (the next-state index is
-`(w >> (17 + 7 * flip)) & 0x7f`, the state kept or replaced by a mask): -10.0 % to -6.0 % lossy and -23.0 % to -21.0 % lossless at
-stage 1, -19.0 % to -12.0 % and -24.0 % to -23.0 % at stage 2. clang takes the select form (the masks on clang-cl are worse: -21.0 %
+`(w >> (17 + 7 * flip)) & 0x7f`, the state kept or replaced by a mask): -9.9 % to -6.1 % lossy and -23.3 % to -21.2 % lossless at
+stage 1, -19.1 % to -11.9 % and -24.3 % to -22.6 % at stage 2. clang takes the select form (the masks on clang-cl are worse: -21.0 %
 lossless and -9.0 % lossy at 1,024²). Stage 1 alone is -9.9 % at 512² and -6.6 % at 1,024² on lossy GCC, the latter above the -9.0 % target; stage 2 brings
 them to -19.1 % and -18.3 %.
 
@@ -1353,8 +1353,8 @@ The changes against the frozen reference behind them, E2 against main (the media
 | clang, SCALAR | -46.9 % / -44.4 % | -43.6 % / -41.5 % | n/a |
 
 E2 gains about 5 to 6 % on all six Linux builds (-6.4 % to -4.6 %; the three runs of a job agree within 0.5 percentage points), clang
-included, unlike E1, which had nothing to gain with clang. gcc-15 SCALAR on that EPYC reads -27.0 % to -26.0 % on main and -31.0 % to
--30.0 % with E2 (the level accepted in Stage 6c is about -30.0 %).
+included, unlike E1, which had nothing to gain with clang. gcc-15 SCALAR on that EPYC reads -27.0 % to -25.6 % on main and -31.4 % to
+-29.8 % with E2 (the level accepted in Stage 6c is about -30.0 %).
 
 ### Not measured, and the gaps (E2)
 
