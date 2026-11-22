@@ -946,7 +946,8 @@ cycles, interleaved runs, medians. The machine was not quiet. "Kernel" is `enc_t
 of the viewer's upload encode (the synthetic texture of `nj2k_encode_bench`): the library's against the earlier
 source compiled in its own object (which timed within 1 % of the earlier library). "Encode" is the whole
 one-thread upload encode, the new library against the one at bee41d4 (5 rotations of 11 to 15 runs). The
-harness is the study's `bench/t1_study` (not in the repository).
+harness is the study's `bench/t1_study`, on the `studies` branch (see `bench/STUDIES.md` there); the Linux
+kernel bench, `bench/nj2k_enc_t1_ratio.cpp`, is in the repository.
 
 AVX2 build, Mcycles and ratios to today's:
 
@@ -973,35 +974,55 @@ Against OpenJPEG 2.5.4 (`nj2k_encode_bench`, 1,024² RGB, one thread, the same b
 ### GCC and clang
 
 The selects only pay when the compiler keeps them as `cmov`. MSVC and clang do; GCC turned them back into
-branches (the select form: 0.95 of today's kernel), so for GCC `encode` computes the same function with
-arithmetic masks. MinGW GCC 13.2 and the Visual Studio clang, the library's `enc_t1.cpp` against the frozen
-earlier one, 64 synthetic 64 x 64 code-blocks, kernel only, one thread pinned, 31 interleaved rounds,
-`-O2 -DNDEBUG`:
+branches (the select form: 0.95 of today's kernel on a local MinGW GCC 13.2), so for GCC `encode` computes the
+same function with arithmetic masks, and reads the next state as a byte of the table entry (`enc_luts.h`
+asserts the layout) in place of a mask.
 
-| Compiler | Select form | Chosen form |
-|---|---|---|
-| GCC 13.2 | 0.95 | 0.685 to 0.715 (masks) |
-| clang | 0.62 | 0.62 to 0.64 (selects) |
+**Real Linux, GitHub Actions** (`bench/nj2k_enc_t1_ratio.cpp`, the new `enc_t1_encode` against the frozen
+earlier one in one process, interleaved rounds, 256 synthetic 64 x 64 blocks a set, TSC cycles, the median of
+the rounds' ratios, then the median of 3 runs; ratios new/old, lower is better, target 0.62). Each cell is
+lossless / lossy, kernel only, on shared runners:
 
-**GCC does not reach the 0.62 target**: 0.69 with the AVX2 flags, 0.71 without. Its new coder is as fast in
-absolute cycles as clang's (84 against 83 Mcycles); the difference is that GCC's earlier coder is 8 % faster
-than clang's (123 against 134). Tried on GCC without a gain (within the noise or worse): a two-entry next-state
-table read in place of a mask (0.688), `__builtin_expect` on the byte-out loop (0.711), a non-inlined byte-out
-(0.700 to 0.714), `-O3` (0.753 against its own baseline), `-fno-gcse` and `-fno-if-conversion2` (0.70), the
-context passed straight to `encode` instead of stored first (0.701; clang 0.62), and `q + ((an - q) & mask)`
-for the interval (0.693 to 0.701). Selecting `a` and `c` by ternary with masks only for the state gave 0.82,
-the reverse 0.86; all the masks gave 0.70, and the state-keep as a bit expression instead of `!lps && ...` 0.69.
+| Job | First run (the masks) | Second run, same code | Second run, next state by byte load (shipped) |
+|---|---|---|---|
+| gcc-14, AVX2 | 0.59 / 0.62 | 0.587 / 0.619 | **0.565 / 0.599** |
+| gcc-14, SCALAR | 0.69 / 0.72 | 0.608 / 0.638 | **0.586 / 0.616** |
+| gcc-15, AVX2 | 0.68 / 0.70 | 0.672 / 0.697 | **0.651 / 0.675** |
+| gcc-15, SCALAR | 0.77 / 0.80 | 0.667 / 0.695 | **0.641 / 0.671** |
+| clang, AVX2 | 0.61 / 0.65 | not run | unchanged (the selects) |
+| clang, SCALAR | 0.63 / 0.66 | not run | unchanged (the selects) |
+
+GCC 14 meets the target (0.565 to 0.616 with the byte load) and clang is at it (0.61 to 0.66); **GCC 15, the
+compiler of the `linux-gcc` preset, ends at 0.64 to 0.68, above the 0.62 target.** It is the weak spot: the
+same masks cost 0.67 to 0.70 there against 0.59 to 0.64 on GCC 14. The owner accepted about 0.70 or better
+for GCC 15. The second run built 14 candidate formulations of the GCC path, each its own program in one job
+per compiler and build, run 3 times each; the shipped one is the next-state byte load, 3.1 to 3.9 % lower than
+the masks on all four GCC jobs. A single 4-byte table load unpacked by shifts gave the same (0.561 / 0.594,
+0.587 / 0.615, 0.650 / 0.677, 0.642 / 0.670) and was not kept. Not better than the masks, or within the noise:
+the exchange decided from the borrow of `a' - q`, a do-while byte-out loop with `__builtin_expect`, the byte-out
+loop out of line, the coder in a local copy for the length of a pass, a forced-inline `byteout`, and the
+combinations of those; adding a direct `bsr` shift count for the SCALAR build to the byte load (0.565 / 0.598,
+0.581 / 0.610, 0.654 / 0.678, 0.644 / 0.676) gained nothing over the byte load alone.
+
+A caveat on the SCALAR rows: for the same unchanged code the SCALAR jobs read 0.08 to 0.10 lower in the second
+run than in the first (gcc-14 0.69 / 0.72 against 0.608 / 0.638, gcc-15 0.77 / 0.80 against 0.667 / 0.695),
+while the AVX2 jobs reproduced within 0.01. The cause is unknown (the runners' CPUs, or a difference between
+the two workflows' builds), so the within-run comparison of the byte load against the masks is trusted more
+than any absolute SCALAR ratio.
+
+On the local Windows machine (MinGW GCC 13.2, the Visual Studio clang with the MSVC ABI, 64 synthetic blocks,
+kernel only, pinned, 31 interleaved rounds): GCC 0.95 with selects, 0.685 to 0.715 with masks; clang 0.62 to
+0.64 with selects. GCC 13's new coder runs in about the same cycles as clang's (84 against 83 Mcycles), but
+its earlier coder is 8 % faster than clang's, which is the ratio's denominator.
 
 ### Not measured, and the gaps
 
-- **Not a real Linux build.** There is no Linux or WSL here. GCC and clang were measured on Windows (MinGW GCC
-  13.2, the Visual Studio clang with the MSVC ABI), kernel only, on synthetic blocks in a small harness, not the
-  whole encode: no GCC or clang encode ratio exists. The `linux-gcc`, `linux-clang`, UBSan, TSan and libFuzzer
-  presets were not run. The byte identity of the GCC and clang builds rests on `nj2k_enc_t1_unit` compiled and
-  run with each (clang: the sampled single decisions; the full 4.4 billion ran on MSVC and on GCC, which takes
-  the mask path), and on the review's comparison of 200,000 random streams.
-- One machine (Zen 5), one synthetic texture (gradients, edges, noise): real uploads and the corpus images were
-  not timed (their bytes are pinned by `encode_unit`).
+- **The Linux numbers are the kernel only**, from a shared GitHub runner, on synthetic blocks in a small
+  harness. No GCC or clang whole-encode ratio exists. The sanitizer and fuzz presets run in the repository's CI,
+  not in these benches; `nj2k_enc_t1_unit` ran locally on MSVC, MinGW GCC 13.2 and clang (the full 4.4 billion
+  decisions on MSVC and GCC 13.2), and the Linux CI runs it on the `linux-*` presets.
+- One local machine (Zen 5), one synthetic texture (gradients, edges, noise): real uploads and the corpus
+  images were not timed (their bytes are pinned by `encode_unit`).
 - No hardware counters: the branch and memory counts are derived from the algorithm.
-- The kernel ratios are against the earlier source compiled in its own object, the encode ratios against the
-  earlier library; the two agree to about 2 %.
+- The MSVC kernel ratios are against the earlier source compiled in its own object, the encode ratios against
+  the earlier library; the two agree to about 2 %.
