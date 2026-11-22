@@ -12,3 +12,6 @@
   request at reduce 5 on its first 600 bytes and at reduce 2 on half the file, plain decodes at
   reduce 1 to 5, strict mode with one layer, a plain cut).
 - The header target starts from `corpus/generated`.
+- `t1/`: code-blocks for the Tier-1 target (`fuzz/fuzz_t1.cpp`: a header of six bytes, two bytes a segment, then the
+  bytes), a few small ones of each code-block style taken from `tests/vectors/t1`.
+  `fuzz/make_inputs.py --t1-seeds` writes them.

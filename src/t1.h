@@ -2,9 +2,10 @@
 // Copyright (c) 2026, Anne Skydancer (neo-j2k)
 //
 // Tier-1 decoding of one code-block: the MQ and raw (BYPASS) decoders and the three coding passes,
-// ported from OpenJPEG 2.5.4 (t1.c, mqc.c, mqc_inl.h, t1_luts.h; their notice is in t1.cpp) with
-// the same operations, so the coefficients are OpenJPEG's. The interface is neo-j2k's: one
-// code-block's data chunks and segments in, its coefficients in the decoder's scratch, then written
+// ported from OpenJPEG 2.5.4 (t1.c, mqc.c, mqc_inl.h, t1_luts.h; their notice is in t1.cpp), so the
+// coefficients are OpenJPEG's; the MQ decision and the cleanup pass's run of AGG decisions are
+// reformulated (t1_mq.h). The interface is neo-j2k's: one code-block's data chunks and segments in,
+// its coefficients in the decoder's scratch, then written
 // into the tile-component's buffer with dequantisation (and the ROI shift) as OpenJPEG does.
 // The code-block's bytes are always copied into the decoder's padded buffer first, so the MQ
 // decoder's 0xFFFF sentinel is never written into the caller's bytes (plan P4).
@@ -74,7 +75,8 @@ inline std::uint32_t mq_shifts(std::uint32_t a) noexcept
 #endif
 }
 
-// The MQ decoder state (opj_mqc_t, decoding side).
+// One MQ state of the standard's Table C.2 (OpenJPEG's opj_mqc_state_t), the 94 of kMqcStates (t1_tables.h): the encoder
+// reads them, and the decoder's context words (t1_mq.h) are built from them at compile time.
 struct MqState {
     std::uint32_t qeval;
     std::uint32_t mps;
@@ -82,20 +84,30 @@ struct MqState {
     const MqState* nlps;
 };
 
+// The 19 contexts' states, one 32-bit word each (t1_mq.h has the layout and the table of the 94 words).
+struct MqContexts {
+    std::uint32_t slot[19];
+};
+
+// The MQ decoder (opj_mqc_t, decoding side): the registers, the input and the contexts. curctx is the slot a pass
+// decides on while it runs, kept here between the passes' loops; the macros of t1_mq.h work on locals.
 struct Mqc {
     std::uint32_t c, a, ct;
-    std::uint32_t end_of_byte_stream_counter;
     std::uint8_t* bp;
     std::uint8_t* start;
     std::uint8_t* end;
-    const MqState* ctxs[19];
-    const MqState** curctx;
+    MqContexts ctx;
+    std::uint32_t* curctx;
     const std::uint8_t* lut_ctxno_zc_orient;
     std::uint8_t backup[2];
 };
 
 // A decoder's Tier-1 scratch, kept between code-blocks and decodes.
-struct T1 {
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4324)  // padded to a whole cache line, as intended (a part's scratch shares none with the next part's)
+#endif
+struct alignas(64) T1 {
     Mqc mqc;
     std::int32_t* data = nullptr;    // w x h coefficients of the current code-block
     std::uint32_t* flags = nullptr;  // (h + 3) / 4 + 2 rows of w + 2
@@ -113,10 +125,14 @@ struct T1 {
     void release(const Allocator& alloc) noexcept;
     std::size_t bytes() const noexcept;
 };
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
 
 // Decodes the code-block into t1.data (row-major, t1.w x t1.h), as opj_t1_decode_cblk; false when
 // OpenJPEG refuses it (bit-planes plus ROI shift at or above 31), after the same warning. The
-// chunks' total must fit t1.reserve().
+// chunks' total must fit t1.reserve(). The segments' lengths are meant to add up to no more than the
+// chunks' total (Tier-2 makes them so); where they do not, a segment is cut to the bytes that are there.
 bool t1_decode_cblk(T1& t1, const T1Block& b, const Messages& msg) noexcept;
 
 // The bit-plane check of opj_t1_decode_cblk alone, for a code-block without data (whose decode
