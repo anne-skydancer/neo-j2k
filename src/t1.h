@@ -74,7 +74,8 @@ inline std::uint32_t mq_shifts(std::uint32_t a) noexcept
 #endif
 }
 
-// The MQ decoder state (opj_mqc_t, decoding side).
+// One MQ state of the standard's Table C.2 (OpenJPEG's opj_mqc_state_t), the 94 of kMqcStates (t1_tables.h): the encoder
+// reads them, and the decoder's context words (t1_mq.h) are built from them at compile time.
 struct MqState {
     std::uint32_t qeval;
     std::uint32_t mps;
@@ -82,14 +83,20 @@ struct MqState {
     const MqState* nlps;
 };
 
+// The 19 contexts' states, one 32-bit word each (t1_mq.h has the layout and the table of the 94 words).
+struct MqContexts {
+    std::uint32_t slot[19];
+};
+
+// The MQ decoder (opj_mqc_t, decoding side): the registers, the input and the contexts. curctx is the slot a pass
+// decides on while it runs, kept here between the passes' loops; the macros of t1_mq.h work on locals.
 struct Mqc {
     std::uint32_t c, a, ct;
-    std::uint32_t end_of_byte_stream_counter;
     std::uint8_t* bp;
     std::uint8_t* start;
     std::uint8_t* end;
-    const MqState* ctxs[19];
-    const MqState** curctx;
+    MqContexts ctx;
+    std::uint32_t* curctx;
     const std::uint8_t* lut_ctxno_zc_orient;
     std::uint8_t backup[2];
 };
@@ -102,6 +109,7 @@ struct T1 {
     std::uint32_t w = 0, h = 0;
     std::uint8_t* cblkdata = nullptr;  // the code-block's bytes and 2 bytes of padding
     std::size_t cblkdata_size = 0;
+    std::uint8_t pad_[8] = {};         // 192 bytes, whole cache lines: a part's scratch shares none with the next part's
 
     static constexpr std::size_t kMaxData = 4096;   // samples of the largest code-block
     static constexpr std::size_t kMaxFlags = 3078;  // (1024 + 2) x (4 / 4 + 2), the largest flag area
@@ -116,7 +124,8 @@ struct T1 {
 
 // Decodes the code-block into t1.data (row-major, t1.w x t1.h), as opj_t1_decode_cblk; false when
 // OpenJPEG refuses it (bit-planes plus ROI shift at or above 31), after the same warning. The
-// chunks' total must fit t1.reserve().
+// chunks' total must fit t1.reserve(). The segments' lengths are meant to add up to no more than the
+// chunks' total (Tier-2 makes them so); where they do not, a segment is cut to the bytes that are there.
 bool t1_decode_cblk(T1& t1, const T1Block& b, const Messages& msg) noexcept;
 
 // The bit-plane check of opj_t1_decode_cblk alone, for a code-block without data (whose decode

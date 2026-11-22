@@ -11,6 +11,8 @@
 //   2. generated code-blocks: every size 1..64 a side, the shapes 1024 x 4 and 4 x 1024 and their kin, every
 //      code-block style 0..63, every orientation, bit-planes 0..31 and ROI shifts, split chunks, and adversarial
 //      bytes (all 0xFF, markers 0xFF 0x90 inside a segment, zero-length segments, 109 one-byte segments);
+//   2b. segments longer than the bytes (Tier-2 gives none): cut to the bytes present, as the frozen decode of the cut
+//      lengths;
 //   3. the tables: the 94 MQ states against the standard's Table C.2 written out here;
 //   4. single decisions: one decision from a chosen state, every interval a in [0x8000, 0xffff] and every state (94),
 //      c_hi around qe, every bit counter ct in [0, 8] and the next two bytes (from 00, 7F, 8F, 90, FE, FF), in the frozen
@@ -75,6 +77,7 @@ struct Rng {
 struct Spec {
     u32 w = 0, h = 0, numbps = 0, orient = 0, roishift = 0, cblksty = 0;
     std::vector<u32> len, passes;  // the segments
+    std::vector<u32> ref_len;      // the lengths the frozen reference is given, when the segments are longer than the bytes
     std::vector<u8> bytes;         // the chunks' bytes, gathered
     u32 split = 1;                 // the bytes arrive in this many chunks
 };
@@ -86,7 +89,7 @@ struct Runner {
     fz::Scratch ref;
     d::Messages quiet;
     std::vector<d::Chunk> chunks;
-    std::vector<d::Segment> segs;
+    std::vector<d::Segment> segs, ref_segs;
     std::vector<std::int32_t> got, want;
     std::uint64_t blocks = 0, refused = 0;
 
@@ -97,7 +100,7 @@ struct Runner {
     }
     ~Runner() { lib.release(alloc); }
 
-    void build(const Spec& s, d::T1Block& b)
+    void build(const Spec& s, d::T1Block& b, d::T1Block& rb)
     {
         chunks.clear();
         const u32 n = static_cast<u32>(s.bytes.size());
@@ -113,20 +116,26 @@ struct Runner {
             segs[i].len = s.len[i];
             segs[i].numpasses = segs[i].real_num_passes = s.passes[i];
         }
+        ref_segs = segs;
+        for (std::size_t i = 0; i < s.ref_len.size(); ++i) {
+            ref_segs[i].len = s.ref_len[i];
+        }
         b = d::T1Block{s.w, s.h, s.numbps, s.orient, s.roishift, s.cblksty, chunks.data(),
                        static_cast<u32>(chunks.size()), segs.data(), static_cast<u32>(segs.size())};
+        rb = b;
+        rb.segs = ref_segs.data();
     }
 
     // false at the first difference (said on stderr)
     bool run(const Spec& s, const char* what)
     {
-        d::T1Block b;
-        build(s, b);
+        d::T1Block b, rb;
+        build(s, b, rb);
         const bool okr = [&] {
             if (!ref.t.data || s.bytes.size() + 2 > ref.t.cblkdata_size) {
                 ref.reserve(s.bytes.size());
             }
-            return fz::t1_decode_cblk(ref.t, b, quiet);
+            return fz::t1_decode_cblk(ref.t, rb, quiet);
         }();
         if (!lib.reserve(alloc, s.bytes.size())) {
             CHECK_MSG(false, "no memory");
@@ -252,8 +261,24 @@ void fill_bytes(std::vector<u8>& v, Rng& rng, u32 kind)
     }
 }
 
-// A code-block of the given shape and style with segments, passes and bytes drawn at random; `hostile` takes
-// numbps up to 31, passes beyond what the bit-planes allow and the adversarial streams.
+// The most passes segment i of a code-block of this style can have (opj_t2_init_seg): one a segment with TERMALL,
+// 10, then 2, 1, 2, 1, ... with BYPASS, else 109. Tier-2 starts a segment only when the one before it is full, so the
+// segments but the last have that many; a segment that BYPASS types raw holds the significance and refinement passes
+// only (the decoder starts its arithmetic coder at the cleanup pass of a segment that has one).
+u32 seg_maxpasses(u32 style, u32 i)
+{
+    if (style & d::kCblkTermall) {
+        return 1;
+    }
+    if (style & d::kCblkLazy) {
+        return i == 0 ? 10u : (i % 2 == 1 ? 2u : 1u);
+    }
+    return 109;
+}
+
+// A code-block of the given shape and style with segments, passes and bytes drawn at random, the segments' passes
+// as Tier-2 gives them; `hostile` takes numbps up to 31, now and then a ROI shift that refuses the block, and the
+// adversarial streams.
 Spec make_spec(Rng& rng, u32 w, u32 h, u32 style, bool hostile)
 {
     Spec s;
@@ -277,7 +302,8 @@ Spec make_spec(Rng& rng, u32 w, u32 h, u32 style, bool hostile)
             len = 1 + rng.u(3);
         }
         s.len.push_back(len);
-        s.passes.push_back(shape == 0 ? rng.u(3) : ((style & d::kCblkTermall) ? 1 : rng.u(max_passes + 1)));
+        const u32 most = seg_maxpasses(style, i);
+        s.passes.push_back(i + 1 < nsegs ? most : rng.u(std::min(most, max_passes) + 1));
     }
     u32 total = 0;
     for (u32 l : s.len) {
@@ -337,6 +363,37 @@ void test_generated()
     }
     std::printf("generated: %llu code-blocks identical (%llu refused as bit-planes plus ROI shift reach 31)\n",
                 static_cast<unsigned long long>(r.blocks), static_cast<unsigned long long>(r.refused));
+}
+
+// The segments' lengths longer than the bytes that are there (Tier-2 never gives them): the decoder takes the bytes
+// present, each segment cut to what is left after the ones before it; the frozen reference gets the cut lengths.
+void test_overlong()
+{
+    Runner r;
+    Rng rng(4242);
+    for (u32 i = 0; i < 1500; ++i) {
+        const u32 sizes[4][2] = {{64, 64}, {rng.u(64) + 1, rng.u(64) + 1}, {1024, 4}, {4, 1024}};
+        const u32* sz = sizes[i % 4];
+        Spec s = make_spec(rng, sz[0], sz[1], rng.u(64), i % 2 == 0);
+        // lengthen some segments past the bytes (and some to 0xFFFFFFFF-ish: the sum must not wrap)
+        for (u32& l : s.len) {
+            const u32 k = rng.u(10);
+            l = k == 0 ? l + 1 + rng.u(40) : k == 1 ? 0xFFFFFFF0u + rng.u(16) : k == 2 ? static_cast<u32>(s.bytes.size()) + rng.u(3) : l;
+        }
+        u32 start = 0;
+        const u32 total = static_cast<u32>(s.bytes.size());
+        for (u32 l : s.len) {
+            const u32 cut = std::min(l, total - start);
+            s.ref_len.push_back(cut);
+            start += cut;
+        }
+        if (!r.run(s, "overlong segments")) {
+            ++g_failures;
+            return;
+        }
+    }
+    std::printf("overlong segments: %llu code-blocks identical to the frozen decode of the cut lengths\n",
+                static_cast<unsigned long long>(r.blocks));
 }
 
 // ---- 3. the tables ----
@@ -611,6 +668,7 @@ int main(int argc, char** argv)
             test_vectors(vectors);
         }
         test_generated();
+        test_overlong();
         if (exhaustive) {
             test_single(false);
         }

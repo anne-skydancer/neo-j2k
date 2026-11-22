@@ -13,7 +13,9 @@
 //   byte 5     the number of segments (modulo 112: the most a code-block can have is 109)
 //   then       two bytes a segment (its length, its passes), then the code-block's bytes
 // A segment's length is as the byte says: past the bytes that are there, the decoder takes the bytes present
-// (the frozen reference is given the cut length). A failed check says why on stderr, then aborts.
+// (the frozen reference is given the cut length). A segment's passes are as Tier-2 gives them: at most what its style
+// allows (one a segment with TERMALL; 10, 2, 1, 2, 1, ... with BYPASS; else 109), and all of them but in the last
+// segment. A failed check says why on stderr, then aborts.
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
@@ -75,7 +77,9 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
     std::vector<d::Segment> segs(nsegs), cut(nsegs);
     std::uint32_t start = 0;
     for (std::uint32_t i = 0; i < nsegs; ++i) {
-        segs[i] = d::Segment{seg_bytes[2 * i], seg_bytes[2 * i + 1], seg_bytes[2 * i + 1], 0, 0, 0};
+        const std::uint32_t most = (style & 0x04) ? 1u : (style & 0x01) ? (i == 0 ? 10u : (i % 2 == 1 ? 2u : 1u)) : 109u;
+        const std::uint32_t passes = i + 1 < nsegs ? most : std::min<std::uint32_t>(seg_bytes[2 * i + 1], most);
+        segs[i] = d::Segment{seg_bytes[2 * i], passes, passes, 0, 0, 0};
         cut[i] = segs[i];
         cut[i].len = std::min(segs[i].len, nbytes - start);
         start += cut[i].len;

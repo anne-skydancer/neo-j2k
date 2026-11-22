@@ -28,6 +28,13 @@ nj2k_fp_strict(nj2k_kernels)
 nj2k_simd(nj2k_kernels)
 nj2k_program_exceptions(nj2k_kernels)
 
+# The decoder's Tier-1 against the frozen copy of it before the MQ-NG redesign (the library's internals)
+add_executable(nj2k_t1_dec nj2k_t1_dec.cpp ../tests/unit/t1_frozen.cpp)
+target_link_libraries(nj2k_t1_dec PRIVATE nj2k_test_common)
+nj2k_fp_strict(nj2k_t1_dec)
+nj2k_simd(nj2k_t1_dec)
+nj2k_program_exceptions(nj2k_t1_dec)
+
 # The lane-per-code-block MQ prototype (stage 4): MQ segments traced from real decodes, decoded
 # again by the scalar MQ decoder and by eight AVX2 lanes, one code-block a lane
 if(NJ2K_SIMD STREQUAL "AVX2")
