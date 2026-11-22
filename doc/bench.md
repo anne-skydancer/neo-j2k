@@ -1005,3 +1005,90 @@ the reverse 0.86; all the masks gave 0.70, and the state-keep as a bit expressio
 - No hardware counters: the branch and memory counts are derived from the algorithm.
 - The kernel ratios are against the earlier source compiled in its own object, the encode ratios against the
   earlier library; the two agree to about 2 %.
+
+## Stage 6e (E1): the encoder's branch-free preprocessing (2026-11-22)
+
+Step E1 of the EBCOT-NG plan: the sign-magnitude conversion and the block maximum at the head of
+`enc_t1_encode` (OpenJPEG's per-sample branch on the sign) as scalar code without a data-dependent branch, in
+`src/enc_pre.h` (`enc_preprocess`): `neg = 0 - (x >> 31)`, `a = (x ^ neg) - neg`, `a -= a >> 31` (INT32_MIN
+negates to itself, and the subtraction turns 0x80000000 into 0x7FFFFFFF, the earlier `INT32_MIN + 1` negated;
+no other `a` has bit 31), `out = a | (x & 0x80000000)`, `max = max(max, a)`. No intrinsics. It is stacked on the
+encoder branch (`mq-encoder-ng`, stage 6c) and measured against it.
+
+**Exactness.** `nj2k_enc_t1_unit` checks `enc_preprocess` against the earlier per-sample code (kept in the test)
+over every output word and the block maximum, in blocks of 4,096 samples: a trimmed pass in ctest (the
+neighbourhoods of 0, INT32_MIN and INT32_MAX, 33 values each side of every power of two and its negative, a
+stride of 61 over the whole range, 200,000 random blocks with INT32_MIN or INT32_MAX in them) and all 2^32 inputs
+in the nightly `enc_t1_exhaustive` (`--exhaustive-full`, about 2 minutes with the MQ decisions; the 2^32 pass
+alone takes a few seconds). `enc_t1_encode` against the frozen reference (the earlier text of `enc_t1.cpp`, left as
+it was) on 640 more generated code-blocks: every bit-plane count from 0 to 25 (the largest sample negative or
+positive), INT32_MIN alone, among others and with INT32_MAX, and all-zero blocks, in eight sizes and every
+orientation and wavelet: passes (rate, length, termination, distortion bit for bit), bytes and `numbps` equal.
+The one-thread upload encode's codestream (size and hash) is the earlier one's at 256², 512² and 1,024², lossy
+and lossless, both builds. A check that the test sees a fault: without the `a -= a >> 31` step it fails in the
+trimmed pass and in the block comparison.
+Every ctest passes on MSVC AVX2 (126, the two class 1 conformance tests skipped for lack of data), the MSVC SCALAR
+build (130, `global_state` included), clang-cl (130) and MSVC with AddressSanitizer (125, which has no bench
+tests), the fuzz replays among them; the nightly `enc_t1_exhaustive` (all 2^32 preprocessing inputs and the 4.4
+billion MQ decisions) passed on MSVC.
+
+**Method.** As stage 6c: Ryzen 9 9950X3D, MSVC 14.51 (the library's flags, `/O2 /arch:AVX2` or baseline
+x86-64), one thread pinned to CPU 7, TSC cycles, the two builds interleaved in alternating order, nine rounds
+(21 repeats a round, 7 at 1,024²), the median of the rounds' ratios. "Kernel" is `enc_t1_encode` over the
+code-blocks of the upload encode's texture (the study's dump, `bench/t1_study`), the earlier library against this
+one, in separate processes; "encode" is the whole one-thread upload encode (5 rounds, 9 repeats, 3 at 1,024²).
+The harness is the study's, not in the repository. The gate: at most 0.97 of the base kernel on every
+configuration, beyond the 3 % noise band.
+
+Kernel, Mcycles and ratio to the stage-6c base (the round-to-round range of the ratio was 0.002 to 0.01):
+
+| Size | Mode | AVX2 base | AVX2 E1 | AVX2 | SCALAR base | SCALAR E1 | SCALAR |
+|---|---|---:|---:|---:|---:|---:|---:|
+| 256² | lossy | 33.4 | 31.8 | 0.950 | 33.0 | 31.1 | 0.942 |
+| 256² | lossless | 37.8 | 36.3 | 0.959 | 37.2 | 35.4 | 0.952 |
+| 512² | lossy | 158.7 | 152.1 | 0.958 | 156.4 | 149.1 | 0.952 |
+| 512² | lossless | 174.1 | 167.8 | 0.964 | 171.2 | 164.3 | 0.959 |
+| 1,024² | lossy | 646.6 | 619.8 | 0.959 | 637.8 | 608.3 | 0.953 |
+| 1,024² | lossless | 706.5 | 680.8 | 0.964 | 695.3 | 667.0 | 0.959 |
+
+The whole one-thread encode follows the kernel (the preprocessing is in it, the rest of the encode unchanged):
+AVX2 0.959 and 0.959 (256²), 0.967 and 0.963 (512²), 0.967 and 0.965 (1,024², lossy and lossless); SCALAR 0.956
+and 0.960, 0.963 and 0.964, 0.960 and 0.964. The gate holds on all twelve kernel configurations. The study's
+prototype measured 0.952 to 0.966 (AVX2) and 0.923 to 0.945 (SCALAR); the scalar build gains less here than there
+(0.942 to 0.959): the stage-6c base moved, and the loop is kept scalar (below).
+
+**Leaner.** The loop has no data-dependent branch: the earlier one branched on the sign of every sample (about
+half of the samples of a high band are negative, so about half of the branches mispredict) and again on INT32_MIN
+in the negative path. It does now a fixed handful of integer operations a sample and a maximum. It stores every
+sample, where the earlier one stored the negative ones only (about half a store more a sample, in a block of
+16 KB that is in the cache); loads are the same. Instruction and branch counts were not measured with counters.
+
+**MSVC's vectoriser.** The first form of the loop was vectorised by MSVC: with AVX2 by `vpmaxud`, in the
+baseline build by SSE4.1 `pmaxud` behind its run-time CPU check (`__isa_available`), which the `global_state`
+test refuses in a scalar build (a `.bss` word and an instruction above baseline x86-64). Vectorised, the kernel
+was 0.936 to 0.955 (AVX2) and 0.938 to 0.959 (SCALAR). The step is specified as scalar code, so the loop has
+`#pragma loop(no_vector)` under MSVC (as `jp2.cpp`'s palette loop has), which costs about one point and keeps
+`global_state` green in both builds.
+
+### GCC and clang
+
+MinGW GCC 13.2 (`-O2`, kernel only, 64 x 64 code-blocks of the same texture, the library's `enc_t1.cpp` and
+`enc_dwt.cpp` against the base's, three rounds at 512² and 1,024², seven at 256²): baseline x86-64 0.950 and
+0.959 (256²), 0.964 and 0.968 (512²), 0.963 and 0.968 (1,024²); `-march=x86-64-v3` 0.942 and 0.949, 0.951 and
+0.956, 0.952 and 0.961. The gate holds, but its nearest configurations (0.968, with a round at 0.971) are inside
+the noise of a three-round median.
+
+**clang-cl misses the gate.** The Visual Studio clang (`-T ClangCL`, the same flags as MSVC's), AVX2 build: 0.991
+(256² lossy), 0.994 (256² lossless), 0.994 (512² lossy); the other configurations and its SCALAR build were not
+measured (the run was stopped at that result). Its compiler already compiles the earlier loop's main part without a
+sign branch (selects and `vpmaxsd`, vectorised), so there is no branch for E1 to remove, and the new loop gives about 1 %.
+The output is identical; nothing in the code is left for a Clang-specific form to win.
+
+### Not measured, and the gaps
+
+- No Linux or WSL: the `linux-gcc`, `linux-clang`, UBSan, TSan and libFuzzer presets were not run. GCC and
+  clang were measured on Windows, as in stage 6c, kernel only; no GCC or clang whole-encode ratio exists, and
+  `nj2k_enc_t1_unit` was not run with them.
+- The comparison with OpenJPEG 2.5.4 (`nj2k_encode_bench`) was not repeated: the README's and stage 6c's encode rows
+  are before E1; E1 takes about 3 to 4 % off the one-thread encode time.
+- One machine (Zen 5), one synthetic texture; the machine was not quiet. The harness is not in the repository.
