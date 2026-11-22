@@ -1513,3 +1513,15 @@ CPU effect. Lossy gains hold from -3.0 % to -7.5 % in every job of both runs.
 - One machine (Zen 5), one synthetic texture. The share of refinement decisions on real images is not measured. The
   lossless 512² and 1,024² cells pass by 0.6 to 1.0 point, so a different texture or machine may sit on the gate, as
   clang-cl SCALAR, the two Linux clang jobs and GCC 15 on AMD EPYC do.
+
+### Tried after E3: the refinement MQ loop on clang (closed, no gain)
+
+The two Linux clang jobs gain only -2.0 % and -2.1 % on lossless (the gate is 3 %). The generated code showed the
+coder's state (`a`, `c`, `ct`) going through memory on every refinement decision, because the byte stores may
+alias the coder's struct; a change that holds the state in locals for the length of the list
+(`MqEnc::encode_pairs`) keeps it in registers on clang and GCC. Measured on Linux, same machine per job, five
+variants of that change against E3: no variant helped clang (+0.5 % to +5.4 % slower than E3), none was faster than
+E3 on every compiler, and the code grew (`enc_t1` text +0.8 % on clang, +2.1 % on MSVC AVX2). The plain
+`encode_pairs` change is byte-identical and is offered as PR 28 with those numbers; the variants, the table and
+the reproduction steps are archived (tags `archive/bench-clang-linux` and `archive/enc-e3-clang`, and
+`doc/e3_clang_study.md` on the `studies` branch).
