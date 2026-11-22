@@ -688,7 +688,8 @@ void test_encode_cleanup()
                         }
                     }
                     if (planes != 0) {
-                        // the largest sample puts the block at exactly `planes` planes (leading bit planes - 1)
+                        // the largest sample's leading bit is plane `planes - 1` (floorlog2 of its magnitude is planes + 5),
+                        // so numbps is `planes`
                         const std::uint32_t lvl = (1u << (planes - 1)) | (planes > 1 ? rng.u(1u << (planes - 1)) : 0u);
                         v[top_at] = sample(lvl, rng.u(2) != 0);
                     }

@@ -1265,8 +1265,9 @@ shift 5 instead of 4, the shift 20 instead of 21, and no visited-bit clear. The
 nightly `enc_t1_exhaustive` (`--exhaustive-full`: all 2^32 preprocessing inputs and the 4.4 billion MQ decisions)
 passes. The one-thread upload encode's codestream (size and hash) equals main's at 256², 512² and 1,024², lossy and
 lossless, in both builds, and the kernel's passes and bytes (hashed over every dumped block) are equal in every build
-measured. Every ctest passes on MSVC AVX2 (133), MSVC SCALAR (133, `global_state` included) and clang-cl (133); MSVC
-with AddressSanitizer: see the gaps.
+measured. Every ctest passes on MSVC AVX2 (133 tests registered with the openjpeg-data checkout, none skipped; 129
+without it, where the two class 1 conformance tests skip), on MSVC SCALAR and on clang-cl; MSVC with AddressSanitizer:
+see the gaps.
 
 **Method.** As stage 6e: Ryzen 9 9950X3D, MSVC 14.51 (the library's flags, `/O2 /arch:AVX2` or baseline x86-64), one
 thread pinned to CPU 7, TSC cycles, main (`ca64528`) and E2 in separate processes run alternately (the order swapped
@@ -1302,7 +1303,7 @@ were used. The row's own branch (is it a candidate) remains, as in the old code.
 was removed in the fix round.
 
 **Code size.** The unrolling costs text. `enc_t1.o`: MinGW GCC `-O2` 21,528 to 25,948 bytes (+20 %), clang 15,781 to
-19,845 (+26 %), MSVC `.text` 19,133 to 27,651 (AVX2, +44 %) and 18,985 to 27,260 (SCALAR). With plain `inline` instead of
+19,845 (+26 %), MSVC `.text` 19,133 to 27,651 (AVX2, +45 %) and 18,985 to 27,260 (SCALAR). With plain `inline` instead of
 `NJ2K_FORCE_INLINE` on `update_flags` and the sign index, GCC's and clang's sizes are the same (clang's code did not
 change at all with the force-inline change), so the unrolling accounts for the growth there. On MSVC the force-inline of
 the two helpers in the significance pass and in `enc_clnpass_step` was measured as a variant (A: forced only in the
@@ -1326,8 +1327,7 @@ against this branch's:
 None misses (the worst cell is 0.960); unlike E1, clang-cl gains as much as MSVC. The Linux numbers (GCC 14, GCC 15 and
 Clang on Ubuntu, AVX2 and scalar) are not in this document yet: the workflow `bench-kernel-compare.yml` builds
 `nj2k_enc_t1_ratio` for two refs on the same runner and runs the two binaries alternately (3 runs x 41 rounds); the E2
-effect on Linux is the head-vs-base ratio of its result for head = the E2 commit, base = main. A first run that put the two
-refs on separate jobs landed on different CPUs and is discarded.
+effect on Linux is the head-vs-base ratio of its result for head = the E2 commit, base = main.
 
 ### Not measured, and the gaps (E2)
 
@@ -1336,8 +1336,8 @@ refs on separate jobs landed on different CPUs and is discarded.
   clang (the ctest on clang-cl was).
 - MSVC ASan: 124 ran and passed; 4 were excluded and not run (`decode_unit`, `decode_threads` and two
   `fuzz_replay.decode*`: the decoder is not touched, and those tests ran for over an hour under AddressSanitizer here
-  without finishing); every encoder test, `enc_t1_unit` among them, ran. The ASan preset lists 128 tests against the
-  MSVC preset's 133 because the five library checks (`exports`, `openjp2_exports`, `openjp2_forwarders`, `global_state`,
+  without finishing); every encoder test, `enc_t1_unit` among them, ran. The ASan preset registers 128 tests with the
+  openjpeg-data checkout (124 without it) against the MSVC preset's 133 (129 without it), because the five library checks (`exports`, `openjp2_exports`, `openjp2_forwarders`, `global_state`,
   `oracle_known_resources`) are not registered when `NJ2K_SANITIZE` is set (`tests/CMakeLists.txt`).
 - The comparison with OpenJPEG 2.5.4 (`nj2k_encode_bench`) was not repeated: the README's rows are before E1 and E2.
 - One machine (Zen 5), one synthetic texture; the machine was not quiet. The partial stripe (height not a multiple of
