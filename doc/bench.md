@@ -1005,3 +1005,99 @@ the reverse 0.86; all the masks gave 0.70, and the state-keep as a bit expressio
 - No hardware counters: the branch and memory counts are derived from the algorithm.
 - The kernel ratios are against the earlier source compiled in its own object, the encode ratios against the
   earlier library; the two agree to about 2 %.
+
+## Stage 7: the decoder's MQ decoder (2026-11-22)
+
+The decoder's Tier-1 (`src/t1.cpp`, `src/t1_mq.h`) decodes to OpenJPEG's coefficients with a different MQ decision, in
+two steps after the tests (each its own commit). Stage 1: a context's state is one 32-bit word in its slot (the
+interval's `qe`, the MPS, the index of the next state on an MPS and on an LPS), the 94 words built at compile time
+from `kMqcStates` (376 bytes of read-only data; `MqContexts` is 76 bytes, where 19 state pointers were 152); the LPS
+interval, the conditional exchange, the state change, `a` and `c` are selects; the renormalisation is always run (no
+shift when bit 15 of `a` is set, the shifts at once when `c` has the bits, OpenJPEG's loop only when a byte must come
+in: 0.07 to 0.11 a decision). The decision stays a macro in the passes, as OpenJPEG has it. Stage 2: the cleanup pass's
+run of AGG decisions that are an MPS 0 without renormalisation is taken at once over the columns of an empty stripe
+(`a -= n * qe`, `c -= (n * qe) << 16`, no division). This reverses stage 4's finding that select-based decisions and
+empty-column skipping were slower: with the state word in the slot and the loop-free renormalisation the selects
+win. OpenJPEG's 0xFF 0xFF sentinel write and restore stay (the owner's decision: a bounds-checked read-only input
+measured within 0 to 2 %, so noise). The one addition is a length check: a segment longer than the bytes that are left
+is cut to them, so the sentinel write cannot land past the buffer whatever Tier-1 is given (Tier-2 never gives such a
+segment). The dead `end_of_byte_stream_counter` is gone. The `T1` scratch is 192 bytes, padded to whole cache lines as
+`codec.cpp` asserts. The gate of every step was exact (coefficients), faster beyond the noise (about 3 %) and leaner.
+
+**Exactness.** `nj2k_t1_unit` compares the library's Tier-1 with a frozen copy of the decoder before the redesign
+(`tests/unit/t1_frozen.cpp`; coefficients and the refusal of a code-block) on: the 3,927 code-blocks of
+`tests/vectors/t1` (the generated corpus and the 256² study images, dumped by the MQ-NG study's tool), 21,164
+generated code-blocks (every size 1..64, the shapes 1024 x 4, 4 x 1024 and kin, every style 0 to 63, bit-planes 0 to
+31, ROI shifts, split chunks, all-0xFF, markers inside a segment, zero-length segments, 109 one-byte segments), 1,500
+with over-long segments (against the frozen decode of the cut lengths), and, with a folder of the study's dumps
+(`NJ2K_T1_VECTORS`, test `t1_unit_more`), 37,424 code-blocks of 115 files (the 35,390 of the mode-switch corpus and the
+six study images: styles 00, 01, 04, 05, 0a, 10, 12, 19, 20, 28, 2f, 34 and 3f). Single decisions are compared with a model
+of ISO 15444-1 C.3.2 written in the test, in the frozen decoder and in the new one: 6.5 million in ctest (every 17th
+interval), 887 million nightly (`t1_exhaustive`: every interval and state, `c_hi` at `qe - 1`, `qe` and `qe + 1`, bit
+counters 0 to 8, next bytes from 00, 7F, 8F, 90, FE, FF). The state table is checked against Table C.2 written out in
+the test. The AGG run is checked against the decisions one at a time (2.7 million cases, runs stopped by a column with
+flags). The new fuzz target `fuzz_t1` runs the library and the frozen copy on any bytes; its seeds are real
+code-blocks. All of it passes on MSVC AVX2 (the whole ctest, 126 tests), MSVC SCALAR and clang-cl (`t1_unit` and the
+fuzz replay), and on MSVC AddressSanitizer (`t1_unit` including the 37,424 code-blocks, the replay and 4,000 mutated
+fuzz inputs); `nj2k_t1_unit` also on MinGW GCC 13.2.
+
+**Method.** Ryzen 9 9950X3D, Windows 11, one thread pinned to CPU 7, TSC cycles, medians of interleaved rounds. "Tier-1"
+is `nj2k_t1_dec` (`bench/nj2k_t1_dec.cpp`): `t1_decode_cblk` of the library against the frozen copy built with the
+same flags, over the dumped code-blocks of the study's texture (256², 512², 1,024², lossy and lossless; the viewer's
+upload parameters; the two objects hold the same text before stage 1 and time 0.97 to 1.00 of each other), 9 to 11
+rounds. "Whole decode" is the study's `mqng_profile` (7 decodes a run, 5 alternating runs of each library; the image
+hashes are equal): the new library against the one at 41c4048. The study's tools (`bench/mqng_study`,
+`bench/t1_study`) are not in the repository.
+
+Tier-1 time against the frozen decoder (stage 1 / stage 2), lower is faster:
+
+| Build | 256² lossy | 256² lossless | 512² lossy | 512² lossless | 1,024² lossy | 1,024² lossless |
+|---|---|---|---|---|---|---|
+| MSVC AVX2 | 0.873 / 0.846 | 0.728 / 0.721 | 0.840 / 0.784 | 0.722 / 0.714 | 0.865 / 0.793 | 0.723 / 0.710 |
+| MSVC SCALAR | 0.868 / 0.841 | 0.729 / 0.720 | 0.841 / 0.784 | 0.720 / 0.711 | 0.856 / 0.787 | 0.719 / 0.712 |
+| clang-cl AVX2 | 0.869 / 0.835 | 0.776 / 0.768 | 0.878 / 0.811 | 0.781 / 0.768 | 0.898 / 0.817 | 0.786 / 0.770 |
+| MinGW GCC 13.2, AVX2 flags | 0.939 / 0.881 | 0.767 / 0.757 | 0.901 / 0.809 | 0.781 / 0.768 | 0.934 / 0.817 | 0.788 / 0.774 |
+| MinGW GCC 13.2, no AVX2 flag (stage 2) | 0.906 | not run | 0.830 | 0.786 | 0.844 | 0.787 |
+
+Whole decode against the library at 41c4048 (stage 1 / stage 2; the same output):
+
+| Build | 256² lossy | 256² lossless | 512² lossy | 512² lossless | 1,024² lossy | 1,024² lossless |
+|---|---|---|---|---|---|---|
+| MSVC AVX2 | 0.902 / 0.875 | 0.729 / 0.728 | 0.847 / 0.798 | 0.722 / 0.715 | 0.867 / 0.801 | 0.725 / 0.713 |
+| MSVC SCALAR | 0.907 / 0.883 | 0.750 / 0.744 | 0.869 / 0.818 | 0.736 / 0.725 | 0.883 / 0.828 | 0.733 / 0.721 |
+| clang-cl | 0.892 / 0.856 | 0.773 / 0.766 | 0.875 / 0.806 | 0.771 / 0.758 | 0.887 / 0.808 | 0.775 / 0.757 |
+
+The targets (Tier-1 at most 0.78 lossless and 0.91 lossy, whole decode at most 0.79 and 0.92) hold after stage 1 on
+MSVC AVX2 and SCALAR; clang-cl's whole decode holds, and its Tier-1 lossless sits at 0.776 to 0.786 (up to 0.006
+over 0.78, inside the 3 % noise band) until stage 2 takes it to 0.768 to 0.770. Stage 2's gate (at least 3 % on lossy
+at 512² and above in every build, at most 1 % slower elsewhere): lossy at 512² and above 7 to 12 % faster than
+stage 1 (MSVC AVX2 6.7 and 8.3 %, SCALAR 6.8 and 8.0 %, clang-cl 7.6 and 9.0 %, GCC 10 and 12.5 %), 256² lossy 3 to 6 %,
+lossless equal or 1 to 2 % faster. It stays.
+
+### GCC and clang
+
+GCC turns the select form back into branches (stage 1 with it: 1.02 to 1.05 of today's Tier-1 on lossy, 0.92 to 0.93
+on lossless), so for GCC the decision computes the same function with masks and a shift (the next-state index is
+`(w >> (17 + 7 * flip)) & 0x7f`, the state kept or replaced by a mask): 0.90 to 0.94 lossy and 0.77 to 0.79 lossless at
+stage 1, 0.81 to 0.88 and 0.76 to 0.77 at stage 2. clang takes the select form (the masks on clang-cl are worse: 0.79
+lossless and 0.91 lossy at 1,024²). GCC meets the lossy target only with stage 2 (0.82 at 1,024²; stage 1 alone is
+0.934).
+
+### Not measured, and the gaps
+
+- **Not a real Linux build.** There is no Linux or WSL here: MinGW GCC 13.2 and the Visual Studio clang were measured
+  on Windows, Tier-1 only, in a small harness, not the whole decode (no GCC whole-decode ratio exists). The
+  `linux-gcc`, `linux-clang`, `linux-clang-asan-ubsan` (so UBSan), TSan and libFuzzer presets were not run; UBSan did
+  not link with this clang-cl. The exactness of the GCC build rests on `nj2k_t1_unit` compiled and run with it.
+- No new shared state: the tables are `constexpr`, one `T1` a job; TSan was not run on the threaded decode.
+- The corpus is the encoder study's synthetic texture at six configurations (gradients, edges, noise); the owner's
+  212-file corpus of real textures is not on this machine. The mode-switch coverage is the test files' 35,390
+  code-blocks, of which the committed vectors hold the generated corpus's.
+- The 35,390 code-blocks of the conformance set are not committed (18 MB of dumps): `NJ2K_T1_VECTORS` runs them where
+  they exist. The fuzz seeds are 28 code-blocks of the committed vectors.
+- Observation, not changed: an arithmetic-coded pass started on a segment that was initialised for raw (BYPASS)
+  decoding (a cleanup pass in a segment the style types raw) reads the coder's stale registers, and the old decoder and
+  the new one can read past the buffer's end. Tier-2 cannot build such a segment (all segments but the last are full
+  and their types follow the pass counts), so a stream cannot reach it; the tests and the fuzz target give segments
+  as Tier-2 does.
+- No hardware counters: the branch counts are derived (`doc/mqng_study.md`).

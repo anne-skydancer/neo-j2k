@@ -5,7 +5,12 @@
 // (mqc_inl.h, mqc.c), the context tables (t1_luts.h) and the three decoding passes with their raw
 // (BYPASS) variants (t1.c) are OpenJPEG's code, unchanged but for the C++ adjustments (no
 // 'register', static inline functions, file-local names); the code-block driver and the store into
-// the tile buffer follow opj_t1_decode_cblk and opj_t1_clbl_decode_processor. OpenJPEG's notice:
+// the tile buffer follow opj_t1_decode_cblk and opj_t1_clbl_decode_processor. What departs from
+// OpenJPEG's text are operations, not results (the coefficients are OpenJPEG's, tests/unit/t1_unit.cpp
+// holds them to a frozen copy of the earlier text): the MQ decision and its renormalisation (t1_mq.h:
+// state words, selects, the renormalisation always run), the cleanup pass's run of AGG decisions taken at
+// once, the segment lengths cut to the bytes present, and the dropped end_of_byte_stream_counter.
+// OpenJPEG's notice:
 //
 /*
  * The copyright in this software is being made available under the 2-clauses
