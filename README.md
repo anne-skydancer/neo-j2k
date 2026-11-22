@@ -55,9 +55,9 @@ with the same output at any thread count. The host lends only when it has idle c
 
 Stage 6d, the MQ decoder (MQ-NG), with the same coefficients: a context's state as one 32-bit word, the decision by
 selects with the renormalisation always run, and the cleanup pass's runs of empty columns taken at once. One-thread
-Tier-1 takes 0.71 to 0.72 of the time lossless and 0.78 to 0.85 lossy with MSVC (0.77 and 0.81 to 0.84 with clang-cl),
-the whole decode 0.71 to 0.73 lossless and 0.80 to 0.88 lossy (MSVC AVX2; MSVC SCALAR 0.72 to 0.74 and 0.82 to 0.88,
-clang-cl 0.76 to 0.77 and 0.81 to 0.86; `doc/bench.md`, "Stage 6d").
+Tier-1 time changes (minus is faster) by -29.0 % to -28.0 % lossless and -22.0 % to -15.0 % lossy with MSVC (-23.0 % and -19.0 % to -16.0 % with clang-cl),
+the whole decode -29.0 % to -27.0 % lossless and -20.0 % to -12.0 % lossy (MSVC AVX2; MSVC SCALAR -28.0 % to -26.0 % and -18.0 % to -12.0 %,
+clang-cl -24.0 % to -23.0 % and -19.0 % to -14.0 %; `doc/bench.md`, "Stage 6d").
 
 The encoder takes the settings the Second Life viewer encodes with (RLCP, 64 x 64 code-blocks, 5/3 lossless or
 9/7 with rate layers, the colour transform, 8-bit components of up to 4,096 samples a side), through OpenJPEG's
@@ -90,21 +90,21 @@ to reproduce them, are in `doc/bench.md`.
 
 This is the short comparison for readers looking for “OpenJPEG2000 versus neo-j2k.” OpenJPEG is the upstream
 JPEG 2000 implementation; neo-j2k C++ is measured against the pinned OpenJPEG 2.5.4 oracle with identical
-outputs. Times are medians from the detailed tables below; lower is faster.
+outputs. Times are medians from the detailed tables below; lower is faster. The change is neo-j2k C++'s time against OpenJPEG's (minus is faster).
 
-| Operation | Threads | OpenJPEG | neo-j2k C++ | C++ / OpenJPEG | Result |
+| Operation | Threads | OpenJPEG | neo-j2k C++ | Change vs OpenJPEG | Result |
 |---|---:|---:|---:|---:|---|
-| Decode 64² whole | 1 | 373 µs | 316 µs | 0.85 | neo-j2k 1.18× faster |
-| Decode 1,024² whole | 1 | 37.176 ms | 26.158 ms | 0.70 | neo-j2k 1.42× faster |
-| Decode 4,096², one-tile 9/7 | 1 | 392 ms | 234 ms | 0.60 | neo-j2k 1.68× faster |
-| Decode 4,096², one-tile 9/7 | 8 | 136 ms | 46 ms | 0.34 | neo-j2k 2.96× faster |
-| Encode 1,024² RGB, lossy | 1 | 240.4 ms | 183.7 ms | 0.76 | neo-j2k 1.31× faster |
-| Encode 1,024² RGB, lossless | 1 | 253.9 ms | 178.8 ms | 0.70 | neo-j2k 1.42× faster |
+| Decode 64² whole | 1 | 373 µs | 316 µs | -15.0 % | neo-j2k 1.18× faster |
+| Decode 1,024² whole | 1 | 37.176 ms | 26.158 ms | -30.0 % | neo-j2k 1.42× faster |
+| Decode 4,096², one-tile 9/7 | 1 | 392 ms | 234 ms | -40.0 % | neo-j2k 1.68× faster |
+| Decode 4,096², one-tile 9/7 | 8 | 136 ms | 46 ms | -66.0 % | neo-j2k 2.96× faster |
+| Encode 1,024² RGB, lossy | 1 | 240.4 ms | 183.7 ms | -24.0 % | neo-j2k 1.31× faster |
+| Encode 1,024² RGB, lossless | 1 | 253.9 ms | 178.8 ms | -30.0 % | neo-j2k 1.42× faster |
 
 The encode rows are the equal one-thread comparison, measured after the MQ coder redesign (`doc/bench.md`,
 "Stage 6c"; before it neo-j2k took 284.5 and 295.9 ms against OpenJPEG's 250.0 and 262.8). They do not include
 the branch-free preprocessing of "Stage 6e" (about 3.3 to 4.4 % off the encode with MSVC) and the cleanup pass's fixed
-column mask of "Stage 6f" (a further 4 to 6 % with MSVC; whole encode 0.938 to 0.959 of before; the kernel is 5 to 6 %
+column mask of "Stage 6f" (a further 4 to 6 % with MSVC; whole encode -6.2 % to -4.1 % against before; the kernel is 5 to 6 %
 faster on six Linux builds, GCC 14, GCC 15 and Clang, AVX2 and scalar); no GCC or clang whole-encode figure exists. With a host executor, neo-j2k C++ encodes the same 1,024² inputs in 62.43 ms lossy and
 52.57 ms lossless at eight threads; that table measures C++ scaling rather than a like-for-like OpenJPEG comparison.
 All encoded bytes remain identical.
@@ -112,41 +112,41 @@ All encoded bytes remain identical.
 ### Small images, one thread (stages 2-4)
 
 The Second Life viewer's requests, the median per file, then over each class. 1,437 configurations, load 4 %
-mean. "Ratio" is neo-j2k's time over OpenJPEG's.
+mean. "Change" is neo-j2k's time against OpenJPEG's (minus is faster).
 
-| Request | OpenJPEG µs | neo-j2k µs | Ratio |
+| Request | OpenJPEG µs | neo-j2k µs | Change |
 |---|---|---|---|
-| 32² whole | 34.1 | 8.1 | 0.24 |
-| 64² whole | 373 | 316 | 0.85 |
-| 128² whole | 614 | 491 | 0.80 |
-| 256² whole | 2,227 | 1,839 | 0.83 |
-| 512² whole | 11,376 | 8,966 | 0.79 |
-| 1,024² whole | 37,176 | 26,158 | 0.70 |
-| 1,024² at reduce 3 | 1,552 | 1,360 | 0.88 |
-| 128² at reduce 5 | 27.2 | 6.54 | 0.24 |
-| 1,024², first 600 bytes | 68.3 | 24.4 | 0.36 |
-| 64², first 600 bytes | 24.2 | 4.41 | 0.18 |
+| 32² whole | 34.1 | 8.1 | -76.0 % |
+| 64² whole | 373 | 316 | -15.0 % |
+| 128² whole | 614 | 491 | -20.0 % |
+| 256² whole | 2,227 | 1,839 | -17.0 % |
+| 512² whole | 11,376 | 8,966 | -21.0 % |
+| 1,024² whole | 37,176 | 26,158 | -30.0 % |
+| 1,024² at reduce 3 | 1,552 | 1,360 | -12.0 % |
+| 128² at reduce 5 | 27.2 | 6.54 | -76.0 % |
+| 1,024², first 600 bytes | 68.3 | 24.4 | -64.0 % |
+| 64², first 600 bytes | 24.2 | 4.41 | -82.0 % |
 
-Requests whose output is a few pixels (the 1x1 floor, high reduce levels, the first 600 bytes) are 3-7x faster
-than OpenJPEG. They are also 1-3 % slower than stage 1c, a fixed cost of 0.05-0.17 µs on requests of 3-25 µs.
+Requests whose output is a few pixels (the 1x1 floor, high reduce levels, the first 600 bytes) are 66.7 % to 85.7 % faster
+than OpenJPEG (3-7x). They are also 1-3 % slower than stage 1c, a fixed cost of 0.05-0.17 µs on requests of 3-25 µs.
 Its cause was narrowed down but not found (`doc/bench.md`). After warm-up, no request up to 512 x 512 calls
 the allocator.
 
 ### Large images, threads lent by the host (stage 5)
 
-Time and peak memory against OpenJPEG `opj_codec_set_threads(N)`, from memory. Three rounds (two for 16,384²),
+Time (change: minus is faster) and peak memory against OpenJPEG `opj_codec_set_threads(N)`, from memory. Three rounds (two for 16,384²),
 medians and the highest peak. Load 26 % mean.
 
-| Image | N | OpenJPEG ms / MB | neo-j2k ms / MB | Ratio |
+| Image | N | OpenJPEG ms / MB | neo-j2k ms / MB | Change |
 |---|---|---|---|---|
-| 4,096², one tile, 9/7 | 1 | 392 / 205 | 234 / 200 | 0.60 |
-| | 8 | 136 / 207 | 46 / 201 | 0.34 |
-| 4,096², 16 tiles, 5/3 | 1 | 3,203 / 248 | 2,948 / 244 | 0.92 |
-| | 8 | 488 / 249 | 418 / 245 | 0.86 |
-| 8,192², one tile, 9/7 | 1 | 1,584 / 813 | 946 / 792 | 0.60 |
-| | 8 | 567 / 817 | 238 / 793 | 0.42 |
-| 16,384², 256 tiles, 9/7 | 1 | 5,731 / 3,134 | 3,615 / 3,131 | 0.63 |
-| | 8 | 2,002 / 3,135 | 747 / 3,131 | 0.37 |
+| 4,096², one tile, 9/7 | 1 | 392 / 205 | 234 / 200 | -40.0 % |
+| | 8 | 136 / 207 | 46 / 201 | -66.0 % |
+| 4,096², 16 tiles, 5/3 | 1 | 3,203 / 248 | 2,948 / 244 | -8.0 % |
+| | 8 | 488 / 249 | 418 / 245 | -14.0 % |
+| 8,192², one tile, 9/7 | 1 | 1,584 / 813 | 946 / 792 | -40.0 % |
+| | 8 | 567 / 817 | 238 / 793 | -58.0 % |
+| 16,384², 256 tiles, 9/7 | 1 | 5,731 / 3,134 | 3,615 / 3,131 | -37.0 % |
+| | 8 | 2,002 / 3,135 | 747 / 3,131 | -63.0 % |
 
 neo-j2k is faster at every thread count and needs no more memory. One exception: the stream API's peak on
 multi-tile images is higher, 238 MB against 209 at 4,096² in 16 tiles and 3,131 against 3,096 at 16,384² in
@@ -155,36 +155,36 @@ multi-tile images is higher, 238 MB against 209 at 4,096² in 16 tiles and 3,131
 ### Busy or idle: the host decides (stage 5b)
 
 The library owns no threads. The host lends an executor before a decode, and should lend it only when it has
-idle cores. One decode at a time on an otherwise idle host, decodes a second:
+idle cores. One decode at a time on an otherwise idle host, decodes a second (in brackets: the change in time per decode, minus is faster; then the speed-up factor):
 
 | Image | No executor | 4 threads lent | 8 threads lent |
 |---|---|---|---|
-| 512² RGB | 174.2 | 254.6 (1.46x) | 278.5 (1.60x) |
-| 1,024² RGB | 43.7 | 51.9 (too noisy to claim) | 74.8 (1.71x) |
-| 2,048² RGB | 9.7 | 15.5 (1.60x) | 19.0 (1.96x) |
+| 512² RGB | 174.2 | 254.6 (-31.5 %, 1.46x) | 278.5 (-37.5 %, 1.60x) |
+| 1,024² RGB | 43.7 | 51.9 (too noisy to claim) | 74.8 (-41.5 %, 1.71x) |
+| 2,048² RGB | 9.7 | 15.5 (-37.5 %, 1.60x) | 19.0 (-49.0 %, 1.96x) |
 
 On a saturated host (8 threads, each decoding 1,024² RGB), lending the pool gains no throughput: the median is
-1.02, within noise. It costs about 3 % more CPU, so a busy host should not lend. A tile is split only when its
+1.02 (time -2.0 %), within noise. It costs about 3 % more CPU, so a busy host should not lend. A tile is split only when its
 largest component has at least 2^18 samples (512 x 512).
 
 ### The upload encode, one thread
 
 The Second Life viewer's upload settings, three components, byte for byte OpenJPEG's codestream. Load 28 %
 mean. This table is from before the MQ coder redesign (stage 6c in `doc/bench.md`), which made the one-thread
-encode about 0.60 to 0.65 of these times (1,024²: 183.7 ms lossy and 178.8 ms lossless, against OpenJPEG's 240.4
+encode about -40.0 % to -35.0 % against these times (1,024²: 183.7 ms lossy and 178.8 ms lossless, against OpenJPEG's 240.4
 and 253.9 in a later run). The adaptive multi-core results follow in `doc/bench.md`.
 
-| Size | Mode | OpenJPEG ms | neo-j2k ms | Ratio | Peak MB, OpenJPEG / neo-j2k |
+| Size | Mode | OpenJPEG ms | neo-j2k ms | Change | Peak MB, OpenJPEG / neo-j2k |
 |---|---|---|---|---|---|
-| 64² | lossy | 1.2 | 1.2 | 0.97 | 0.6 / 0.3 |
-| 256² | lossy | 13.2 | 15.1 | 1.14 | 2.7 / 2.4 |
-| 1,024² | lossy | 250.0 | 284.5 | 1.14 | 38.9 / 37.2 |
-| 1,024² | lossless | 262.8 | 295.9 | 1.13 | 38.8 / 37.5 |
-| 2,048² | lossy | 1,007.1 | 1,176.3 | 1.17 | 153.9 / 148.0 |
+| 64² | lossy | 1.2 | 1.2 | -3.0 % | 0.6 / 0.3 |
+| 256² | lossy | 13.2 | 15.1 | +14.0 % | 2.7 / 2.4 |
+| 1,024² | lossy | 250.0 | 284.5 | +14.0 % | 38.9 / 37.2 |
+| 1,024² | lossless | 262.8 | 295.9 | +13.0 % | 38.8 / 37.5 |
+| 2,048² | lossy | 1,007.1 | 1,176.3 | +17.0 % | 153.9 / 148.0 |
 
-On one thread the encoder takes 0.97 to 1.17 of OpenJPEG's time, most rows 1.11 to 1.17, with a peak 0.3 to 6 MB
-lower. On the benchmark machine, eight threads made 256² uploads 3.7-4.1x faster, 512² uploads 4.3-5.0x faster, and 1,024² uploads 4.5-5.6x
-faster; `doc/bench.md` records the runs and crossover.
+On one thread the encoder's time is -3.0 % to +17.0 % against OpenJPEG's, most rows +11.0 % to +17.0 %, with a peak 0.3 to 6 MB
+lower. On the benchmark machine, eight threads changed the time of 256² uploads by -75.6 % to -73.0 % (3.7-4.1x faster), 512² uploads by -80.0 % to -76.7 % (4.3-5.0x faster), and 1,024² uploads by -82.1 % to -77.8 %
+(4.5-5.6x faster); `doc/bench.md` records the runs and crossover.
 
 ### In the Vulkanstorm viewer
 
