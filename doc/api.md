@@ -303,7 +303,9 @@ decodes the same samples. The string is five characters at most, because Firesto
 A viewer that talks to OpenJPEG through its own library file (`openjp2.dll`, `libopenjp2.so.7`) can take
 neo-j2k without a line changed, recompiled or relinked: the module (`NJ2K_MODULE_OPENJP2`, `modules/openjp2`,
 on in the presets, off by default as the other modules are) builds a shared library with OpenJPEG's name that
-exports OpenJPEG's functions and holds neo-j2k. It is an adapter between the calls a viewer makes and the
+exports OpenJPEG's functions and holds neo-j2k. In practice that is a viewer built without Kakadu: the official
+Firestorm releases link Kakadu statically and have no `openjp2.dll`, and the module is confirmed in a Firestorm
+compiled without it (owner, 2026-11-22). It is an adapter between the calls a viewer makes and the
 core's; the core is the same code as `neoj2k.dll` (the module links the static library) and never depends on it.
 
 - **Exports.** Exactly the 55 functions of the oracle's `openjpeg.h` (OpenJPEG 2.5.4 plus the fork's decoder
