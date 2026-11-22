@@ -38,10 +38,15 @@ nj2k_simd(nj2k_enc_t1_unit)
 # redesign (coefficient identity); the vectors are code-blocks as Tier-1 receives them (tests/vectors/t1)
 nj2k_test_program(nj2k_t1_unit unit/t1_unit.cpp unit/t1_frozen.cpp)
 nj2k_simd(nj2k_t1_unit)
-# the same with the mask form of the MQ decision (the form GCC gets) compiled in on any compiler: t1.cpp is built into the
-# test (its objects take precedence over the library's), so both forms are tested everywhere
-nj2k_test_program(nj2k_t1_unit_masks unit/t1_unit.cpp unit/t1_frozen.cpp ../src/t1.cpp)
-target_compile_definitions(nj2k_t1_unit_masks PRIVATE NJ2K_MQ_FORCE_MASKS=1)
+# the same with the mask form of the MQ decision (the form GCC gets) compiled in on any compiler, so both forms are tested
+# everywhere. It links no library (a copy of t1.cpp beside the library's would be a duplicate definition to lld-link):
+# the three sources Tier-1 needs are built into the test, with a stub for the harness's one function.
+add_executable(nj2k_t1_unit_masks unit/t1_unit.cpp unit/t1_frozen.cpp unit/t1_masks_stub.cpp
+               ../src/t1.cpp ../src/memory.cpp ../src/messages.cpp)
+target_include_directories(nj2k_t1_unit_masks PRIVATE "${PROJECT_SOURCE_DIR}/include" common)
+target_compile_definitions(nj2k_t1_unit_masks PRIVATE NJ2K_STATIC NJ2K_MQ_FORCE_MASKS=1 _CRT_SECURE_NO_WARNINGS)
+nj2k_fp_strict(nj2k_t1_unit_masks)
+nj2k_program_exceptions(nj2k_t1_unit_masks)
 nj2k_simd(nj2k_t1_unit_masks)
 # the Rust twin's plan, findings C2 (memory-limit outcomes and the codec's history: none found) and
 # C3 (the host's workers' floating-point environment reaches the samples: fixed, held as same), each held as today's
