@@ -4,12 +4,29 @@
 # ClusterFuzzLite corpus pruning, daily after batch fuzzing (cflite-batch.yml): each target's stored
 # corpus is merged down to the inputs that add coverage, so the batch and pull request runs load
 # only what still counts.
+#
+# Why the budget and the sanitizer: ClusterFuzzLite gives each target fuzz-seconds / targets_left for
+# its corpus merge (4 targets: 3600 s gives 900 s each, 600 s gave 150 s) and passes the merge no
+# -timeout. The decode corpus (about 3,500 inputs) needs about 970 s under ASan, so the old 600 s run
+# raised 'Merging new testcases timed out' on the first target and aborted the run: no target was ever
+# pruned. The budget is only a cap; the job takes as long as the merges do. The UBSan build keeps the
+# coverage instrumentation the merge needs but drops ASan's shadow memory (about 1.5 to 2 times faster).
+# If decode still times out, dispatch with fuzz-seconds 5400 (1,350 s a target with 4 targets), then
+# move to our own merge job.
+#
+# Not guarded here: CFL only logs a failed corpus download or upload, so a failed download could upload an
+# empty pruned corpus. The artifact upload happens inside the run step and a later step cannot stop it, so
+# the count guard needs the corpus store repository (Stage 2 of the fuzzing plan).
 name: ClusterFuzzLite corpus pruning
 
 on:
   schedule:
     - cron: '23 4 * * *'
   workflow_dispatch:
+    inputs:
+      fuzz-seconds:
+        description: 'Total merge budget in seconds; each target gets this divided by the targets left (job timeout is 120 min)'
+        default: '3600'
 
 permissions:
   contents: read
@@ -19,7 +36,7 @@ jobs:
   prune:
     name: prune
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 120
     concurrency:
       group: cflite-prune
       cancel-in-progress: false
@@ -28,10 +45,12 @@ jobs:
         uses: google/clusterfuzzlite/actions/build_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1  # v1
         with:
           language: c++
+          sanitizer: undefined
       - name: Run fuzzers
         uses: google/clusterfuzzlite/actions/run_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1  # v1
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          fuzz-seconds: 600
+          fuzz-seconds: ${{ inputs.fuzz-seconds || 3600 }}
           mode: prune
+          sanitizer: undefined
           output-sarif: false
