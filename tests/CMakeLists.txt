@@ -31,6 +31,9 @@ nj2k_test_program(nj2k_decode_unit unit/decode_unit.cpp)
 nj2k_simd(nj2k_decode_unit)  # the AVX2 kernels' declarations, compared with their scalar references
 # stage 6a: the encoder against the oracle's, byte for byte, at the viewer's settings
 nj2k_test_program(nj2k_encode_unit unit/encode_unit.cpp)
+# the encoder's MQ coder and Tier-1 against a frozen copy of their text before the MQ redesign (byte identity)
+nj2k_test_program(nj2k_enc_t1_unit unit/enc_t1_unit.cpp unit/enc_t1_frozen.cpp)
+nj2k_simd(nj2k_enc_t1_unit)
 # the Rust twin's plan, findings C2 (memory-limit outcomes and the codec's history: none found) and
 # C3 (the host's workers' floating-point environment reaches the samples: fixed, held as same), each held as today's
 # behaviour (unit/findings_unit.cpp)
@@ -86,6 +89,7 @@ nj2k_add_test(decode_unit nj2k_decode_unit "${NJ2K_CORPUS}")
 # stage 5: threads in one image (one thread against 2-16 parts; the ThreadSanitizer job runs it)
 nj2k_add_test(decode_threads nj2k_decode_unit "${NJ2K_CORPUS}" --threads)
 nj2k_add_test(encode_unit nj2k_encode_unit "${NJ2K_CORPUS}")
+nj2k_add_test(enc_t1_unit nj2k_enc_t1_unit)
 nj2k_add_test(findings_c2 nj2k_findings_unit --c2 "${NJ2K_CORPUS},${PROJECT_SOURCE_DIR}/fuzz/regressions" --expect none)
 nj2k_add_test(findings_c3 nj2k_findings_unit --c3 "${NJ2K_CORPUS}" --expect same)
 nj2k_add_test(fpenv_unit nj2k_fpenv_unit "${NJ2K_CORPUS}")
@@ -145,6 +149,10 @@ foreach(_file IN LISTS _nj2k_cut_files)
 endforeach()
 nj2k_add_test(oracle_layers nj2k_diff layers --a oracle --files "${NJ2K_CORPUS}"
               --ref "${CMAKE_CURRENT_SOURCE_DIR}/oracle-known-defects.txt")
+if(NJ2K_TEST_NIGHTLY)
+  # every MQ decision of the redesigned encoder against the frozen one: 1.77 billion, about 20 s
+  nj2k_add_test(enc_t1_exhaustive nj2k_enc_t1_unit --exhaustive-full)
+endif()
 if(NJ2K_TEST_NIGHTLY)
   set(_nj2k_ref_nightly "${NJ2K_CORPUS}/oracle-reference-nightly.tsv")
   if(NOT EXISTS "${_nj2k_ref_nightly}")

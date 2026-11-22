@@ -54,6 +54,7 @@
 #include <new>
 
 #include "enc_luts.h"
+#include "enc_mq.h"
 #include "enc_tile.h"
 #include "t1.h"
 #include "t1_flags.h"
@@ -66,8 +67,6 @@ namespace {
 using OPJ_UINT32 = std::uint32_t;
 using OPJ_INT32 = std::int32_t;
 using opj_flag_t = std::uint32_t;
-
-constexpr OPJ_UINT32 MQC_NUMCTXS = 19;
 
 // the largest code-block of the encoder: 64 x 64
 constexpr OPJ_UINT32 kCblkW = 64, kCblkH = 64;
@@ -92,142 +91,7 @@ int floorlog2(OPJ_INT32 a) noexcept
     return l;
 }
 
-// ---- mqc.c, mqc_inl.h: the MQ encoder ----
-
-struct MqEnc {
-    OPJ_UINT32 c, a, ct;
-    std::uint8_t* bp;
-    std::uint8_t* start;
-    std::uint8_t* limit;  // the last byte that may be written
-    bool overflow;
-    const MqState* ctxs[19];
-    const MqState** curctx;
-    const std::uint8_t* lut_ctxno_zc_orient;
-
-    void setcurctx(OPJ_UINT32 ctxno) noexcept { curctx = &ctxs[ctxno]; }
-
-    void resetstates() noexcept
-    {
-        for (OPJ_UINT32 i = 0; i < MQC_NUMCTXS; i++) {
-            ctxs[i] = kMqcStates;
-        }
-    }
-    void setstate(OPJ_UINT32 ctxno, OPJ_UINT32 msb, OPJ_INT32 prob) noexcept
-    {
-        ctxs[ctxno] = &kMqcStates[msb + static_cast<OPJ_UINT32>(prob << 1)];
-    }
-    // the first byte before the buffer is a fake one the caller set to 0
-    void init_enc(std::uint8_t* buf, std::uint8_t* last) noexcept
-    {
-        setcurctx(0);
-        a = 0x8000;
-        c = 0;
-        bp = buf - 1;
-        ct = 12;
-        start = buf;
-        limit = last;
-        overflow = false;
-    }
-    OPJ_UINT32 numbytes() const noexcept { return static_cast<OPJ_UINT32>(bp - start); }
-
-    void byteout() noexcept
-    {
-        if (bp >= limit) {
-            // OpenJPEG would write past the buffer here (OD-4); neo-j2k stops the code-block
-            overflow = true;
-            bp = limit - 1;
-        }
-        if (*bp == 0xff) {
-            bp++;
-            *bp = static_cast<std::uint8_t>(c >> 20);
-            c &= 0xfffff;
-            ct = 7;
-        } else {
-            if ((c & 0x8000000) == 0) {
-                bp++;
-                *bp = static_cast<std::uint8_t>(c >> 19);
-                c &= 0x7ffff;
-                ct = 8;
-            } else {
-                (*bp)++;
-                if (*bp == 0xff) {
-                    c &= 0x7ffffff;
-                    bp++;
-                    *bp = static_cast<std::uint8_t>(c >> 20);
-                    c &= 0xfffff;
-                    ct = 7;
-                } else {
-                    bp++;
-                    *bp = static_cast<std::uint8_t>(c >> 19);
-                    c &= 0x7ffff;
-                    ct = 8;
-                }
-            }
-        }
-    }
-
-    void renorme() noexcept
-    {
-        do {
-            a <<= 1;
-            c <<= 1;
-            ct--;
-            if (ct == 0) {
-                byteout();
-            }
-        } while ((a & 0x8000) == 0);
-    }
-
-    void encode(OPJ_UINT32 d) noexcept
-    {
-        const MqState* st = *curctx;
-        if (st->mps == d) {
-            a -= st->qeval;
-            if ((a & 0x8000) == 0) {
-                if (a < st->qeval) {
-                    a = st->qeval;
-                } else {
-                    c += st->qeval;
-                }
-                *curctx = st->nmps;
-                renorme();
-            } else {
-                c += st->qeval;
-            }
-        } else {
-            a -= st->qeval;
-            if (a < st->qeval) {
-                c += st->qeval;
-            } else {
-                a = st->qeval;
-            }
-            *curctx = st->nlps;
-            renorme();
-        }
-    }
-
-    void setbits() noexcept
-    {
-        const OPJ_UINT32 tempc = c + a;
-        c |= 0xffff;
-        if (c >= tempc) {
-            c -= 0x8000;
-        }
-    }
-
-    void flush() noexcept
-    {
-        setbits();
-        c <<= ct;
-        byteout();
-        c <<= ct;
-        byteout();
-        // it is forbidden that a coding pass ends with 0xff
-        if (*bp != 0xff) {
-            bp++;
-        }
-    }
-};
+// the MQ encoder is enc_mq.h
 
 }  // namespace
 
