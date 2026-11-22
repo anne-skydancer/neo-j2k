@@ -16,6 +16,7 @@
 #include "enc_tile.h"
 #include "memory.h"
 #include "messages.h"
+#include "parallel.h"
 #include "stream.h"
 
 namespace nj2k::detail {
@@ -37,6 +38,7 @@ struct Encoder {
     Messages messages;
     nj2k_status_t status = NJ2K_OK;
     State state = State::created;
+    nj2k_executor_t executor = {};
 
     // the settings, from nj2k_setup_encoder
     EncParams params = {};
@@ -53,6 +55,7 @@ struct Encoder {
         auto* e = reinterpret_cast<Encoder*>(codec);
         return e && e->magic == kMagic ? e : nullptr;
     }
+    bool jobs(Jobs& out) const noexcept;
     void release_all() noexcept;
 };
 

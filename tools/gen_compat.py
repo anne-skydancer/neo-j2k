@@ -42,7 +42,7 @@ OWN = {
     "nj2k_output_t", "nj2k_codestream_layout", "nj2k_codestream_layout_t", "nj2k_read_header_memory",
     "nj2k_get_codestream_layout", "nj2k_decode_memory", "nj2k_decoder_set_retained_bytes",
     # stage 5: threads in one image, through the host's executor
-    "nj2k_job_fn", "nj2k_executor", "nj2k_executor_t", "nj2k_decoder_set_executor",
+    "nj2k_job_fn", "nj2k_executor", "nj2k_executor_t", "nj2k_decoder_set_executor", "nj2k_encoder_set_executor",
 }
 ENUM_TAGS = ["RSIZ_CAPABILITIES", "CINEMA_MODE", "PROG_ORDER", "COLOR_SPACE", "CODEC_FORMAT"]
 # names in openjpeg.h that are not API: its include guard, its build switches, INLINE

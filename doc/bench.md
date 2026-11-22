@@ -882,3 +882,38 @@ Stage 6b's levers, in the order the profile will say: Tier-1 (OpenJPEG's own run
 code-blocks on its thread pool when it has one; here they are jobs for the host's executor), the vertical
 wavelet pass, the rate allocation's Tier-2 simulations (each bisection step walks every packet header), and
 the 9/7 quantization.
+
+## Stage 6b: adaptive parallel encode (2026-11-22)
+
+The encoder now borrows the host executor for its component wavelets and Tier-1 code-blocks. Tier-1 uses
+one fixed scratch per concurrent job in batches of at most 64, then commits each batch to the arena in the
+original code-block order. This preserves byte identity, deterministic allocation failures and support for
+allocators that are not thread-safe, while bounding added memory by concurrency rather than code-block count.
+Encoding has substantially more Tier-1 work per sample than decoding, so its measured crossover is lower:
+2^16 samples, or 256 x 256. Uploads below that stay serial.
+
+`nj2k_encode_bench --threads N` measured the synthetic three-component viewer upload on the Ryzen 9
+9950X3D, Release, with other processes present. Medians in milliseconds; every thread count produced the
+same byte count and checksum as one thread.
+
+| Size | Mode | 1 thread | 2 threads | 4 threads | 8 threads | 8-thread speedup |
+|---|---|---:|---:|---:|---:|---:|
+| 128² | lossy | 4.10 | 4.11 | 4.10 | 4.10 | serial by threshold |
+| 128² | lossless | 4.09 | 4.10 | 4.15 | 4.12 | serial by threshold |
+| 256² | lossy | 15.41 | 9.21 | 5.80 | 4.12 | 3.74x |
+| 256² | lossless | 16.16 | 9.28 | 5.59 | 3.97 | 4.07x |
+| 512² | lossy | 70.74 | 39.85 | 24.82 | 16.64 | 4.25x |
+| 512² | lossless | 72.90 | 40.43 | 23.40 | 14.54 | 5.01x |
+| 1,024² | lossy | 285.82 | 162.37 | 92.51 | 62.43 | 4.58x |
+| 1,024² | lossless | 295.45 | 164.21 | 88.92 | 52.57 | 5.62x |
+
+At 1,024², 16 to 64 requested threads improved only modestly beyond eight (lossy 58.0 to 55.7 ms,
+lossless 50.2 to 47.7 ms): the workload is already near the available-core and serial-stage ceiling.
+At 256², 16 threads reached 3.93 ms lossy and 3.49 ms lossless. At 128² the executor was not called and
+all requested counts stayed at about 4.1 ms, avoiding the known small-image multithreading loss entirely.
+
+The SCALAR and AVX2 builds were also compared at 1,024². Their medians were within noise: 287.5 versus
+285.3 ms for one-thread lossy, 61.0 versus 61.2 ms for eight-thread lossy, 297.7 versus 294.7 ms for
+one-thread lossless, and 53.7 versus 55.2 ms for eight-thread lossless. Tier-1's MQ state is serial inside
+each code-block and dominates the encode; the independent blocks, not wider instructions inside the MQ
+state machine, are the profitable lanes. No encoder-only AVX2 path is kept without a measured gain.

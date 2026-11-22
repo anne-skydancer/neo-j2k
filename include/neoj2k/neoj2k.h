@@ -2149,15 +2149,15 @@ NJ2K_API NJ2K_BOOL NJ2K_CALLCONV nj2k_decoder_set_retained_bytes(nj2k_codec_t *p
 
 /*
  * Threads in one image (neo-j2k's own; nj2k_codec_set_threads() stays false: a host lends the codec
- * its executor with nj2k_decoder_set_executor() instead).
+ * its executor with nj2k_decoder_set_executor() or nj2k_encoder_set_executor() instead).
  *
  * The library starts no thread of its own and keeps no pool: a host that wants a large image
  * decoded on several cores lends the codec its executor, so every decoder of the process shares the
  * host's one scheduler and nothing oversubscribes the cores, however many decoders run at once.
- * Without an executor everything runs on the calling thread, as before. With one, the codec calls it
- * only for a tile whose largest component has 2^18 samples or more (512 x 512), and to clear an image
- * plane of 4 MiB or more that the first tile written into it does not cover (a multi-tile image):
- * small tiles stay on the calling thread.
+ * Without an executor everything runs on the calling thread, as before. A decoder calls it only for
+ * a tile whose largest component has 2^18 samples or more (512 x 512), and to clear an image plane of
+ * 4 MiB or more that the first tile written into it does not cover (a multi-tile image). An encoder
+ * calls it from 2^16 samples (256 x 256). Smaller work stays on the calling thread.
  *
  * Busy or idle is the host's decision: lend the executor only when the host has idle cores, for
  * example when its decode queue holds fewer jobs than it has workers, and lend nothing when the queue
@@ -2199,6 +2199,15 @@ typedef struct nj2k_executor {
  * whose fixed order decides what such bytes hold, as without an executor.
  */
 NJ2K_API NJ2K_BOOL NJ2K_CALLCONV nj2k_decoder_set_executor(nj2k_codec_t *p_codec,
+        const nj2k_executor_t *executor);
+
+/**
+ * Lends an encoder the same host executor, or takes it back with NULL. Images from 256 x 256 use it for
+ * independent component wavelets and Tier-1 code-blocks; small images remain on the calling thread.
+ * The produced codestream bytes and diagnostic order do not depend on concurrency. The executor's
+ * user pointer must remain valid through nj2k_encode().
+ */
+NJ2K_API NJ2K_BOOL NJ2K_CALLCONV nj2k_encoder_set_executor(nj2k_codec_t *p_codec,
         const nj2k_executor_t *executor);
 
 

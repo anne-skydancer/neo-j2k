@@ -10,7 +10,7 @@
 //    Most call their neo-j2k twin with the same arguments (opj_forward.inc, generated: neo-j2k's structures
 //    have OpenJPEG's layout, and the generator checks that every signature matches openjpeg.h's);
 //  - opj_codec_set_threads starts the threads OpenJPEG would, which neo-j2k's core never does (it starts
-//    none and takes an executor from its host): the module is that host. A decoder gets a pool of its own,
+//    none and takes an executor from its host): the module is that host. A codec gets a pool of its own,
 //    lent to it as the executor, and opj_destroy_codec joins it, as OpenJPEG does;
 //  - opj_version says "nj2k" (a viewer prints it after "Runtime:", in a field that holds five characters);
 //  - a codec is refused on a processor the library does not run on (opj_create_* give NULL), where the
@@ -280,19 +280,20 @@ OPJ_EXPORT nj2k_codec_t* opj_create_compress(NJ2K_CODEC_FORMAT format)
 // same here, with these differences, none of which changes a sample or a byte:
 //  - the calling thread works too while it waits, so the codec runs on num_threads threads in all, not
 //    num_threads plus a waiting caller; 0 and 1 run on the calling thread;
-//  - at most 64 threads (the most a decode is cut into);
-//  - only decoding uses them. The encoder (stage 6a) runs on its calling thread whatever is asked, and the
-//    answer for it is still true, as OpenJPEG's; no thread is started for it.
+//  - at most 64 threads (the most a decode or encode stage is cut into).
 OPJ_EXPORT NJ2K_BOOL opj_codec_set_threads(nj2k_codec_t* p_codec, int num_threads)
 {
     if (!p_codec || num_threads < 0) {
         return NJ2K_FALSE;
     }
-    // the codec stops calling its earlier pool (taking an executor back is refused only by a codec that is
-    // not a decoder: an encoder, which has none and takes none), and then the pool is joined
+    // The codec stops calling its earlier pool, and then the pool is joined. Trying the two setters also
+    // identifies which kind of codec this is without adding a public type query.
     Pool* old = take(p_codec);
-    if (!nj2k_decoder_set_executor(p_codec, nullptr)) {
-        return NJ2K_TRUE;
+    const bool decoder = nj2k_decoder_set_executor(p_codec, nullptr) != 0;
+    const bool encoder = !decoder && nj2k_encoder_set_executor(p_codec, nullptr) != 0;
+    if (!decoder && !encoder) {
+        delete old;
+        return NJ2K_FALSE;
     }
     delete old;
     const int total = std::min(num_threads, kMaxThreads);
@@ -304,8 +305,14 @@ OPJ_EXPORT NJ2K_BOOL opj_codec_set_threads(nj2k_codec_t* p_codec, int num_thread
         return NJ2K_FALSE;
     }
     const nj2k_executor_t executor = pool->executor();
-    if (!nj2k_decoder_set_executor(p_codec, &executor) || !remember(p_codec, pool)) {
-        nj2k_decoder_set_executor(p_codec, nullptr);
+    const bool lent = decoder ? nj2k_decoder_set_executor(p_codec, &executor) != 0
+                              : nj2k_encoder_set_executor(p_codec, &executor) != 0;
+    if (!lent || !remember(p_codec, pool)) {
+        if (decoder) {
+            nj2k_decoder_set_executor(p_codec, nullptr);
+        } else {
+            nj2k_encoder_set_executor(p_codec, nullptr);
+        }
         delete pool;
         return NJ2K_FALSE;
     }

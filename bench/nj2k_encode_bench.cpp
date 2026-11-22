@@ -7,7 +7,7 @@
 // does, and compares the two). Stage 6a's report: correctness first, speed is stage 6b's.
 //
 //   nj2k_encode_bench --backend oracle|neoj2k --size N [--height H] [--comps C] [--mode lossy|lossless]
-//                     [--budget-ms 6000] [--min-iters 3] [--max-iters 200]
+//                     [--threads N] [--budget-ms 6000] [--min-iters 3] [--max-iters 200]
 //
 // One CSV line: backend,width,height,comps,mode,bytes,checksum,iters,median_ms,min_ms,peak_extra_mb.
 // peak_extra_mb is the process's peak commit (Windows; peak resident set elsewhere) above what it held
@@ -34,6 +34,7 @@
 
 #include "common.h"
 #include "decoder.h"
+#include "thread_pool.h"
 
 using namespace nj2k::test;
 
@@ -76,8 +77,14 @@ Memory memory_now()
     std::fprintf(stderr, "nj2k_encode_bench: %s\n", why);
     std::fprintf(stderr,
                  "usage: nj2k_encode_bench --backend oracle|neoj2k --size N [--height H] [--comps C]\n"
-                 "       [--mode lossy|lossless] [--budget-ms 6000] [--min-iters 3] [--max-iters 200]\n");
+                 "       [--mode lossy|lossless] [--threads N] [--budget-ms 6000] [--min-iters 3] [--max-iters 200]\n");
     std::exit(2);
+}
+
+bool lend_encoder(void* codec, void* user)
+{
+    return nj2k_encoder_set_executor(static_cast<nj2k_codec_t*>(codec),
+                                     static_cast<const nj2k_executor_t*>(user)) != 0;
 }
 
 }  // namespace
@@ -89,7 +96,7 @@ int main(int argc, char** argv)
     std::string backend;
     int width = 0, height = 0, comps = 3;
     bool reversible = false;
-    int budget_ms = 6000, min_iters = 3, max_iters = 200;
+    int budget_ms = 6000, min_iters = 3, max_iters = 200, threads = 1;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         auto next = [&]() -> const char* {
@@ -114,6 +121,8 @@ int main(int argc, char** argv)
             reversible = m == "lossless";
         } else if (a == "--budget-ms") {
             budget_ms = std::atoi(next());
+        } else if (a == "--threads") {
+            threads = std::atoi(next());
         } else if (a == "--min-iters") {
             min_iters = std::atoi(next());
         } else if (a == "--max-iters") {
@@ -122,7 +131,8 @@ int main(int argc, char** argv)
             usage("unknown option");
         }
     }
-    if ((backend != "oracle" && backend != "neoj2k") || width < 4 || comps < 1 || comps > 8) {
+    if ((backend != "oracle" && backend != "neoj2k") || width < 4 || comps < 1 || comps > 8 || threads < 1 ||
+        threads > 64 || (backend == "oracle" && threads != 1)) {
         usage("--backend and --size are needed");
     }
     if (height < 4) {
@@ -150,6 +160,14 @@ int main(int argc, char** argv)
     us.height = height;
     us.comps = comps;
     us.reversible = reversible;
+    std::unique_ptr<ThreadPool> pool;
+    nj2k_executor_t executor = {};
+    if (threads > 1) {
+        pool = std::make_unique<ThreadPool>(static_cast<unsigned>(threads - 1));
+        executor = pool->executor(static_cast<std::uint32_t>(threads));
+        us.configure_encoder = lend_encoder;
+        us.configure_user = &executor;
+    }
     auto encode = [&](std::vector<std::uint8_t>& out) {
         return backend == "oracle" ? oracle_upload(us, out) : neoj2k_upload(us, out);
     };

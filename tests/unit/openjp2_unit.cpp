@@ -197,13 +197,14 @@ void test_threads(const Library& lib)
     lib.destroy_codec(c);
     CHECK_MSG(threads_become(base), "opj_destroy_codec left %u threads, %u expected", pool_threads(), base);
 
-    // an encoder uses none, and OpenJPEG's answer for it is yes
+    // an encoder gets the same kind of pool; large encodes borrow it, small ones remain serial
     opj_codec_t* e = lib.create_compress(OPJ_CODEC_J2K);
     CHECK_MSG(e != nullptr, "no encoder");
     if (e) {
         CHECK_MSG(lib.codec_set_threads(e, 4) == OPJ_TRUE, "an encoder refused threads");
-        CHECK_MSG(pool_threads() == base, "an encoder started threads");
+        CHECK_MSG(threads_become(base + 3), "an encoder did not start three workers");
         lib.destroy_codec(e);
+        CHECK_MSG(threads_become(base), "destroying an encoder left workers behind");
     }
     // many codecs, each with its own pool, destroyed in another order than they were made
     opj_codec_t* many[5] = {};

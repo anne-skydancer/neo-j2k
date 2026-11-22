@@ -535,7 +535,7 @@ bool build_tile(Encoder& e, EncTile& tile) noexcept
 
 using nj2k::detail::ResRect;
 
-// Jobs in order on the calling thread; the host's executor takes their place in stage 6b.
+// Jobs in order on the calling thread when this encode is below the parallel crossover.
 void run_jobs(std::uint32_t count, void (*job)(void* ctx, std::uint32_t index), void* ctx) noexcept
 {
     for (std::uint32_t i = 0; i < count; ++i) {
@@ -571,10 +571,11 @@ struct T1Jobs {
     Encoder* e;
     EncTile* tile;
     T1Job* list;
-    nj2k::detail::EncT1* t1;
+    nj2k::detail::EncT1** t1;
     const double* mct_norms;
     std::uint32_t mct_numcomps;
-    nj2k_status_t status;
+    std::uint32_t first;
+    std::uint8_t* ok;
 };
 
 // one code-block: its samples in the order of the coding passes, then its passes (opj_t1_cblk_encode_processor)
@@ -582,12 +583,10 @@ void t1_job(void* ctx, std::uint32_t index) noexcept
 {
     using namespace nj2k::detail;
     auto* j = static_cast<T1Jobs*>(ctx);
-    if (j->status != NJ2K_OK) {
-        return;
-    }
     const Encoder& e = *j->e;
     const EncParams& p = e.params;
-    const T1Job& job = j->list[index];
+    const T1Job& job = j->list[j->first + index];
+    EncT1* const t1 = j->t1[index];
     EncComp& tilec = j->tile->comps[job.compno];
     EncRes& res = tilec.res[job.resno];
     EncBand& band = res.bands[job.bandno];
@@ -605,7 +604,7 @@ void t1_job(void* ctx, std::uint32_t index) noexcept
     }
     const std::uint32_t cblk_w = static_cast<std::uint32_t>(cblk.x1 - cblk.x0);
     const std::uint32_t cblk_h = static_cast<std::uint32_t>(cblk.y1 - cblk.y0);
-    std::int32_t* t1data = enc_t1_data(j->t1);
+    std::int32_t* t1data = enc_t1_data(t1);
     std::uint32_t i, k;
     std::uint32_t row;
     if (p.reversible) {
@@ -651,12 +650,9 @@ void t1_job(void* ctx, std::uint32_t index) noexcept
             }
         }
     }
-    const bool coded = enc_t1_encode(j->t1, j->e->arena, cblk, band.bandno, job.compno, tilec.numres - 1 - job.resno,
-                                        p.reversible, static_cast<double>(band.stepsize), j->mct_norms, j->mct_numcomps);
-    if (!coded) {
-        j->status = j->e->arena.failure() == nj2k::detail::Arena::Failure::none ? NJ2K_E_LIMIT : NJ2K_E_NO_MEMORY;
-        return;
-    }
+    j->ok[index] = enc_t1_encode(t1, cblk, band.bandno, job.compno, tilec.numres - 1 - job.resno,
+                                 p.reversible, static_cast<double>(band.stepsize), j->mct_norms,
+                                 j->mct_numcomps) ? 1 : 0;
 }
 
 // Everything of the tile but the stream: the colour and wavelet transforms, Tier-1, the rate
@@ -699,10 +695,10 @@ nj2k_status_t encode_tile(Encoder& e, std::uint32_t* total) noexcept
         }
     }
 
-    // The stages that are independent per component (the wavelet) and per code-block (Tier-1) are
-    // jobs, run in order on the calling thread by run_jobs(): the shape stage 6b gives to a host's
-    // executor (stage 5's parallel_for over an index). They are not thread-safe yet: the Tier-1
-    // scratch, the arena Tier-1 commits to and the jobs' status are shared (doc/api.md, 6b's to-do).
+    // Small images stay serial: executor dispatch is a loss there. A large image borrows the host's
+    // executor for independent component wavelets and Tier-1 code-blocks.
+    Jobs parallel;
+    const bool threaded = n >= kParallelEncodeFloor && e.jobs(parallel);
     ResRect* rects = arena.make_array<ResRect>(p.numres);
     if (!rects) {
         return NJ2K_E_NO_MEMORY;
@@ -718,7 +714,12 @@ nj2k_status_t encode_tile(Encoder& e, std::uint32_t* total) noexcept
             return NJ2K_E_NO_MEMORY;
         }
         DwtJobs jobs = {&e, rects, scratch, slice};
-        run_jobs(p.numcomps, dwt_job, &jobs);
+        if (threaded && p.numcomps > 1) {
+            auto call = [&jobs](std::uint32_t i) noexcept { dwt_job(&jobs, i); };
+            parallel.run(p.numcomps, call);
+        } else {
+            run_jobs(p.numcomps, dwt_job, &jobs);
+        }
     }
 
     // Tier-1, one job a code-block (opj_tcd_t1_encode)
@@ -737,9 +738,23 @@ nj2k_status_t encode_tile(Encoder& e, std::uint32_t* total) noexcept
         jobs.e = &e;
         jobs.tile = &tile;
         jobs.list = arena.make_array<T1Job>(count);
-        jobs.t1 = enc_t1_create(e.allocator);
-        if ((count && !jobs.list) || !jobs.t1) {
-            enc_t1_destroy(jobs.t1, e.allocator);
+        const std::uint32_t width = threaded && count > 1 ? (count < parallel.width ? count : parallel.width) : 1;
+        jobs.t1 = arena.make_array<EncT1*>(width);
+        jobs.ok = arena.make_array<std::uint8_t>(width);
+        if ((count && !jobs.list) || !jobs.t1 || !jobs.ok) {
+            return NJ2K_E_NO_MEMORY;
+        }
+        std::uint32_t made = 0;
+        for (; made < width; ++made) {
+            jobs.t1[made] = enc_t1_create(e.allocator);
+            if (!jobs.t1[made]) {
+                break;
+            }
+        }
+        if (made != width) {
+            for (std::uint32_t i = 0; i < made; ++i) {
+                enc_t1_destroy(jobs.t1[i], e.allocator);
+            }
             return NJ2K_E_NO_MEMORY;
         }
         if (p.mct) {
@@ -763,10 +778,38 @@ nj2k_status_t encode_tile(Encoder& e, std::uint32_t* total) noexcept
                 }
             }
         }
-        run_jobs(count, t1_job, &jobs);
-        enc_t1_destroy(jobs.t1, e.allocator);
-        if (jobs.status != NJ2K_OK) {
-            return jobs.status;
+        nj2k_status_t t1_status = NJ2K_OK;
+        for (std::uint32_t first = 0; first < count && t1_status == NJ2K_OK; first += width) {
+            const std::uint32_t batch = count - first < width ? count - first : width;
+            jobs.first = first;
+            std::memset(jobs.ok, 0, batch);
+            if (threaded && batch > 1) {
+                auto call = [&jobs](std::uint32_t i) noexcept { t1_job(&jobs, i); };
+                parallel.run(batch, call);
+            } else {
+                run_jobs(batch, t1_job, &jobs);
+            }
+            // Commit in the original code-block order. The arena and allocator are never touched
+            // concurrently, and allocation failures occur at the same logical point.
+            for (std::uint32_t i = 0; i < batch; ++i) {
+                if (!jobs.ok[i]) {
+                    t1_status = NJ2K_E_LIMIT;
+                    break;
+                }
+                const T1Job& job = jobs.list[first + i];
+                EncBand& band = tile.comps[job.compno].res[job.resno].bands[job.bandno];
+                EncCblk& cblk = band.cblks[job.cblkno];
+                if (!enc_t1_commit(jobs.t1[i], arena, cblk)) {
+                    t1_status = NJ2K_E_NO_MEMORY;
+                    break;
+                }
+            }
+        }
+        for (std::uint32_t i = 0; i < width; ++i) {
+            enc_t1_destroy(jobs.t1[i], e.allocator);
+        }
+        if (t1_status != NJ2K_OK) {
+            return t1_status;
         }
     }
 
@@ -795,6 +838,16 @@ nj2k_status_t encode_tile(Encoder& e, std::uint32_t* total) noexcept
 }  // namespace
 
 namespace nj2k::detail {
+
+bool Encoder::jobs(Jobs& out) const noexcept
+{
+    if (!executor.parallel_for || executor.concurrency < 2) {
+        return false;
+    }
+    out.ex = &executor;
+    out.width = executor.concurrency < kMaxJobs ? executor.concurrency : kMaxJobs;
+    return true;
+}
 
 void Encoder::release_all() noexcept
 {
@@ -828,6 +881,25 @@ NJ2K_API nj2k_codec_t* NJ2K_CALLCONV nj2k_create_compress(NJ2K_CODEC_FORMAT form
     e->allocator = allocator;
     e->arena.init(&e->allocator);
     return reinterpret_cast<nj2k_codec_t*>(e);
+}
+
+NJ2K_API NJ2K_BOOL NJ2K_CALLCONV nj2k_encoder_set_executor(nj2k_codec_t* p_codec,
+                                                           const nj2k_executor_t* executor)
+{
+    Encoder* e = Encoder::from(p_codec);
+    if (!e) {
+        return NJ2K_FALSE;
+    }
+    if (!executor) {
+        e->executor = nj2k_executor_t{0, 0, nullptr, nullptr};
+        return finish(e, NJ2K_OK);
+    }
+    if (executor->struct_size < sizeof(nj2k_executor_t) || !executor->parallel_for) {
+        return fail(e, NJ2K_E_ARGUMENT, "nj2k_encoder_set_executor: the executor is incomplete\n");
+    }
+    e->executor = *executor;
+    e->executor.struct_size = sizeof(nj2k_executor_t);
+    return finish(e, NJ2K_OK);
 }
 
 NJ2K_API NJ2K_BOOL NJ2K_CALLCONV nj2k_setup_encoder(nj2k_codec_t* p_codec, nj2k_cparameters_t* parameters,

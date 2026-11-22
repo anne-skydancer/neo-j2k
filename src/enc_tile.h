@@ -137,13 +137,16 @@ struct EncT1;
 EncT1* enc_t1_create(const Allocator& alloc) noexcept;
 void enc_t1_destroy(EncT1* t1, const Allocator& alloc) noexcept;
 // The 64 x 64 code-block's samples, in the order of the coding passes, are written by the caller
-// through enc_t1_data() (w x h, four rows at a time, column by column) and coded here: the passes
-// go to cblk->passes (from arena) and the bytes to cblk->data. False when the arena runs out or the
-// code-block's output does not fit its buffer.
+// through enc_t1_data() (w x h, four rows at a time, column by column) and coded here. False when
+// the code-block's output does not fit its fixed scratch buffer.
 std::int32_t* enc_t1_data(EncT1* t1) noexcept;
-bool enc_t1_encode(EncT1* t1, Arena& arena, EncCblk& cblk, std::uint32_t orient, std::uint32_t compno,
-                    std::uint32_t level, bool reversible, double stepsize, const double* mct_norms,
-                    std::uint32_t mct_numcomps) noexcept;
+bool enc_t1_encode(EncT1* t1, EncCblk& cblk, std::uint32_t orient, std::uint32_t compno,
+                   std::uint32_t level, bool reversible, double stepsize, const double* mct_norms,
+                   std::uint32_t mct_numcomps) noexcept;
+// Keep the encoded passes and bytes in the tile arena. Kept separate from encode so independent
+// code-blocks can run concurrently without making the host allocator part of the threading contract;
+// the caller commits them in codestream order once the jobs have joined.
+bool enc_t1_commit(const EncT1* t1, Arena& arena, EncCblk& cblk) noexcept;
 
 // Tier-2 and the rate allocation: layers from the passes (opj_tcd_rateallocate), then the packets.
 // len is the room in dest (OpenJPEG's tile buffer after SOT and SOD); false when it does not fit

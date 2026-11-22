@@ -169,6 +169,9 @@ struct UploadSpec {
     int mct = -1;              // -1: the viewer's (on from three components)
     int max_cs_size = 0;       // the codestream size cap in bytes (0: none, the viewer's)
     const char* comment = "no comment";  // nullptr: no comment given, OpenJPEG writes its own
+    // A benchmark/test hook after the encoder is created and before setup (nullptr normally).
+    bool (*configure_encoder)(void* codec, void* user) = nullptr;
+    void* configure_user = nullptr;
 };
 // A codestream from each library's encoder: the oracle's, and neo-j2k's through the compatibility
 // header. false when the library refuses (where it refused is not compared).

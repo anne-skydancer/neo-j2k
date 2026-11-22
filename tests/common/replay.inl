@@ -668,6 +668,11 @@ inline bool replay_upload_ex(const Api& A, const nj2k::test::UploadSpec& us, std
         A.opj_image_destroy(image);
         return false;
     }
+    if (us.configure_encoder && !us.configure_encoder(enc, us.configure_user)) {
+        A.opj_destroy_codec(enc);
+        A.opj_image_destroy(image);
+        return false;
+    }
     A.opj_set_error_handler(enc, on_info, nullptr);
     A.opj_set_warning_handler(enc, on_info, nullptr);
     A.opj_set_info_handler(enc, on_info, nullptr);

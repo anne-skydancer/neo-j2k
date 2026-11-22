@@ -19,6 +19,7 @@ nj2k_destroy_cstr_index
 nj2k_destroy_cstr_info
 nj2k_dump_codec
 nj2k_encode
+nj2k_encoder_set_executor
 nj2k_encoder_set_extra_options
 nj2k_end_compress
 nj2k_end_decompress

@@ -30,6 +30,7 @@
 
 #include "common.h"
 #include "decoder.h"
+#include "thread_pool.h"
 
 using namespace nj2k::test;
 
@@ -1098,6 +1099,50 @@ void test_limits_and_states()
     }
 }
 
+void test_threads()
+{
+    // Below the crossover, lending a pool must be free: no dispatch and identical bytes.
+    ThreadPool pool(7);
+    {
+        Job one(128, 128, 3);
+        Job many(128, 128, 3);
+        const nj2k_executor_t ex = pool.executor(8);
+        CHECK(nj2k_encoder_set_executor(many.codec, &ex));
+        const std::uint64_t before = pool.batches();
+        CHECK(one.run() && many.run());
+        CHECK(many.sink.bytes == one.sink.bytes);
+        CHECK(pool.batches() == before);
+    }
+
+    // At and above 256 x 256, component wavelets and Tier-1 code-block batches use the executor;
+    // every supported concurrency must still produce the serial codestream byte for byte.
+    Job serial(256, 256, 3);
+    CHECK(serial.run());
+    for (const std::uint32_t concurrency : {2U, 4U, 8U, 16U, 64U}) {
+        Job many(256, 256, 3);
+        const nj2k_executor_t ex = pool.executor(concurrency);
+        CHECK(nj2k_encoder_set_executor(many.codec, &ex));
+        const std::uint64_t before = pool.batches();
+        CHECK_MSG(many.run(), "encoder with %u threads: %s", concurrency, nj2k_status_string(many.status()));
+        CHECK_MSG(pool.batches() > before, "encoder with %u threads did not use its executor", concurrency);
+        CHECK_MSG(many.sink.bytes == serial.sink.bytes, "encoder with %u threads changed the codestream", concurrency);
+    }
+
+    // The executor is copied, can be taken back, and malformed descriptions are refused.
+    {
+        Job j;
+        nj2k_executor_t ex = pool.executor(4);
+        CHECK(nj2k_encoder_set_executor(j.codec, &ex) && j.status() == NJ2K_OK);
+        CHECK(nj2k_encoder_set_executor(j.codec, nullptr));
+        ex.struct_size = sizeof(nj2k_executor_t) - 1;
+        CHECK(!nj2k_encoder_set_executor(j.codec, &ex) && j.status() == NJ2K_E_ARGUMENT);
+        ex = pool.executor(4);
+        ex.parallel_for = nullptr;
+        CHECK(!nj2k_encoder_set_executor(j.codec, &ex) && j.status() == NJ2K_E_ARGUMENT);
+        CHECK(!nj2k_encoder_set_executor(nullptr, nullptr));
+    }
+}
+
 }  // namespace
 
 int main(int argc, char** argv)
@@ -1115,6 +1160,7 @@ int main(int argc, char** argv)
     test_corpus_images();
     test_settings();
     test_round_trip();
+    test_threads();
     std::printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures ? 1 : 0;
 }

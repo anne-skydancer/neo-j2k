@@ -601,7 +601,7 @@ std::int32_t* enc_t1_data(EncT1* t1) noexcept
     return t1->data;
 }
 
-bool enc_t1_encode(EncT1* t1, Arena& arena, EncCblk& cblk, std::uint32_t orient, std::uint32_t compno,
+bool enc_t1_encode(EncT1* t1, EncCblk& cblk, std::uint32_t orient, std::uint32_t compno,
                    std::uint32_t level, bool reversible, double stepsize, const double* mct_norms,
                    std::uint32_t mct_numcomps) noexcept
 {
@@ -755,18 +755,23 @@ bool enc_t1_encode(EncT1* t1, Arena& arena, EncCblk& cblk, std::uint32_t orient,
         pass->len = pass->rate - (passno == 0 ? 0 : t1->passes[passno - 1].rate);
     }
 
-    // keep the passes and the bytes the code-block holds, no more (OpenJPEG keeps the whole buffer
-    // it allocated for the largest output)
-    if (cblk.totalpasses) {
-        cblk.passes = arena.make_array<EncPass>(cblk.totalpasses);
-        const OPJ_UINT32 bytes = mqc->numbytes();
-        cblk.data = static_cast<std::uint8_t*>(arena.allocate(bytes ? bytes : 1, 16));
-        if (!cblk.passes || !cblk.data) {
-            return false;
-        }
-        std::memcpy(cblk.passes, t1->passes, cblk.totalpasses * sizeof(EncPass));
-        std::memcpy(cblk.data, t1->out + 1, bytes);
+    return true;
+}
+
+bool enc_t1_commit(const EncT1* t1, Arena& arena, EncCblk& cblk) noexcept
+{
+    // Keep no more than the code-block holds (OpenJPEG keeps the whole largest-output buffer).
+    if (!cblk.totalpasses) {
+        return true;
     }
+    cblk.passes = arena.make_array<EncPass>(cblk.totalpasses);
+    const OPJ_UINT32 bytes = t1->mqc.numbytes();
+    cblk.data = static_cast<std::uint8_t*>(arena.allocate(bytes ? bytes : 1, 16));
+    if (!cblk.passes || !cblk.data) {
+        return false;
+    }
+    std::memcpy(cblk.passes, t1->passes, cblk.totalpasses * sizeof(EncPass));
+    std::memcpy(cblk.data, t1->out + 1, bytes);
     return true;
 }
 

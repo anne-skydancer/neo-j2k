@@ -7,7 +7,7 @@
 // returned. Any number of threads may call it at once (many decoders sharing one pool, as a host's
 // decode threads would), and a job may call it again: a caller never waits for a job it could run
 // itself, so neither deadlocks with every worker busy. It is the kind of executor
-// nj2k_decoder_set_executor() expects, not part of the library (which starts no thread).
+// nj2k_*_set_executor() expects, not part of the library (which starts no thread).
 #pragma once
 
 #include <neoj2k/neoj2k.h>

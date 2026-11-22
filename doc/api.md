@@ -270,18 +270,17 @@ by its code-block's buffer (OpenJPEG writes without a bound, OD-4); the buffer O
 image whose codestream outgrows it fails there as there (`NJ2K_E_LIMIT`, "Cannot encode tile"; ported, but no image of these settings has been found that reaches it), and an image whose
 code-blocks do not fit the two guard bits of their band is refused (OD-6) as the pin refuses it.
 
-The wavelet (one job a component) and Tier-1 (one job a code-block) are written as jobs run in order on the
-calling thread (`run_jobs()`), the shape stage 6b gives to a host's executor: the `nj2k_executor_t` of "Threads in one image" below, whose
-`parallel_for(user, count, job, job_ctx)` is what `run_jobs()` stands in for (6b adds the encoder's own
-`nj2k_encoder_set_executor`); they are
-**not thread-safe yet**. Stage 6b's to-dos for it: a Tier-1 scratch for each worker (`EncT1` is shared), an arena (or a
-lock) for what Tier-1 commits (`enc_t1_encode` allocates from the encoder's), a status for each job (the jobs' status is
-shared). The library starts no thread.
+The wavelet (one job a component) and Tier-1 (one job a code-block) use the host executor lent through
+`nj2k_encoder_set_executor`. Images below 256 x 256 stay on the calling thread. Tier-1 runs bounded batches of at
+most 64 code-blocks, one `EncT1` scratch per concurrent job; after each batch joins, its passes and bytes are committed
+to the encoder arena in original code-block order. Thus a caller-supplied allocator is never called concurrently,
+allocation failures occur at the same logical point, memory growth is bounded by the executor width, and codestream
+bytes and diagnostics do not depend on scheduling. The library starts no thread.
 
 `nj2k_start_compress` and `nj2k_encode` run under the default floating-point environment (round to
 nearest-even, no flush-to-zero, no denormals-are-zero: the control bits are set for the call and put back on every
 exit), so the quantization's `lrintf`, the 9/7 steps and the colour transform give OpenJPEG's bytes whatever environment
-the calling thread had (`fpenv_unit`). A 6b executor's jobs will run under it too, through the same job trampoline as the decoder's.
+the calling thread had (`fpenv_unit`). Executor jobs run under it too, through the same job trampoline as the decoder's.
 
 ## Versions, and a host's cache
 
@@ -331,12 +330,11 @@ core's; the core is the same code as `neoj2k.dll` (the module links the static l
     time a viewer meets the module (the string differs from "2.5.4") and not at later neo-j2k releases (the same
     samples), where a version in the string would purge it at every release.
   - `opj_has_thread_support()` is true, and `opj_codec_set_threads(codec, n)` starts the threads, which the core
-    never does: the module is the host that lends the core an executor (`nj2k_decoder_set_executor`). A decoder
-    gets a pool of its own, replaced by the next call and joined by `opj_destroy_codec`, as OpenJPEG's is (its threads
-    are named `openjp2-worker`; an encoder gets none). The
+    never does: the module is the host that lends the core an executor. A decoder or encoder gets a pool of its own,
+    replaced by the next call and joined by `opj_destroy_codec`, as OpenJPEG's is (its threads are named
+    `openjp2-worker`). The
     calling thread works while it waits, so `n` threads are `n - 1` workers and the caller (0 and 1 run on the
-    caller), at most 64 (the most a decode is cut into); a negative count and no codec are refused; an encoder
-    takes the call and answers true, as OpenJPEG's does, and runs on its calling thread (stage 6a). The samples
+    caller), at most 64 (the most a stage is cut into); a negative count and no codec are refused. The samples
     and bytes are the same at every count (`openjp2_whole_threads`, `openjp2_unit`). The core calls the executor
     for tiles of 2^18 samples or more only, so a small texture decodes on the caller whatever was asked.
   - `opj_create_decompress` and `opj_create_compress` give `NULL` on a processor the library does not run on
@@ -397,10 +395,10 @@ Under the OpenJPEG-shaped API the image (`nj2k_image_t` and its sample planes), 
 come from the C runtime's heap whatever the choice, since their destroy functions take no codec; a
 zero-heap path needs the image and stream handled by the host or by the extension.
 
-## Threads in one image (stage 5)
+## Threads in one image
 
 The library starts no thread and keeps no pool (plan T2, `performance.md` section 6). A host that wants
-a large image decoded on several cores lends the codec its executor:
+a large image decoded or encoded on several cores lends the codec its executor:
 
 ```c
 typedef void (*nj2k_job_fn)(void *job_ctx, NJ2K_UINT32 index);
@@ -411,15 +409,16 @@ typedef struct nj2k_executor {
     void *user;
 } nj2k_executor_t;
 NJ2K_BOOL nj2k_decoder_set_executor(nj2k_codec_t *codec, const nj2k_executor_t *executor); /* NULL: none */
+NJ2K_BOOL nj2k_encoder_set_executor(nj2k_codec_t *codec, const nj2k_executor_t *executor); /* NULL: none */
 ```
 
 - `parallel_for` runs `job(job_ctx, i)` once for every `i < count`, on any threads in any order, the calling
   thread included, and returns when every job has returned. What the caller wrote before the call is seen
   by every job, and what every job wrote is seen by the caller once the call returns (each job's run
-  happens before the return, as a mutex or a release/acquire pair gives it): the decoder's stages rely on
+  happens before the return, as a mutex or a release/acquire pair gives it): the codec's stages rely on
   it, one stage reading what the parts of the one before wrote. Jobs never wait for one another and never
   call into the codec or the executor, so an executor whose waiting caller runs jobs itself cannot
-  deadlock, even with every worker busy or with many codecs sharing it: every decoder of a process can
+  deadlock, even with every worker busy or with many codecs sharing it: every codec of a process can
   share the host's one scheduler, and nothing oversubscribes the cores (OpenJPEG's
   `opj_codec_set_threads` starts a pool per codec, and joins it when the codec is destroyed).
 - `concurrency` says how the work is cut, never how many threads run: each stage is cut into that many

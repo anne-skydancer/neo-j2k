@@ -48,15 +48,16 @@ large levels, its vertical steps in one sweep; the MQ decoder's renormalisation 
 heap call once warmed up, from the first repeat of a request on (`doc/bench.md`).
 
 Stage 5, threads in one image: the library starts no thread; a host lends it an executor
-(`nj2k_decoder_set_executor`), and a tile whose largest component has 2^18 samples or more is split across it,
+(`nj2k_decoder_set_executor` or `nj2k_encoder_set_executor`), and a tile whose largest component has 2^18 samples or more is split across it,
 with the same output at any thread count. The host lends only when it has idle cores (stage 5b,
 `doc/api.md`).
 
-Stage 6a, the encoder: the settings the Second Life viewer encodes with (RLCP, 64 x 64 code-blocks, 5/3 lossless or
+The encoder takes the settings the Second Life viewer encodes with (RLCP, 64 x 64 code-blocks, 5/3 lossless or
 9/7 with rate layers, the colour transform, 8-bit components of up to 4,096 samples a side), through OpenJPEG's
 encoder API, with codestreams byte for byte OpenJPEG's (`encode_unit`, the encode fuzz target); the rest of
-OpenJPEG's encoder gives `NJ2K_E_UNSUPPORTED` (the j2k-extra module). One thread, correctness first: speed is
-stage 6b's (`doc/api.md`, `doc/bench.md`).
+OpenJPEG's encoder gives `NJ2K_E_UNSUPPORTED` (the j2k-extra module). From 256 x 256 it uses parallel component
+wavelets and Tier-1 code-block batches when the host lends an executor; smaller uploads remain serial. Codestream
+bytes are identical at every concurrency (`doc/api.md`, `doc/bench.md`).
 
 The openjp2 module: OpenJPEG's API as the library a viewer already loads (`openjp2.dll`, `libopenjp2.so.7`), neo-j2k
 inside, so a viewer that talks to OpenJPEG takes neo-j2k with nothing recompiled or relinked: the 55 functions of
@@ -149,7 +150,9 @@ mean. Stage 6b is the speed stage.
 | 1,024² | lossless | 262.8 | 295.9 | 1.13 | 38.8 / 37.5 |
 | 2,048² | lossy | 1,007.1 | 1,176.3 | 1.17 | 153.9 / 148.0 |
 
-The encoder takes 0.97 to 1.17 of OpenJPEG's time, most rows 1.11 to 1.17, with a peak 0.3 to 6 MB lower.
+On one thread the encoder takes 0.97 to 1.17 of OpenJPEG's time, most rows 1.11 to 1.17, with a peak 0.3 to 6 MB
+lower. On the benchmark machine, eight threads made 256² uploads 3.7-4.1x faster, 512² uploads 4.3-5.0x faster, and 1,024² uploads 4.5-5.6x
+faster; `doc/bench.md` records the runs and crossover.
 
 ### In the Vulkanstorm viewer
 

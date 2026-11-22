@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: BSD-2-Clause
 // Copyright (c) 2026, Anne Skydancer (neo-j2k)
 //
-// Threads in one image (stage 5): the host's executor (nj2k_decoder_set_executor), as the stages of
-// a large tile's decode use it. The library starts no thread and keeps no pool (plan T2): a stage
+// Threads in one image: the host's executor (nj2k_decoder_set_executor or nj2k_encoder_set_executor),
+// as the stages of a large tile use it. The library starts no thread and keeps no pool (plan T2): a stage
 // cuts its work into parts whose outputs never overlap, the host runs them, and the stage goes on
 // when every part has returned. A part's result depends only on its own inputs, never on which
 // thread ran it, when, or what the other parts did, and nothing is summed across parts, so a decode
@@ -29,6 +29,9 @@ inline constexpr std::uint32_t kMaxJobs = 64;
 // microseconds an executor needs to start and join them (performance.md section 6), as in an image of
 // many small tiles.
 inline constexpr std::uint64_t kParallelTileFloor = std::uint64_t(1) << 18;
+// Encoding has substantially more Tier-1 work per sample than decoding. Its measured crossover is
+// one 256 x 256 component: below this, executor dispatch remains a loss.
+inline constexpr std::uint64_t kParallelEncodeFloor = std::uint64_t(1) << 16;
 // Inside such a tile, a wavelet level is split from this area (samples of the level) on; smaller
 // levels run on the calling thread, as before. An estimate (not probed on its own): it applies only
 // inside a tile already split.
