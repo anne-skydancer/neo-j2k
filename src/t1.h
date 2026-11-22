@@ -3,8 +3,9 @@
 //
 // Tier-1 decoding of one code-block: the MQ and raw (BYPASS) decoders and the three coding passes,
 // ported from OpenJPEG 2.5.4 (t1.c, mqc.c, mqc_inl.h, t1_luts.h; their notice is in t1.cpp), so the
-// coefficients are OpenJPEG's; the MQ decision and the cleanup pass's run of AGG decisions are reformulated (t1_mq.h). The interface is neo-j2k's: one
-// code-block's data chunks and segments in, its coefficients in the decoder's scratch, then written
+// coefficients are OpenJPEG's; the MQ decision and the cleanup pass's run of AGG decisions are
+// reformulated (t1_mq.h). The interface is neo-j2k's: one code-block's data chunks and segments in,
+// its coefficients in the decoder's scratch, then written
 // into the tile-component's buffer with dequantisation (and the ROI shift) as OpenJPEG does.
 // The code-block's bytes are always copied into the decoder's padded buffer first, so the MQ
 // decoder's 0xFFFF sentinel is never written into the caller's bytes (plan P4).

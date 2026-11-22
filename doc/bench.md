@@ -1031,17 +1031,18 @@ generated code-blocks (every size 1..64, the shapes 1024 x 4, 4 x 1024 and kin, 
 31, ROI shifts, split chunks, all-0xFF, markers inside a segment, zero-length segments, 109 one-byte segments), 1,500
 with over-long segments (against the frozen decode of the cut lengths), and, with the full dump set
 (`NJ2K_T1_VECTORS`, test `t1_unit_more`), 37,424 code-blocks of 115 files (the 35,390 of the mode-switch corpus, which
-contains the 3,777 generated ones, plus the 2,034 of the six study images; code-block styles 00, 01, 04, 05, 0a, 10, 12, 19, 20, 28, 2f, 34 and 3f). Single decisions are compared with a model
-of ISO 15444-1 C.3.2 written in the test, in the frozen decoder and in the new one: 6.55 million in ctest (every 17th
-interval and, per state, the intervals around the exchange and renormalisation edges), 887 million nightly (`t1_exhaustive`: every interval and state, `c_hi` at `qe - 1`, `qe` and `qe + 1`, bit
-counters 0 to 8, next bytes from 00, 7F, 8F, 90, FE, FF). Each block is also decoded on a buffer of exactly its bytes and two (the library's rounds up), so a write past the sentinel
-is the sanitizers' to see, and `t1_unit_masks` runs the whole test with the mask form of the decision (GCC's) compiled in.
-The state table is checked against Table C.2 written out in
-the test. The AGG run is checked against the decisions one at a time (2.7 million cases, runs stopped by a column with
-flags). The new fuzz target `fuzz_t1` runs the library and the frozen copy on any bytes; its seeds are real
-code-blocks. All of it passes on MSVC AVX2 (the whole ctest, 126 tests), MSVC SCALAR and clang-cl (`t1_unit` and the
-fuzz replay), and on MSVC AddressSanitizer (`t1_unit` including the 37,424 code-blocks, the replay and 4,000 mutated
-fuzz inputs); `nj2k_t1_unit` also on MinGW GCC 13.2.
+contains the 3,777 generated ones, plus the 2,034 of the six study images; code-block styles 00, 01, 04, 05, 0a, 10,
+12, 19, 20, 28, 2f, 34 and 3f). Single decisions are compared with a model of ISO 15444-1 C.3.2 written in the test,
+in the frozen decoder and in the new one: 6.55 million in ctest (every 17th interval and, per state, the intervals
+around the exchange and renormalisation edges), 887 million nightly (`t1_exhaustive`: every interval and state, `c_hi`
+at `qe - 1`, `qe` and `qe + 1`, bit counters 0 to 8, next bytes from 00, 7F, 8F, 90, FE, FF). Each block is also
+decoded on a buffer of exactly its bytes and two (the library's rounds up), so a write past the sentinel is the
+sanitizers' to see, and `t1_unit_masks` runs the whole test with the mask form of the decision (GCC's) compiled in.
+The state table is checked against Table C.2 written out in the test. The AGG run is checked against the decisions one
+at a time (2.7 million cases, runs stopped by a column with flags). The new fuzz target `fuzz_t1` runs the library and
+the frozen copy on any bytes; its seeds are real code-blocks. All of it passes on MSVC AVX2 (the whole ctest, 126
+tests), MSVC SCALAR and clang-cl (`t1_unit` and the fuzz replay), and on MSVC AddressSanitizer (`t1_unit` including
+the 37,424 code-blocks, the replay and 4,000 mutated fuzz inputs); `nj2k_t1_unit` also on MinGW GCC 13.2.
 
 **Method.** Ryzen 9 9950X3D, Windows 11, one thread pinned to CPU 7, TSC cycles, medians of interleaved rounds. "Tier-1"
 is `nj2k_t1_dec` (`bench/nj2k_t1_dec.cpp`): `t1_decode_cblk` of the library against the frozen copy built with the
