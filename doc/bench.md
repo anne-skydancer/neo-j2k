@@ -978,37 +978,43 @@ branches (the select form: 0.95 of today's kernel on a local MinGW GCC 13.2), so
 same function with arithmetic masks, and reads the next state as a byte of the table entry (`enc_luts.h`
 asserts the layout) in place of a mask.
 
-**Real Linux, GitHub Actions** (`bench/nj2k_enc_t1_ratio.cpp`, the new `enc_t1_encode` against the frozen
-earlier one in one process, interleaved rounds, 256 synthetic 64 x 64 blocks a set, TSC cycles, the median of
-the rounds' ratios, then the median of 3 runs; ratios new/old, lower is better, target 0.62). Each cell is
-lossless / lossy, kernel only, on shared runners:
+**Real Linux, GitHub Actions: the table of record.** `bench/nj2k_enc_t1_ratio.cpp` links the real library and
+times the new `enc_t1_encode` against the frozen earlier one in one process, interleaved rounds, 256 synthetic
+64 x 64 blocks a set, TSC cycles. A cell is the ratio new/old (lower is better, target 0.62), the median of the
+rounds' ratios and then the median of 3 runs of 41 rounds, lossless / lossy, kernel only, on shared runners.
+"Final code" is the confirmation run (45032049386) on the code of this branch; "before the byte load" is the
+first run (the masks, with the next state by mask) on the same harness:
 
-| Job | First run (the masks) | Second run, same code | Second run, next state by byte load (shipped) |
-|---|---|---|---|
-| gcc-14, AVX2 | 0.59 / 0.62 | 0.587 / 0.619 | **0.565 / 0.599** |
-| gcc-14, SCALAR | 0.69 / 0.72 | 0.608 / 0.638 | **0.586 / 0.616** |
-| gcc-15, AVX2 | 0.68 / 0.70 | 0.672 / 0.697 | **0.651 / 0.675** |
-| gcc-15, SCALAR | 0.77 / 0.80 | 0.667 / 0.695 | **0.641 / 0.671** |
-| clang, AVX2 | 0.61 / 0.65 | not run | unchanged (the selects) |
-| clang, SCALAR | 0.63 / 0.66 | not run | unchanged (the selects) |
+| Job | Before the byte load | Final code | Gain |
+|---|---|---|---:|
+| gcc-14, AVX2 | 0.588 / 0.620 | **0.565 / 0.599** | 3.9 % / 3.4 % |
+| gcc-14, SCALAR | 0.693 / 0.721 | **0.669 / 0.694** | 3.5 % / 3.7 % |
+| gcc-15, AVX2 | 0.677 / 0.703 | **0.656 / 0.685** | 3.1 % / 2.6 % |
+| gcc-15, SCALAR | 0.774 / 0.797 | **0.753 / 0.775** | 2.7 % / 2.8 % |
+| clang, AVX2 | not run | **0.611 / 0.640** | the selects, unchanged |
+| clang, SCALAR | not run | **0.595 / 0.620** | the selects, unchanged |
 
-GCC 14 meets the target (0.565 to 0.616 with the byte load) and clang is at it (0.61 to 0.66); **GCC 15, the
-compiler of the `linux-gcc` preset, ends at 0.64 to 0.68, above the 0.62 target.** It is the weak spot: the
-same masks cost 0.67 to 0.70 there against 0.59 to 0.64 on GCC 14. The owner accepted about 0.70 or better
-for GCC 15. The second run built 14 candidate formulations of the GCC path, each its own program in one job
-per compiler and build, run 3 times each; the shipped one is the next-state byte load, 3.1 to 3.9 % lower than
-the masks on all four GCC jobs. A single 4-byte table load unpacked by shifts gave the same (0.561 / 0.594,
-0.587 / 0.615, 0.650 / 0.677, 0.642 / 0.670) and was not kept. Not better than the masks, or within the noise:
-the exchange decided from the borrow of `a' - q`, a do-while byte-out loop with `__builtin_expect`, the byte-out
-loop out of line, the coder in a local copy for the length of a pass, a forced-inline `byteout`, and the
-combinations of those; adding a direct `bsr` shift count for the SCALAR build to the byte load (0.565 / 0.598,
-0.581 / 0.610, 0.654 / 0.678, 0.644 / 0.676) gained nothing over the byte load alone.
+The byte load is 2.7 to 3.9 % lower than the masks on all four GCC jobs. Where the build ends up:
 
-A caveat on the SCALAR rows: for the same unchanged code the SCALAR jobs read 0.08 to 0.10 lower in the second
-run than in the first (gcc-14 0.69 / 0.72 against 0.608 / 0.638, gcc-15 0.77 / 0.80 against 0.667 / 0.695),
-while the AVX2 jobs reproduced within 0.01. The cause is unknown (the runners' CPUs, or a difference between
-the two workflows' builds), so the within-run comparison of the byte load against the masks is trusted more
-than any absolute SCALAR ratio.
+- GCC 14 AVX2 meets the 0.62 target (0.565 / 0.599); clang is at it (0.595 to 0.640).
+- **GCC 15, the compiler of the `linux-gcc` preset, AVX2 ends at 0.66 to 0.69**, above the 0.62 target; the
+  owner accepted about 0.70 or better.
+- **GCC 15 SCALAR ends at 0.75 to 0.78**, above the accepted 0.70, and GCC 14 SCALAR at 0.67 to 0.69. No
+  candidate gained there (below). The same masks cost 0.08 to 0.10 more on GCC 15 than on GCC 14.
+
+**The candidates (relative ranking only).** The second CI run built 14 candidate formulations of the GCC path,
+each its own program in one job per compiler and build, run 3 times each (run 45029986714). Those programs
+compile their own copy of `enc_t1.cpp` and of the frozen reference, and their absolute SCALAR ratios came out
+about 0.1 lower than the single-bench runs above for the same code (the shipped form: gcc-14 SCALAR
+0.586 / 0.616, gcc-15 SCALAR 0.641 / 0.671, against 0.669 / 0.694 and 0.753 / 0.775 in the final run; the AVX2
+jobs agreed to within 0.01). The likely cause is that the variant programs are built with different
+effective conditions from the library's (not proven), so **their absolute numbers are not comparable with the
+table above and are kept only for the ranking inside that run**. In it the next-state byte load (variant 2) was
+3.1 to 3.9 % lower than the masks (variant 0) on all four jobs; a single 4-byte table load unpacked by shifts was
+level with it and was not kept; a direct `bsr` shift count for the SCALAR build added to the byte load gained
+nothing over the byte load alone. Not better than the masks, or within the noise: the exchange decided from the
+borrow of `a' - q`, a do-while byte-out loop with `__builtin_expect`, the byte-out loop out of line, the coder
+in a local copy for the length of a pass, a forced-inline `byteout`, and the combinations of those.
 
 On the local Windows machine (MinGW GCC 13.2, the Visual Studio clang with the MSVC ABI, 64 synthetic blocks,
 kernel only, pinned, 31 interleaved rounds): GCC 0.95 with selects, 0.685 to 0.715 with masks; clang 0.62 to
