@@ -14,5 +14,5 @@ Format ("MQNG", all little-endian u32 but the bytes): the magic `MQNG`, the bloc
 orient roishift cblksty`, the segment count, `len passes` for each segment, the byte count and the bytes.
 
 The dumps came from a copy of the library that writes each block as `t1_decode_cblk` is called; that tooling is not in the
-repository. The full dump set (37,424 blocks, 18 MB: the 35,390 of the mode-switch corpus with the conformance files, and the
-six study textures) is not committed; `NJ2K_T1_VECTORS` runs it where it exists.
+repository. Committed: 3,927 code-blocks (3,777 + 150). The full dump set, not committed, is 37,424 blocks (about 18 MB): the
+35,390 mode-switch conformance blocks plus the 2,034 of the six study textures; `NJ2K_T1_VECTORS` runs it where it exists.

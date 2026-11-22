@@ -5,11 +5,12 @@
 // driver) against the frozen reference (the text of src/t1.cpp as it was before the MQ-NG redesign: t1_frozen.cpp).
 // The redesign must leave every coefficient and the refusal of a code-block as they were, so each test runs both
 // decoders on the same input:
-//   1. vectors: the code-blocks of real files as Tier-1 received them, dumped from real decodes ("MQNG" files, tests/vectors/t1/README.md:
-//      tests/vectors/t1 holds 3,927 blocks, those of corpus/generated and of the 256 x 256 study images; the full
-//      dump set, 37,424 blocks (the 35,390 of the mode-switch corpus, conformance files included, and the 2,034 of
-//      the six study images), is run when a folder of dumps is named);
-//   2. generated code-blocks: every size 1..64 a side, the shapes 1024 x 4 and 4 x 1024 and their kin, every
+//   1. vectors: the code-blocks of real files as Tier-1 received them, dumped from real decodes ("MQNG" files; the
+//      format is in tests/vectors/t1/README.md). tests/vectors/t1 holds 3,927 committed blocks, those of
+//      corpus/generated and of the 256 x 256 study images. The full dump set, not committed, is 37,424 blocks (the
+//      35,390 mode-switch conformance blocks plus the 2,034 of the six study images, about 18 MB), and is run when a
+//      folder of dumps is named;
+//   2. generated code-blocks: every size 1..64 a side, the shapes 1024 x 4 and 4 x 1024 and similar shapes, every
 //      code-block style 0..63, every orientation, bit-planes 0..31 and ROI shifts, split chunks, and adversarial
 //      bytes (all 0xFF, markers 0xFF 0x90 inside a segment, zero-length segments, 109 one-byte segments);
 //   2b. segments longer than the bytes (Tier-2 gives none): cut to the bytes present, as the frozen decode of the cut
@@ -668,7 +669,7 @@ bool test_single(bool full)
 // ---- 5. the run of AGG decisions ----
 
 // The run: with the AGG context's MPS 0 and room = min(a - 0x8000, c_hi), the columns while n * qe <= room are each an
-// MPS 0 without renormalisation: a -= n * qe, c -= (n * qe) << 16 (study stage 2). Against the decisions one at a time.
+// MPS 0 without renormalisation: a -= n * qe, c -= (n * qe) << 16. Against the decisions one at a time.
 bool test_agg_run()
 {
     std::uint64_t n = 0;

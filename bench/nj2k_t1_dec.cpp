@@ -2,8 +2,8 @@
 // Copyright (c) 2026, Anne Skydancer (neo-j2k)
 //
 // nj2k_t1_dec: the decoder's Tier-1 against the frozen reference (tests/unit/t1_frozen.cpp, the decoder as it was
-// before the MQ-NG redesign, built here with the library's own flags), on the code-blocks of dump files (the MQ-NG
-// study's "MQNG" files, as tests/unit/t1_unit.cpp reads them). One thread, pinned; the time is TSC cycles of
+// before the MQ-NG redesign, built here with the library's own flags), on the code-blocks of dump files ("MQNG" files, as
+// tests/unit/t1_unit.cpp reads them). One thread, pinned; the time is TSC cycles of
 // t1_decode_cblk over all the blocks of a file; the two decoders alternate in the order each round, and the figure is
 // the median of the rounds' new / frozen ratios (new_Mcycles per round and frozen's are printed too). Every block is
 // checked equal before anything is timed.

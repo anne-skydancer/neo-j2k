@@ -101,7 +101,7 @@ nj2k_add_test(encode_unit nj2k_encode_unit "${NJ2K_CORPUS}")
 nj2k_add_test(enc_t1_unit nj2k_enc_t1_unit)
 nj2k_add_test(t1_unit nj2k_t1_unit "${PROJECT_SOURCE_DIR}/tests/vectors/t1")
 nj2k_add_test(t1_unit_masks nj2k_t1_unit_masks "${PROJECT_SOURCE_DIR}/tests/vectors/t1")
-# NJ2K_T1_VECTORS: a folder of the study's dumps of more files (the conformance set's 35,390 code-blocks), run too
+# NJ2K_T1_VECTORS: a folder of .blk dumps of more files (the full set's 35,390 mode-switch conformance blocks), run too
 set(NJ2K_T1_VECTORS "$ENV{NJ2K_T1_VECTORS}" CACHE PATH "Folder of .blk code-block dumps for t1_unit_more (not committed)")
 if(NJ2K_T1_VECTORS)
   file(TO_CMAKE_PATH "${NJ2K_T1_VECTORS}" _nj2k_t1_vectors)
