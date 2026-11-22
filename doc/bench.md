@@ -1253,12 +1253,15 @@ bit) are the earlier code's. `nj2k_enc_t1_unit` compares `enc_t1_encode` with th
 (a) 2,304 blocks, every pair of 4-bit row masks (rows significant early, rows at the middle plane, the others small;
 rotated by the column so that the neighbours differ), four sign patterns (positive, negative, checkerboard, random), on
 nine sizes (whole stripes and partial ones), all orientations and both wavelets over the pairs: columns with 0, 1, 2,
-3 and 4 candidates in every position; (b) 5,888 blocks, every size 1..64 x 1..64 (the edge sizes in all 8 orientation
+3 and 4 candidates, every reachable candidate set (11 of the 16 4-bit sets; 5, 9, 10, 11 and 13 cannot occur, by the
+audit's reasoning and with zero hits over about 55 million columns); (b) 5,888 blocks, every size 1..64 x 1..64 (the edge sizes in all 8 orientation
 and wavelet combinations), each sample with a leading bit-plane of its own, the block at 0 to 25 planes (each count
 has at least 100 blocks, asserted); (c) 100 dense 64 x 64 blocks of one magnitude (the all-significant, all-visited
 columns), 25 plane counts x 4 sign patterns. Mutations tried, each makes `enc_t1_unit` fail: the mask without the
 visited bits, without the significance bits, without the visited-bit clear at the end, and a row left out of the mask
-(the older generated blocks of `test_encode` fail first; the new sets were not reached after the first failure). The
+(the older generated blocks of `test_encode` fail first). The reviewer confirmed that `test_encode_cleanup` run alone
+catches seven mutations: the mask without the visited bits, without the significance bits, the masks 0x49 and 0x241, the
+shift 5 instead of 4, the shift 20 instead of 21, and no visited-bit clear. The
 nightly `enc_t1_exhaustive` (`--exhaustive-full`: all 2^32 preprocessing inputs and the 4.4 billion MQ decisions)
 passes. The one-thread upload encode's codestream (size and hash) equals main's at 256², 512² and 1,024², lossy and
 lossless, in both builds, and the kernel's passes and bytes (hashed over every dumped block) are equal in every build
@@ -1268,7 +1271,8 @@ with AddressSanitizer: see the gaps.
 **Method.** As stage 6e: Ryzen 9 9950X3D, MSVC 14.51 (the library's flags, `/O2 /arch:AVX2` or baseline x86-64), one
 thread pinned to CPU 7, TSC cycles, main (`ca64528`) and E2 in separate processes run alternately (the order swapped
 every round), the median of the rounds' ratios. "Kernel" is `enc_t1_encode` alone over the code-blocks of the upload
-encode's texture (the study's dump, `bench/t1_study`: 75, 210 and 777 blocks at 256², 512², 1,024²; 21 repeats a
+encode's texture (the study's dump; `bench/t1_study` and the study harnesses are on the `studies` branch, see
+`bench/STUDIES.md`: 75, 210 and 777 blocks at 256², 512², 1,024²; 21 repeats a
 process, 7 at 1,024²; 9 rounds); "encode" is the whole one-thread upload encode (5 rounds, 9 repeats, 3 at 1,024²). The
 harness is a throwaway one (a small timer over the dump and the library's sources, built once from `main` and once from
 this branch), not in the repository. The gate: at most 0.97 of the base kernel on every configuration, beyond the 3 %
@@ -1292,8 +1296,20 @@ encode follows (the kernel is most of it): AVX2 0.959 and 0.951 (256², lossy an
 **Leaner.** In this sense: for a column outside run mode the new code builds the mask from one load of the flag word,
 tests one bit a row in a register where the old code reloaded the word and tested two bits of it, and clears the visited
 bits once per column instead of once per row; the shifts and the branches on `ci` in `update_flags` and the sign index
-are constants. Fewer instructions and flag reloads; the row's own branch (is it a candidate) remains, as in the old
-code. No hardware counters were used: instruction, branch and miss counts are not measured.
+are constants. Fewer instructions, flag reloads and branches are expected from that, not measured: no hardware counters
+were used. The row's own branch (is it a candidate) remains, as in the old code. The step that became unreachable
+(`enc_clnpass_step`'s all-significant-and-visited shortcut: it runs only from run-mode columns and the partial stripe)
+was removed in the fix round.
+
+**Code size.** The unrolling costs text. `enc_t1.o`: MinGW GCC `-O2` 21,528 to 25,948 bytes (+20 %), clang 15,781 to
+19,845 (+26 %), MSVC `.text` 19,133 to 27,651 (AVX2, +44 %) and 18,985 to 27,260 (SCALAR). With plain `inline` instead of
+`NJ2K_FORCE_INLINE` on `update_flags` and the sign index, GCC's and clang's sizes are the same (clang's code did not
+change at all with the force-inline change), so the unrolling accounts for the growth there. On MSVC the force-inline of
+the two helpers in the significance pass and in `enc_clnpass_step` was measured as a variant (A: forced only in the
+unrolled rows, via compile-time-row copies of the helpers; B: forced everywhere, as committed): A is 358 bytes (1.3 %)
+smaller (AVX2; 178 bytes SCALAR) and its kernel is 0.996 to 0.998 of B (AVX2) and 0.987 to 0.993 (SCALAR), so within the
+noise band; not clearly smaller, so B stays and the helpers are not duplicated. The gain over main is not split between
+the unrolling and the force-inline change.
 
 ### GCC and clang (E2)
 
@@ -1308,19 +1324,21 @@ against this branch's:
 | MinGW GCC 13.2 `-O2 -march=x86-64-v3` | 0.960 | 0.957 | 0.959 | 0.953 | 0.960 | 0.954 |
 
 None misses (the worst cell is 0.960); unlike E1, clang-cl gains as much as MSVC. The Linux numbers (GCC 14, GCC 15 and
-Clang on Ubuntu, AVX2 and scalar) are not in this document yet: the throwaway branch `bench-e2-linux` runs
-`nj2k_enc_t1_ratio` (the current encoder against the frozen pre-redesign reference, one process, 41 rounds, 3 runs) for
-this branch and, in the same workflow run, for main; the E2 effect on Linux is the ratio of its result to main's, per
-compiler and build.
+Clang on Ubuntu, AVX2 and scalar) are not in this document yet: the workflow `bench-kernel-compare.yml` builds
+`nj2k_enc_t1_ratio` for two refs on the same runner and runs the two binaries alternately (3 runs x 41 rounds); the E2
+effect on Linux is the head-vs-base ratio of its result for head = the E2 commit, base = main. A first run that put the two
+refs on separate jobs landed on different CPUs and is discarded.
 
 ### Not measured, and the gaps (E2)
 
 - No Linux or WSL here: the `linux-*` presets, UBSan, TSan and libFuzzer were not run locally (the repository's CI runs
-  them), and the E2 Linux numbers wait for the `bench-e2-linux` run. `nj2k_enc_t1_unit` was not run locally with GCC or
+  them), and the E2 Linux numbers wait for the same-machine `bench-kernel-compare` run. `nj2k_enc_t1_unit` was not run locally with GCC or
   clang (the ctest on clang-cl was).
-- MSVC ASan: 124 of 128 ctest tests pass; `decode_unit`, `decode_threads` and two `fuzz_replay.decode*` were excluded (the decoder is not
-  touched, and those tests ran for over an hour under AddressSanitizer here without finishing); every encoder test,
-  `enc_t1_unit` among them, ran.
+- MSVC ASan: 124 ran and passed; 4 were excluded and not run (`decode_unit`, `decode_threads` and two
+  `fuzz_replay.decode*`: the decoder is not touched, and those tests ran for over an hour under AddressSanitizer here
+  without finishing); every encoder test, `enc_t1_unit` among them, ran. The ASan preset lists 128 tests against the
+  MSVC preset's 133 because the five library checks (`exports`, `openjp2_exports`, `openjp2_forwarders`, `global_state`,
+  `oracle_known_resources`) are not registered when `NJ2K_SANITIZE` is set (`tests/CMakeLists.txt`).
 - The comparison with OpenJPEG 2.5.4 (`nj2k_encode_bench`) was not repeated: the README's rows are before E1 and E2.
 - One machine (Zen 5), one synthetic texture; the machine was not quiet. The partial stripe (height not a multiple of
   4) and the run-mode columns are not changed; the share of columns outside run mode on real images is not measured.
