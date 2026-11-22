@@ -3,9 +3,10 @@
 
 # Native Rust port
 
-The `rust/neo-j2k` crate implements JPEG 2000 Part 1 for the same codec scope as neo-j2k's C++
+The [`neo-j2k` crate](https://github.com/anne-skydancer/neoj2k-rust) implements JPEG 2000 Part 1 for the same codec scope as neo-j2k's C++
 library. The [OpenJPEG departure list](departures.md) documents the shared codestream behavior.
-The [Rust workspace README](../rust/README.md) covers the public API, build, and validation commands.
+Its [repository README](https://github.com/anne-skydancer/neoj2k-rust#readme) covers the public API,
+build, and validation commands.
 
 ## Decode and encode
 

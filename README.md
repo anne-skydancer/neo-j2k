@@ -19,7 +19,7 @@ before anything is allocated. A decoder has none unless it is given some: withou
 format allows. The profiles (`doc/api.md`) are Second Life textures (1,024 tiles, 8 components, 64 layers, 2,048
 px a side at the decoded resolution, 256 MiB of working memory) and, as a build module, OpenSim textures (the
 same with 16,384 px a side). Where OpenJPEG departs from the standard, neo-j2k follows the standard and lists the
-departure with its test (`doc/departures.md`). The [native Rust crate](rust/README.md) implements the same core
+departure with its test (`doc/departures.md`). The [native Rust crate](https://github.com/anne-skydancer/neoj2k-rust) implements the same core
 codec and compares its output against the C++ library.
 
 Licence: BSD-2-Clause (`LICENSE`). Code ported from OpenJPEG keeps its own BSD-2-Clause notices (`NOTICE.md`,
@@ -229,30 +229,17 @@ Options, given at configure time (`-D<option>=<value>`):
 | `NJ2K_PROFILE_OPENSIM` | `ON` | the OpenSim decoder limit profile |
 | `NJ2K_BUILD_TESTS`, `NJ2K_BUILD_BENCH`, `NJ2K_BUILD_TOOLS` | on as the top-level project | tests, oracle and harness; the bench; the tools |
 | `NJ2K_BUILD_FUZZERS` | `OFF` | libFuzzer targets (Clang, or MSVC with `/fsanitize=fuzzer`) |
-| `NJ2K_BUILD_RUST_SHIM` | `OFF` | the test-only C interface the Rust twin's oracle crate links (`rust/README.md`); never installed |
+| `NJ2K_BUILD_RUST_SHIM` | `OFF` | the test-only C interface supplied by the separate Rust oracle crate; requires `NJ2K_RUST_SHIM_SOURCE` and is never installed |
 
 The benches are in `bench/`, with their commands in `doc/bench.md`. Run compiled tests with `TEMP`/`TMP`
 (Windows) or `TMPDIR` (POSIX) pointing at a folder your antivirus excludes.
 
 ### Rust
 
-The native Rust library in `rust/` decodes J2K, JP2 and JPH Part 1 codestreams, including truncated and reduced
-previews. Its viewer encoder supports reversible 5/3 and irreversible 9/7. The crate has zero dependencies.
-The [Rust workspace README](rust/README.md) shows how to encode, decode and run the comparison tests.
-
-```
-cd rust
-rustup toolchain install                     # rust-toolchain.toml pins Rust 1.100.0
-cargo test --release --workspace             # builds the C++ oracle with CMake, or links NJ2K_ORACLE_DIR's
-RUSTFLAGS="-C target-cpu=x86-64-v3" CARGO_TARGET_DIR=target-v3 cargo test --release --workspace
-cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo fmt --all --check
-python -I ../tools/check_rust_native.py      # the crate's tree holds no C or C++, its sources no FFI
-```
-
-The tests link the C++ library as the oracle through `rust/neo-j2k-oracle`, a test-only crate that is never
-published, with the test-only CMake target `nj2k_rust_shim` (`-DNJ2K_BUILD_RUST_SHIM=ON`, off by default).
-Miri runs on a separately pinned nightly (`rust/nightly-toolchain`); the crate itself never needs one.
+The maintained native Rust codec now lives in the separate
+[neoj2k-rust repository](https://github.com/anne-skydancer/neoj2k-rust). It decodes J2K, JP2 and JPH
+Part 1 codestreams and provides reversible 5/3 and irreversible 9/7 encoding. Its test-only oracle
+supplies `NJ2K_RUST_SHIM_SOURCE` when it builds this C++ repository for differential tests.
 
 ## Layout
 
@@ -263,7 +250,6 @@ Miri runs on a separately pinned nightly (`rust/nightly-toolchain`); the crate i
 | `modules/` | the modules the core does not depend on: `openjp2`, OpenJPEG's API as `openjp2.dll` / `libopenjp2.so.7` with neo-j2k inside (`doc/api.md`) |
 | `oracle/` | OpenJPEG at the pinned fork commit (the head of the stage 1a hotfix branch, as the package `v2.5.4-cpu-avx2.5` builds it) and any patches `oracle/PIN` lists, built as the test oracle (`doc/oracle.md`) |
 | `tests/` | the runner (`nj2k_diff`), conformance, unit tests, the shared harness (`tests/common`) |
-| `rust/` | the native Rust twin: the crate, its test kit and its C++ oracle crate (`rust/README.md`) |
 | `corpus/generated/` | the generated corpus and the oracle's reference tables |
 | `fuzz/` | libFuzzer targets, dictionary, regression inputs |
 | `bench/` | the bench (`nj2k_bench`, `doc/bench.md`) |
