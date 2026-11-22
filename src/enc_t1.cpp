@@ -324,12 +324,7 @@ void enc_refpass(EncT1* t1, OPJ_INT32 bpno, OPJ_INT32* nmsedec) noexcept
         }
     }
 
-    MqEnc* mqc = &t1->mqc;
-    for (OPJ_UINT32 j = 0; j < n; ++j) {
-        const OPJ_UINT32 p = list[j];
-        mqc->setcurctx(p >> 1);
-        mqc->encode(p & 1U);
-    }
+    t1->mqc.encode_pairs(list, n);
     *nmsedec = nm;
 }
 

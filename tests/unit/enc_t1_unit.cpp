@@ -10,6 +10,9 @@
 //      bytes of the buffer agree; at full capacity and at
 //      short ones (the output clamp at every byte position of a short buffer, and around the length of
 //      the whole stream);
+//   1b. encode_pairs (E3's list loop): random lists of (context, bit) pairs a pass, coded by encode_pairs and by
+//      setcurctx and encode; the registers, states, byte count, overflow and context agree at every pass end, the bytes
+//      after the flush, at full and short capacities;
 //   2. single decisions: one decision from a chosen state over every interval a in [0x8000, 0xffff],
 //      every state (94), both bits, every bit counter ct in [1, 12], the low word c, the previous byte
 //      (0x00, 0xFE, 0xFF: plain, carry into 0xFF, stuffing) and the output limit at the previous byte,
@@ -310,6 +313,67 @@ void test_streams()
         }
     }
     std::printf("streams: %u runs identical\n", runs);
+}
+
+// ---- 1b. encode_pairs (E3's list loop) against the member encode ----
+
+// Random lists of (context << 1 | bit) pairs, a pass each: one coder takes them through setcurctx and encode, the
+// other through encode_pairs; after every pass the registers, the context states, the byte count, the overflow flag
+// and the current context agree (the clamp of OD-4 included: short capacities), and after the flush the bytes.
+bool run_pairs(u32 seed, u32 cap)
+{
+    Rng rng(seed * 104729u + 7u);
+    Run<d::MqEnc> one(cap);
+    Run<d::MqEnc> many(cap);
+    std::vector<u8> list(4096);
+    const u32 passes = 1 + rng.u(12);
+    for (u32 pass = 0; pass < passes; ++pass) {
+        const u32 n = rng.u(4) == 0 ? rng.u(8) : rng.u(1 + 500u * (1 + seed % 7u));
+        const u32 kind = rng.u(3);  // all contexts, the refinement contexts, one context
+        const u32 fixed = rng.u(19);
+        for (u32 i = 0; i < n; ++i) {
+            const u32 ctx = kind == 0 ? rng.u(19) : kind == 1 ? T1_CTXNO_MAG + rng.u(3) : fixed;
+            const u32 bit = rng.u(8) == 0 ? rng.u(2) : (ctx & 1U);
+            list[i] = static_cast<u8>(ctx << 1 | bit);
+        }
+        for (u32 i = 0; i < n; ++i) {
+            one.mq.setcurctx(list[i] >> 1);
+            one.mq.encode(list[i] & 1U);
+        }
+        many.mq.encode_pairs(list.data(), n);
+        if (!same_coder(one.mq, many.mq) || one.mq.cx != many.mq.cx) {
+            std::fprintf(stderr, "pairs %u cap %u: coders differ after pass %u (%u pairs)\n", seed, cap, pass, n);
+            return false;
+        }
+    }
+    one.mq.flush();
+    many.mq.flush();
+    if (one.mq.numbytes() != many.mq.numbytes() || one.mq.overflow != many.mq.overflow ||
+        std::memcmp(one.buf.data(), many.buf.data(), one.buf.size()) != 0) {
+        std::fprintf(stderr, "pairs %u cap %u: after the flush\n", seed, cap);
+        return false;
+    }
+    return true;
+}
+
+void test_pairs()
+{
+    u32 runs = 0;
+    for (u32 seed = 0; seed < 300; ++seed) {
+        if (!run_pairs(seed, 1u << 16)) {
+            ++g_failures;
+            return;
+        }
+        ++runs;
+        for (u32 cap = 1; cap <= 24; cap += 1 + seed % 3) {
+            if (!run_pairs(seed, cap)) {
+                ++g_failures;
+                return;
+            }
+            ++runs;
+        }
+    }
+    std::printf("pairs: %u runs identical\n", runs);
 }
 
 // ---- 2. single decisions ----
@@ -996,6 +1060,7 @@ int main(int argc, char** argv)
         test_single(true);
     } else {
         test_streams();
+        test_pairs();
         if (exhaustive) {
             test_single(false);
         }

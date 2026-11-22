@@ -26,40 +26,15 @@ namespace nj2k::detail {
 #define NJ2K_FORCE_INLINE inline __attribute__((always_inline))
 #endif
 
-struct MqEnc {
-    std::uint32_t c, a, ct, cx;
+// The coder's registers and its output position, without the context states: a function that codes many decisions
+// in a row (MqEnc::encode_pairs) works on a local copy, which the compiler can keep in registers (the context states
+// are an array indexed by the decision, and the byte stores to it and to the output are, to the compiler, writes that
+// may change the coder's words in memory).
+struct MqCore {
+    std::uint32_t c, a, ct;
     std::uint8_t* bp;
-    std::uint8_t* start;
     std::uint8_t* limit;  // the last byte that may be written
     bool overflow;
-    std::uint8_t ctxs[19];  // a context's state: its index (state * 2 + mps) in kMqEncStates
-    const std::uint8_t* lut_ctxno_zc_orient;
-
-    void setcurctx(std::uint32_t ctxno) noexcept { cx = ctxno; }
-
-    void resetstates() noexcept
-    {
-        for (std::uint32_t i = 0; i < 19U; i++) {
-            ctxs[i] = 0;
-        }
-    }
-    void setstate(std::uint32_t ctxno, std::uint32_t msb, std::int32_t prob) noexcept
-    {
-        ctxs[ctxno] = static_cast<std::uint8_t>(msb + static_cast<std::uint32_t>(prob << 1));
-    }
-    // the first byte before the buffer is a fake one the caller set to 0
-    void init_enc(std::uint8_t* buf, std::uint8_t* last) noexcept
-    {
-        setcurctx(0);
-        a = 0x8000;
-        c = 0;
-        bp = buf - 1;
-        ct = 12;
-        start = buf;
-        limit = last;
-        overflow = false;
-    }
-    std::uint32_t numbytes() const noexcept { return static_cast<std::uint32_t>(bp - start); }
 
     void byteout() noexcept
     {
@@ -116,11 +91,11 @@ struct MqEnc {
     // and x = (a' < qe), the MPS takes qe as its interval when x and adds qe to c otherwise, the LPS the
     // opposite; an MPS whose a' keeps bit 15 neither renormalises (renorme shifts by 0) nor changes state:
     // the same function as OpenJPEG's three branches (mqc.c opj_mqc_encode, codeMPS and codeLPS).
-    // Precondition: d is 0 or 1.
-    NJ2K_FORCE_INLINE void encode(std::uint32_t d) noexcept
+    // `slot` is the context's state byte. Precondition: d is 0 or 1.
+    NJ2K_FORCE_INLINE void encode(std::uint8_t* slot, std::uint32_t d) noexcept
     {
         assert(d <= 1U);
-        const std::uint32_t i = ctxs[cx];
+        const std::uint32_t i = *slot;
         const MqEncState e = kMqEncStates.t[i];
         const std::uint32_t q = e.qe;
         const std::uint32_t lps = (i ^ d) & 1U;
@@ -136,7 +111,7 @@ struct MqEnc {
         const std::uint32_t next = reinterpret_cast<const std::uint8_t*>(&kMqEncStates.t[i])[2U + lps];
         // an MPS whose a' keeps bit 15 keeps its state (as a bit expression: GCC branches on `!lps && ...`)
         const std::uint32_t mkeep = 0U - (((an >> 15) & ~lps) & 1U);
-        ctxs[cx] = static_cast<std::uint8_t>(next ^ ((next ^ i) & mkeep));
+        *slot = static_cast<std::uint8_t>(next ^ ((next ^ i) & mkeep));
 #else
         a = swap ? q : an;
         c += swap ? 0U : q;
@@ -144,9 +119,61 @@ struct MqEnc {
         // an MPS (lps == 0) whose a' keeps bit 15 keeps its state; written as one compare, since MSVC turns
         // `!lps && (an & 0x8000U)` into a branch
         const bool keep = (lps | (an & 0x8000U)) == 0x8000U;
-        ctxs[cx] = static_cast<std::uint8_t>(keep ? i : next);
+        *slot = static_cast<std::uint8_t>(keep ? i : next);
 #endif
         renorme();
+    }
+};
+
+struct MqEnc : MqCore {
+    std::uint32_t cx;
+    std::uint8_t* start;
+    std::uint8_t ctxs[19];  // a context's state: its index (state * 2 + mps) in kMqEncStates
+    const std::uint8_t* lut_ctxno_zc_orient;
+
+    void setcurctx(std::uint32_t ctxno) noexcept { cx = ctxno; }
+
+    void resetstates() noexcept
+    {
+        for (std::uint32_t i = 0; i < 19U; i++) {
+            ctxs[i] = 0;
+        }
+    }
+    void setstate(std::uint32_t ctxno, std::uint32_t msb, std::int32_t prob) noexcept
+    {
+        ctxs[ctxno] = static_cast<std::uint8_t>(msb + static_cast<std::uint32_t>(prob << 1));
+    }
+    // the first byte before the buffer is a fake one the caller set to 0
+    void init_enc(std::uint8_t* buf, std::uint8_t* last) noexcept
+    {
+        setcurctx(0);
+        a = 0x8000;
+        c = 0;
+        bp = buf - 1;
+        ct = 12;
+        start = buf;
+        limit = last;
+        overflow = false;
+    }
+    std::uint32_t numbytes() const noexcept { return static_cast<std::uint32_t>(bp - start); }
+
+    NJ2K_FORCE_INLINE void encode(std::uint32_t d) noexcept { MqCore::encode(&ctxs[cx], d); }
+
+    // Codes the n (context << 1 | bit) pairs of the list in order: the same decisions as setcurctx and encode a pair,
+    // on a local copy of the coder's registers that is written back once (the copy stays in registers, where the
+    // members are read and stored around the byte stores of each decision).
+    void encode_pairs(const std::uint8_t* list, std::uint32_t n) noexcept
+    {
+        MqCore s = *this;
+        std::uint8_t* const states = ctxs;
+        for (std::uint32_t j = 0; j < n; ++j) {
+            const std::uint32_t p = list[j];
+            s.encode(states + (p >> 1), p & 1U);
+        }
+        static_cast<MqCore&>(*this) = s;
+        if (n != 0U) {
+            cx = list[n - 1U] >> 1;
+        }
     }
 
     void setbits() noexcept
