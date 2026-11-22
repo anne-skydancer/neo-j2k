@@ -7,7 +7,29 @@
 
 #include <cstdint>
 
+#include "t1_tables.h"
+
 namespace nj2k::detail {
+
+// The encoder's MQ states by index (state * 2 + mps, the order of kMqcStates): the interval's qe and the
+// next states on an MPS and on an LPS, 4 bytes each (376 in all) against the decoder's 24-byte states with
+// pointers. Built at compile time from kMqcStates, so the numbers cannot drift from the decoder's.
+struct MqEncState {
+    std::uint16_t qe;
+    std::uint8_t nmps, nlps;
+};
+struct MqEncStateTable {
+    MqEncState t[94];
+    constexpr MqEncStateTable() noexcept : t{}
+    {
+        for (unsigned i = 0; i < 94; ++i) {
+            t[i].qe = static_cast<std::uint16_t>(kMqcStates[i].qeval);
+            t[i].nmps = static_cast<std::uint8_t>(kMqcStates[i].nmps - kMqcStates);
+            t[i].nlps = static_cast<std::uint8_t>(kMqcStates[i].nlps - kMqcStates);
+        }
+    }
+};
+inline constexpr MqEncStateTable kMqEncStates;
 
 inline constexpr std::int16_t kNmsedecSig0[128] = {
     0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0080, 0x0080,

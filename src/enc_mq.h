@@ -8,6 +8,7 @@
 
 #include <cstdint>
 
+#include "enc_luts.h"
 #include "t1.h"
 #include "t1_tables.h"
 
@@ -27,7 +28,7 @@ struct MqEnc {
     std::uint8_t* start;
     std::uint8_t* limit;  // the last byte that may be written
     bool overflow;
-    const MqState* ctxs[19];
+    std::uint8_t ctxs[19];  // a context's state: its index (state * 2 + mps) in kMqEncStates
     const std::uint8_t* lut_ctxno_zc_orient;
 
     void setcurctx(std::uint32_t ctxno) noexcept { cx = ctxno; }
@@ -35,12 +36,12 @@ struct MqEnc {
     void resetstates() noexcept
     {
         for (std::uint32_t i = 0; i < 19U; i++) {
-            ctxs[i] = kMqcStates;
+            ctxs[i] = 0;
         }
     }
     void setstate(std::uint32_t ctxno, std::uint32_t msb, std::int32_t prob) noexcept
     {
-        ctxs[ctxno] = &kMqcStates[msb + static_cast<std::uint32_t>(prob << 1)];
+        ctxs[ctxno] = static_cast<std::uint8_t>(msb + static_cast<std::uint32_t>(prob << 1));
     }
     // the first byte before the buffer is a fake one the caller set to 0
     void init_enc(std::uint8_t* buf, std::uint8_t* last) noexcept
@@ -106,30 +107,41 @@ struct MqEnc {
         ct -= k;
     }
 
+    // The encoder knows its bit, so the choice of the interval, the conditional exchange and the state
+    // update are selects, not branches. With a' = a - qe and x = (a' < qe), the MPS takes qe as its
+    // interval when x and adds qe to c otherwise, the LPS the opposite; an MPS whose a' keeps bit 15
+    // neither renormalises (renorme shifts by 0) nor changes state: the same function as OpenJPEG's
+    // three branches (mqc.c opj_mqc_encode, codeMPS and codeLPS).
     NJ2K_MQ_INLINE void encode(std::uint32_t d) noexcept
     {
-        const MqState* st = ctxs[cx];
-        const std::uint32_t q = st->qeval;
-        a -= q;
-        if (st->mps == d) {
-            if (a & 0x8000) {
-                c += q;
-                return;
-            }
-            if (a < q) {
-                a = q;
-            } else {
-                c += q;
-            }
-            ctxs[cx] = st->nmps;
-        } else {
-            if (a < q) {
-                c += q;
-            } else {
-                a = q;
-            }
-            ctxs[cx] = st->nlps;
-        }
+#if defined(__GNUC__) && !defined(__clang__)
+// GCC turns these selects back into branches (measured: 0.95 of the old coder against 0.70 with masks)
+        const std::uint32_t i = ctxs[cx];
+        const MqEncState e = kMqEncStates.t[i];
+        const std::uint32_t q = e.qe;
+        const std::uint32_t lps = (i ^ d) & 1U;
+        const std::uint32_t an = a - q;
+        const std::uint32_t swap = static_cast<std::uint32_t>(an < q) ^ lps;
+        const std::uint32_t mswap = 0U - swap;
+        a = an ^ ((an ^ q) & mswap);
+        c += q & ~mswap;
+        const std::uint32_t mlps = 0U - lps;
+        const std::uint32_t next = e.nmps ^ ((e.nmps ^ e.nlps) & mlps);
+        const std::uint32_t mkeep = 0U - static_cast<std::uint32_t>((lps | (an & 0x8000U)) == 0x8000U);
+        ctxs[cx] = static_cast<std::uint8_t>(next ^ ((next ^ i) & mkeep));
+#else
+        const std::uint32_t i = ctxs[cx];
+        const MqEncState e = kMqEncStates.t[i];
+        const std::uint32_t q = e.qe;
+        const std::uint32_t lps = (i ^ d) & 1U;
+        const std::uint32_t an = a - q;
+        const std::uint32_t swap = static_cast<std::uint32_t>(an < q) ^ lps;
+        a = swap ? q : an;
+        c += swap ? 0U : q;
+        const bool keep = (lps | (an & 0x8000U)) == 0x8000U;
+        const std::uint32_t next = lps ? e.nlps : e.nmps;
+        ctxs[cx] = static_cast<std::uint8_t>(keep ? i : next);
+#endif
         renorme();
     }
 
