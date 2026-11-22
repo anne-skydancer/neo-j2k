@@ -29,7 +29,8 @@
 //      from 0 (about 0xF4000000, not the top of the range), and random blocks; --exhaustive-full takes
 //      all 2^32 inputs, which covers the rest;
 //   5. enc_t1_encode through E1 on blocks whose largest magnitude gives each bit-plane count from 0 to
-//      25, with INT32_MIN in them, every size, orientation and wavelet combination of a set of eight sizes.
+//      25 in every size, orientation and wavelet combination of a set of eight sizes; INT32_MIN is in the
+//      25-plane blocks, and in 16 further blocks of INT32_MIN alone and all zero.
 // Usage: nj2k_enc_t1_unit [--exhaustive-full] [--no-exhaustive]
 #include <algorithm>
 #include <cstdint>
@@ -231,7 +232,7 @@ bool preprocess_range(std::uint64_t first, std::uint64_t count, u32 step)
 
 // Full: all 2^32 inputs, in order (nightly, a few seconds). Default: a trimmed pass: every input
 // within 2^16 of 0 and of INT32_MIN, 2,048 values on each side of every power of two and of its
-// negative (a window of 4,096), a stride of 61 over the whole range, and random blocks (a block's
+// negative (a window of 4,096), a stride of 61 from 0 to about 0xF4000000 (--exhaustive-full covers the rest), and random blocks (a block's
 // maximum with a negative INT32_MIN in it among the positives and the other way round, at every
 // position of a block).
 void test_preprocess(bool full)
