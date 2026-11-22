@@ -60,6 +60,7 @@
 
 #include "enc_luts.h"
 #include "enc_mq.h"
+#include "enc_pre.h"
 #include "enc_tile.h"
 #include "t1.h"
 #include "t1_flags.h"
@@ -482,9 +483,7 @@ bool enc_t1_encode(EncT1* t1, EncCblk& cblk, std::uint32_t orient, std::uint32_t
     OPJ_UINT32 passtype;
     OPJ_INT32 nmsedec = 0;
     OPJ_INT32 max;
-    OPJ_UINT32 i, j;
     double tempwmsedec;
-    OPJ_INT32* datap;
 
     t1->w = static_cast<OPJ_UINT32>(cblk.x1 - cblk.x0);
     t1->h = static_cast<OPJ_UINT32>(cblk.y1 - cblk.y0);
@@ -523,26 +522,7 @@ bool enc_t1_encode(EncT1* t1, EncCblk& cblk, std::uint32_t orient, std::uint32_t
 
     mqc->lut_ctxno_zc_orient = kLutCtxnoZc + (orient << 9);
 
-    max = 0;
-    datap = t1->data;
-    for (j = 0; j < t1->h; ++j) {
-        const OPJ_UINT32 w = t1->w;
-        for (i = 0; i < w; ++i, ++datap) {
-            OPJ_INT32 tmp = *datap;
-            if (tmp < 0) {
-                OPJ_UINT32 tmp_unsigned;
-                if (tmp == INT32_MIN) {
-                    /* To avoid undefined behaviour when negating INT_MIN */
-                    tmp = INT32_MIN + 1;
-                }
-                max = max > -tmp ? max : -tmp;
-                tmp_unsigned = static_cast<OPJ_UINT32>(-tmp) | 0x80000000U;
-                std::memcpy(datap, &tmp_unsigned, sizeof(OPJ_INT32));
-            } else {
-                max = max > tmp ? max : tmp;
-            }
-        }
-    }
+    max = enc_preprocess(t1->data, t1->w * t1->h);
 
     cblk.numbps = max ? static_cast<OPJ_UINT32>((floorlog2(max) + 1) - T1_NMSEDEC_FRACBITS) : 0;
     if (cblk.numbps == 0) {
