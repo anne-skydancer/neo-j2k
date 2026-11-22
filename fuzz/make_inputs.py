@@ -14,6 +14,9 @@ usage: make_inputs.py --decode-seeds OUT [--corpus DIR]
            coding parameters and samples for the round-trip target (committed: fuzz/seeds/roundtrip)
        make_inputs.py --encode-seeds OUT
            encoder settings and samples for the encode target (committed: fuzz/seeds/encode)
+       make_inputs.py --t1-seeds OUT [--vectors FILE_OR_DIR]
+           code-blocks of the Tier-1 vectors (tests/vectors/t1) as fuzz/fuzz_t1.cpp reads them, a few
+           small ones of each code-block style (committed: fuzz/seeds/t1)
        make_inputs.py --bombs OUT [--corpus DIR]
            resource bombs the fuzz targets' guards must keep from the oracle (committed:
            fuzz/bombs); the guards' test checks them (fuzz/filter_check.cpp)
@@ -180,6 +183,49 @@ def roundtrip_seeds(out):
     for i, (name, params) in enumerate(ROUNDTRIP):
         write(out, "roundtrip-%s.bin" % name, roundtrip_seed(seed=i + 1, **params))
     return len(ROUNDTRIP)
+
+
+# ---- Tier-1 seeds ------------------------------------------------------------------------------------
+
+def read_blocks(path):
+    """The code-blocks of an MQNG dump (tests/unit/t1_unit.cpp has the format)."""
+    d = open(path, "rb").read()
+    assert d[:4] == b"MQNG"
+    n, at = struct.unpack_from("<I", d, 4)[0], 8
+    for _ in range(n):
+        w, h, numbps, orient, roi, style, ns = struct.unpack_from("<7I", d, at)
+        at += 28
+        segs = [struct.unpack_from("<2I", d, at + 8 * i) for i in range(ns)]
+        at += 8 * ns
+        nb = struct.unpack_from("<I", d, at)[0]
+        at += 4
+        yield w, h, numbps, orient, roi, style, segs, d[at:at + nb]
+        at += nb
+
+
+def t1_seed(w, h, numbps, orient, roi, style, segs, data):
+    head = bytes([(w - 1) & 63, (h - 1) & 63, style & 63, (orient & 3) | ((roi % 32) << 2), numbps % 36, len(segs)])
+    return head + b"".join(bytes([ln, ps]) for ln, ps in segs) + data
+
+
+def t1_seeds(out, vectors, per_style=4, max_bytes=700):
+    files = [vectors] if os.path.isfile(vectors) else sorted(
+        os.path.join(vectors, n) for n in os.listdir(vectors) if n.endswith(".blk"))
+    taken, seen = {}, {}
+    count = 0
+    for f in files:
+        for w, h, numbps, orient, roi, style, segs, data in read_blocks(f):
+            ok = (w <= 64 and h <= 64 and 0 < len(segs) < 112 and 0 < len(data) <= max_bytes and numbps < 32
+                  and all(ln < 256 and ps < 256 for ln, ps in segs) and sum(ln for ln, _ in segs) == len(data))
+            key = style & 63
+            if ok:
+                seen[key] = seen.get(key, 0) + 1
+            if ok and taken.get(key, 0) < per_style and seen[key] % 5 == 1:
+                taken[key] = taken.get(key, 0) + 1
+                write(out, "t1-style%02x-%02d.bin" % (key, taken[key]),
+                      t1_seed(w, h, numbps, orient, roi, style, segs, data))
+                count += 1
+    return count
 
 
 # ---- encode seeds ------------------------------------------------------------------------------------
@@ -351,10 +397,12 @@ def main():
     ap.add_argument("--header-seeds")
     ap.add_argument("--roundtrip-seeds")
     ap.add_argument("--encode-seeds")
+    ap.add_argument("--t1-seeds")
+    ap.add_argument("--vectors", default=os.path.join(ROOT, "tests", "vectors", "t1"))
     ap.add_argument("--bombs")
     ap.add_argument("--known-defects")
     a = ap.parse_args()
-    if not (a.decode_seeds or a.header_seeds or a.roundtrip_seeds or a.encode_seeds or a.bombs or a.known_defects):
+    if not (a.decode_seeds or a.header_seeds or a.roundtrip_seeds or a.encode_seeds or a.t1_seeds or a.bombs or a.known_defects):
         ap.error("nothing to make")
     if a.decode_seeds:
         print("make_inputs: %d decode seeds in %s" % (decode_seeds(a.corpus, a.decode_seeds), a.decode_seeds))
@@ -364,6 +412,8 @@ def main():
         print("make_inputs: %d encode seeds in %s" % (encode_seeds(a.encode_seeds), a.encode_seeds))
     if a.roundtrip_seeds:
         print("make_inputs: %d round-trip seeds in %s" % (roundtrip_seeds(a.roundtrip_seeds), a.roundtrip_seeds))
+    if a.t1_seeds:
+        print("make_inputs: %d Tier-1 seeds in %s" % (t1_seeds(a.t1_seeds, a.vectors), a.t1_seeds))
     if a.bombs:
         print("make_inputs: %d bombs in %s" % (bombs(a.corpus, a.bombs), a.bombs))
     if a.known_defects:

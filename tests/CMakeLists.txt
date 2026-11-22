@@ -34,6 +34,10 @@ nj2k_test_program(nj2k_encode_unit unit/encode_unit.cpp)
 # the encoder's MQ coder and Tier-1 against a frozen copy of their text before the MQ redesign (byte identity)
 nj2k_test_program(nj2k_enc_t1_unit unit/enc_t1_unit.cpp unit/enc_t1_frozen.cpp)
 nj2k_simd(nj2k_enc_t1_unit)
+# the decoder's Tier-1 (MQ decoder, passes, code-block driver) against a frozen copy of its text before the MQ-NG
+# redesign (coefficient identity); the vectors are code-blocks as Tier-1 receives them (tests/vectors/t1)
+nj2k_test_program(nj2k_t1_unit unit/t1_unit.cpp unit/t1_frozen.cpp)
+nj2k_simd(nj2k_t1_unit)
 # the Rust twin's plan, findings C2 (memory-limit outcomes and the codec's history: none found) and
 # C3 (the host's workers' floating-point environment reaches the samples: fixed, held as same), each held as today's
 # behaviour (unit/findings_unit.cpp)
@@ -90,6 +94,13 @@ nj2k_add_test(decode_unit nj2k_decode_unit "${NJ2K_CORPUS}")
 nj2k_add_test(decode_threads nj2k_decode_unit "${NJ2K_CORPUS}" --threads)
 nj2k_add_test(encode_unit nj2k_encode_unit "${NJ2K_CORPUS}")
 nj2k_add_test(enc_t1_unit nj2k_enc_t1_unit)
+nj2k_add_test(t1_unit nj2k_t1_unit "${PROJECT_SOURCE_DIR}/tests/vectors/t1")
+# NJ2K_T1_VECTORS: a folder of the study's dumps of more files (the conformance set's 35,390 code-blocks), run too
+set(NJ2K_T1_VECTORS "$ENV{NJ2K_T1_VECTORS}" CACHE PATH "Folder of .blk code-block dumps for t1_unit_more (not committed)")
+if(NJ2K_T1_VECTORS)
+  file(TO_CMAKE_PATH "${NJ2K_T1_VECTORS}" _nj2k_t1_vectors)
+  nj2k_add_test(t1_unit_more nj2k_t1_unit --no-exhaustive "${_nj2k_t1_vectors}")
+endif()
 nj2k_add_test(findings_c2 nj2k_findings_unit --c2 "${NJ2K_CORPUS},${PROJECT_SOURCE_DIR}/fuzz/regressions" --expect none)
 nj2k_add_test(findings_c3 nj2k_findings_unit --c3 "${NJ2K_CORPUS}" --expect same)
 nj2k_add_test(fpenv_unit nj2k_fpenv_unit "${NJ2K_CORPUS}")
@@ -152,6 +163,8 @@ nj2k_add_test(oracle_layers nj2k_diff layers --a oracle --files "${NJ2K_CORPUS}"
 if(NJ2K_TEST_NIGHTLY)
   # every MQ decision of the redesigned encoder against the frozen one: 4.4 billion, a few minutes
   nj2k_add_test(enc_t1_exhaustive nj2k_enc_t1_unit --exhaustive-full)
+  # every MQ decision of the redesigned decoder against the frozen one and the standard's model
+  nj2k_add_test(t1_exhaustive nj2k_t1_unit --exhaustive-full)
 endif()
 if(NJ2K_TEST_NIGHTLY)
   set(_nj2k_ref_nightly "${NJ2K_CORPUS}/oracle-reference-nightly.tsv")
