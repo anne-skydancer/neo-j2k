@@ -44,3 +44,11 @@ add_executable(nj2k_encode_bench nj2k_encode_bench.cpp)
 target_link_libraries(nj2k_encode_bench PRIVATE nj2k_test_common)
 nj2k_fp_strict(nj2k_encode_bench)
 nj2k_program_exceptions(nj2k_encode_bench)
+
+# The encoder's Tier-1 kernel against its frozen earlier version, one process, interleaved rounds (the Linux
+# CI bench, .github/workflows/bench-enc-linux.yml): the library's internals, from the static library
+add_executable(nj2k_enc_t1_ratio nj2k_enc_t1_ratio.cpp ../tests/unit/enc_t1_frozen.cpp)
+target_link_libraries(nj2k_enc_t1_ratio PRIVATE neoj2k_static)
+nj2k_fp_strict(nj2k_enc_t1_ratio)
+nj2k_simd(nj2k_enc_t1_ratio)
+nj2k_program_exceptions(nj2k_enc_t1_ratio)
