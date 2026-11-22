@@ -1,13 +1,60 @@
 // SPDX-License-Identifier: BSD-2-Clause
 // Copyright (c) 2026, Anne Skydancer (neo-j2k)
 //
-// The encoder's normalised MSE decrease tables, OpenJPEG 2.5.4's t1_luts.h unchanged (their notice is
-// in enc_t1.cpp).
+// The encoder's tables: the normalised MSE decrease tables, OpenJPEG 2.5.4's t1_luts.h unchanged (their
+// notice is in enc_t1.cpp), and the MQ coder's states by index (kMqEncStates), the encoder's own
+// formulation, built at compile time from the 94 states the decoder also reads (t1_tables.h).
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 
+#include "t1_tables.h"
+
 namespace nj2k::detail {
+
+// The encoder's MQ states by index (state * 2 + mps, the order of kMqcStates): the interval's qe and the
+// next states on an MPS and on an LPS, 4 bytes each (376 in all) against the decoder's 24-byte states with
+// pointers. Built at compile time from kMqcStates, so the numbers cannot drift from the decoder's.
+struct MqEncState {
+    std::uint16_t qe;
+    std::uint8_t nmps, nlps;
+};
+// (not std::size: <iterator> pulls in an MSVC runtime weak variable the scalar build's object check refuses)
+inline constexpr std::size_t kMqStateCount = sizeof(kMqcStates) / sizeof(kMqcStates[0]);
+
+static_assert(sizeof(MqEncState) == 4 && offsetof(MqEncState, nmps) == 2 && offsetof(MqEncState, nlps) == 3,
+              "the GCC path of MqEnc::encode reads the next state as byte 2 + lps of the entry");
+
+struct MqEncStateTable {
+    MqEncState t[kMqStateCount];
+    constexpr MqEncStateTable() noexcept : t{}
+    {
+        for (std::size_t i = 0; i < kMqStateCount; ++i) {
+            t[i].qe = static_cast<std::uint16_t>(kMqcStates[i].qeval);
+            t[i].nmps = static_cast<std::uint8_t>(kMqcStates[i].nmps - kMqcStates);
+            t[i].nlps = static_cast<std::uint8_t>(kMqcStates[i].nlps - kMqcStates);
+        }
+    }
+};
+inline constexpr MqEncStateTable kMqEncStates;
+// the index convention (state * 2 + mps), the size, and that every next state is a byte index
+constexpr bool mq_enc_states_ok() noexcept
+{
+    for (std::size_t i = 0; i < kMqStateCount; ++i) {
+        const auto nmps = kMqcStates[i].nmps - kMqcStates;
+        const auto nlps = kMqcStates[i].nlps - kMqcStates;
+        if (kMqcStates[i].mps != (i & 1U) || nmps < 0 || nmps >= 94 || nlps < 0 || nlps >= 94 ||
+            kMqEncStates.t[i].nmps != nmps || kMqEncStates.t[i].nlps != nlps ||
+            (kMqcStates[i].nmps->mps != kMqcStates[i].mps) || kMqcStates[i].qeval > 0xffffU) {
+            return false;
+        }
+    }
+    return true;
+}
+static_assert(kMqStateCount == 94 && sizeof(MqEncStateTable) == 376, "94 states of 4 bytes");
+static_assert(mq_enc_states_ok(), "kMqEncStates: index = state * 2 + mps, next states fit a byte");
+
 
 inline constexpr std::int16_t kNmsedecSig0[128] = {
     0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0080, 0x0080,

@@ -1,12 +1,17 @@
 // SPDX-License-Identifier: BSD-2-Clause
 // Copyright (c) 2026, Anne Skydancer (neo-j2k)
 //
-// The encoder's Tier-1 (stage 6a), ported from OpenJPEG 2.5.4 at the oracle's pin (oracle/PIN): the MQ
-// encoder (mqc.c, mqc_inl.h), the context tables (t1_luts.h; t1_tables.h, enc_luts.h) and the three
-// encoding passes with the code-block driver (t1.c) are OpenJPEG's code with the same operations, so
-// the bytes and the rates are OpenJPEG's, for the code-blocks the viewer's streams hold (64 x 64, no
-// mode switches: the RAW (BYPASS) coder, the terminations and the vertically causal contexts of the
-// other modes belong to the j2k-extra module). The MQ coder's output is bounded here, where OpenJPEG
+// The encoder's Tier-1 (stage 6a), ported from OpenJPEG 2.5.4 at the oracle's pin (oracle/PIN): the
+// context tables (t1_luts.h; t1_tables.h, enc_luts.h) and the three encoding passes with the code-block
+// driver (t1.c) are OpenJPEG's code with the same operations, for the code-blocks the viewer's streams hold
+// (64 x 64, no mode switches: the RAW (BYPASS) coder, the terminations and the vertically causal contexts
+// of the other modes belong to the j2k-extra module). The MQ encoder (mqc.c, mqc_inl.h) lives in enc_mq.h
+// and is the same function in a different formulation: renormalisation by count-leading-zeros, a context's
+// state a byte index into a compile-time table, and the decision (interval, conditional exchange, state
+// update) as selects, or as masks where GCC would branch on selects. The output is the same, so the bytes
+// and the rates are OpenJPEG's: tests/unit/enc_t1_unit.cpp pins it against a frozen copy of the
+// earlier operations (every single decision, every pass end, the bytes and the overflow flag) and
+// tests/unit/encode_unit.cpp against the oracle. The MQ coder's output is bounded here, where OpenJPEG
 // writes without a bound (OD-4). OpenJPEG's notice:
 //
 //
@@ -54,6 +59,7 @@
 #include <new>
 
 #include "enc_luts.h"
+#include "enc_mq.h"
 #include "enc_tile.h"
 #include "t1.h"
 #include "t1_flags.h"
@@ -66,8 +72,6 @@ namespace {
 using OPJ_UINT32 = std::uint32_t;
 using OPJ_INT32 = std::int32_t;
 using opj_flag_t = std::uint32_t;
-
-constexpr OPJ_UINT32 MQC_NUMCTXS = 19;
 
 // the largest code-block of the encoder: 64 x 64
 constexpr OPJ_UINT32 kCblkW = 64, kCblkH = 64;
@@ -92,142 +96,7 @@ int floorlog2(OPJ_INT32 a) noexcept
     return l;
 }
 
-// ---- mqc.c, mqc_inl.h: the MQ encoder ----
-
-struct MqEnc {
-    OPJ_UINT32 c, a, ct;
-    std::uint8_t* bp;
-    std::uint8_t* start;
-    std::uint8_t* limit;  // the last byte that may be written
-    bool overflow;
-    const MqState* ctxs[19];
-    const MqState** curctx;
-    const std::uint8_t* lut_ctxno_zc_orient;
-
-    void setcurctx(OPJ_UINT32 ctxno) noexcept { curctx = &ctxs[ctxno]; }
-
-    void resetstates() noexcept
-    {
-        for (OPJ_UINT32 i = 0; i < MQC_NUMCTXS; i++) {
-            ctxs[i] = kMqcStates;
-        }
-    }
-    void setstate(OPJ_UINT32 ctxno, OPJ_UINT32 msb, OPJ_INT32 prob) noexcept
-    {
-        ctxs[ctxno] = &kMqcStates[msb + static_cast<OPJ_UINT32>(prob << 1)];
-    }
-    // the first byte before the buffer is a fake one the caller set to 0
-    void init_enc(std::uint8_t* buf, std::uint8_t* last) noexcept
-    {
-        setcurctx(0);
-        a = 0x8000;
-        c = 0;
-        bp = buf - 1;
-        ct = 12;
-        start = buf;
-        limit = last;
-        overflow = false;
-    }
-    OPJ_UINT32 numbytes() const noexcept { return static_cast<OPJ_UINT32>(bp - start); }
-
-    void byteout() noexcept
-    {
-        if (bp >= limit) {
-            // OpenJPEG would write past the buffer here (OD-4); neo-j2k stops the code-block
-            overflow = true;
-            bp = limit - 1;
-        }
-        if (*bp == 0xff) {
-            bp++;
-            *bp = static_cast<std::uint8_t>(c >> 20);
-            c &= 0xfffff;
-            ct = 7;
-        } else {
-            if ((c & 0x8000000) == 0) {
-                bp++;
-                *bp = static_cast<std::uint8_t>(c >> 19);
-                c &= 0x7ffff;
-                ct = 8;
-            } else {
-                (*bp)++;
-                if (*bp == 0xff) {
-                    c &= 0x7ffffff;
-                    bp++;
-                    *bp = static_cast<std::uint8_t>(c >> 20);
-                    c &= 0xfffff;
-                    ct = 7;
-                } else {
-                    bp++;
-                    *bp = static_cast<std::uint8_t>(c >> 19);
-                    c &= 0x7ffff;
-                    ct = 8;
-                }
-            }
-        }
-    }
-
-    void renorme() noexcept
-    {
-        do {
-            a <<= 1;
-            c <<= 1;
-            ct--;
-            if (ct == 0) {
-                byteout();
-            }
-        } while ((a & 0x8000) == 0);
-    }
-
-    void encode(OPJ_UINT32 d) noexcept
-    {
-        const MqState* st = *curctx;
-        if (st->mps == d) {
-            a -= st->qeval;
-            if ((a & 0x8000) == 0) {
-                if (a < st->qeval) {
-                    a = st->qeval;
-                } else {
-                    c += st->qeval;
-                }
-                *curctx = st->nmps;
-                renorme();
-            } else {
-                c += st->qeval;
-            }
-        } else {
-            a -= st->qeval;
-            if (a < st->qeval) {
-                c += st->qeval;
-            } else {
-                a = st->qeval;
-            }
-            *curctx = st->nlps;
-            renorme();
-        }
-    }
-
-    void setbits() noexcept
-    {
-        const OPJ_UINT32 tempc = c + a;
-        c |= 0xffff;
-        if (c >= tempc) {
-            c -= 0x8000;
-        }
-    }
-
-    void flush() noexcept
-    {
-        setbits();
-        c <<= ct;
-        byteout();
-        c <<= ct;
-        byteout();
-        // it is forbidden that a coding pass ends with 0xff
-        if (*bp != 0xff) {
-            bp++;
-        }
-    }
-};
+// the MQ encoder is enc_mq.h
 
 }  // namespace
 
@@ -325,8 +194,8 @@ inline void update_flags(opj_flag_t* flagsp, OPJ_UINT32 ci, OPJ_UINT32 s, OPJ_UI
     }
 }
 
-inline void enc_sigpass_step(EncT1* t1, opj_flag_t* flagsp, const OPJ_INT32* datap, OPJ_INT32 bpno, OPJ_INT32 one,
-                             OPJ_INT32* nmsedec, OPJ_UINT32 ci) noexcept
+NJ2K_FORCE_INLINE void enc_sigpass_step(EncT1* t1, opj_flag_t* flagsp, const OPJ_INT32* datap, OPJ_INT32 bpno,
+                                        OPJ_INT32 one, OPJ_INT32* nmsedec, OPJ_UINT32 ci) noexcept
 {
     MqEnc* mqc = &t1->mqc;
     OPJ_UINT32 v;
@@ -389,8 +258,9 @@ void enc_sigpass(EncT1* t1, OPJ_INT32 bpno, OPJ_INT32* nmsedec) noexcept
     }
 }
 
-inline void enc_refpass_step(EncT1* t1, OPJ_UINT32 flags, OPJ_UINT32& flagsUpdated, const OPJ_INT32* datap,
-                             OPJ_INT32 bpno, OPJ_INT32 one, OPJ_INT32* nmsedec, OPJ_UINT32 ci) noexcept
+NJ2K_FORCE_INLINE void enc_refpass_step(EncT1* t1, OPJ_UINT32 flags, OPJ_UINT32& flagsUpdated,
+                                        const OPJ_INT32* datap, OPJ_INT32 bpno, OPJ_INT32 one,
+                                        OPJ_INT32* nmsedec, OPJ_UINT32 ci) noexcept
 {
     MqEnc* mqc = &t1->mqc;
     OPJ_UINT32 v;
@@ -453,9 +323,9 @@ void enc_refpass(EncT1* t1, OPJ_INT32 bpno, OPJ_INT32* nmsedec) noexcept
 }
 
 // opj_t1_enc_clnpass_step_macro with the viewer's modes (no vertically causal contexts)
-inline void enc_clnpass_step(EncT1* t1, opj_flag_t* flagspIn, const OPJ_INT32* datapIn, OPJ_INT32 bpno,
-                             OPJ_INT32 one, OPJ_INT32* nmsedec, OPJ_UINT32 agg, OPJ_UINT32 runlen,
-                             OPJ_UINT32 lim) noexcept
+NJ2K_FORCE_INLINE void enc_clnpass_step(EncT1* t1, opj_flag_t* flagspIn, const OPJ_INT32* datapIn,
+                                        OPJ_INT32 bpno, OPJ_INT32 one, OPJ_INT32* nmsedec, OPJ_UINT32 agg,
+                                        OPJ_UINT32 runlen, OPJ_UINT32 lim) noexcept
 {
     MqEnc* mqc = &t1->mqc;
     OPJ_UINT32 v;

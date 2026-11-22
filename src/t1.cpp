@@ -181,24 +181,7 @@ static inline OPJ_UINT32 opj_mqc_raw_decode(opj_mqc_t *mqc)
         } \
 }
 
-// The renormalisation's shifts for a in [1, 0x7fff]: until a reaches 0x8000 (15 - floor(log2 a)),
-// with the instructions of the build's floor: lzcnt in the AVX2 build (x86-64-v3 has it), bsr in
-// the scalar one (MSVC's std::countl_zero would pick lzcnt at run time, which the scalar build's
-// object check refuses)
-inline OPJ_UINT32 mq_shifts(OPJ_UINT32 a) noexcept
-{
-#if defined(_MSC_VER) && !defined(__clang__)
-#if defined(__AVX2__)
-    return _lzcnt_u32(a) - 16U;
-#else
-    unsigned long msb;
-    _BitScanReverse(&msb, a);
-    return 15U - static_cast<OPJ_UINT32>(msb);
-#endif
-#else
-    return static_cast<OPJ_UINT32>(__builtin_clz(a)) - 16U;
-#endif
-}
+// mq_shifts (the renormalisation's shifts, by count-leading-zeros) is in t1.h, shared with the encoder
 
 /* For internal use of opj_mqc_decode_macro() */
 /* neo-j2k (stage 4): the shifts counted at once (count-leading-zeros) and taken as many at a time */
