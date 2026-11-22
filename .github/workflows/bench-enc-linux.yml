@@ -1,0 +1,76 @@
+# SPDX-License-Identifier: BSD-2-Clause
+# Copyright (c) 2026, Anne Skydancer (neo-j2k)
+#
+# The encoder's Tier-1 kernel on real Linux: the redesigned MQ coder against its frozen earlier version,
+# in one process, interleaved rounds, for GCC 14, GCC 15 and Clang, the AVX2 build and the scalar one
+# (bench/nj2k_enc_t1_ratio.cpp). GitHub's runners are shared and noisy, so the metric is the single-process
+# ratio new/old (median, p10, p90 of the rounds); the absolute Mcycles are printed as a sanity check. The
+# log has every round; the job summary has one row per run. Run on the throwaway branch bench-enc-linux
+# (push) or by hand (workflow_dispatch).
+name: Bench encoder kernel (Linux)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [bench-enc-linux]
+
+permissions:
+  contents: read
+
+jobs:
+  bench:
+    name: bench (${{ matrix.cc }}, ${{ matrix.simd }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: ubuntu-24.04, cc: gcc-14, cxx: g++-14, preset: linux-gcc, packages: g++-14, simd: AVX2 }
+          - { runner: ubuntu-24.04, cc: gcc-14, cxx: g++-14, preset: linux-gcc, packages: g++-14, simd: SCALAR }
+          - { runner: ubuntu-26.04, cc: gcc-15, cxx: g++-15, preset: linux-gcc, packages: g++-15, simd: AVX2 }
+          - { runner: ubuntu-26.04, cc: gcc-15, cxx: g++-15, preset: linux-gcc, packages: g++-15, simd: SCALAR }
+          - { runner: ubuntu-26.04, cc: clang, cxx: clang++, preset: linux-clang, packages: "clang lld", simd: AVX2 }
+          - { runner: ubuntu-26.04, cc: clang, cxx: clang++, preset: linux-clang, packages: "clang lld", simd: SCALAR }
+    env:
+      CC: ${{ matrix.cc }}
+      CXX: ${{ matrix.cxx }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Toolchain
+        run: |
+          set -euo pipefail
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 update -qq
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 install -y -qq ninja-build ${{ matrix.packages }}
+          "$CC" --version | head -n 1
+          cmake --version | head -n 1
+      - name: Configure
+        run: cmake --preset ${{ matrix.preset }} -DNJ2K_BUILD_TESTS=OFF -DNJ2K_SIMD=${{ matrix.simd }}
+      - name: Build the bench only
+        run: cmake --build --preset ${{ matrix.preset }} --target nj2k_enc_t1_ratio --parallel 2
+      - name: Bench (3 runs)
+        env:
+          CONFIG: ${{ matrix.cc }}, ${{ matrix.simd }}
+        run: |
+          set -euo pipefail
+          {
+            echo "### ${CONFIG}"
+            echo
+            echo "| run | set | ratio median | p10 | p90 | old Mcycles | new Mcycles |"
+            echo "|---|---|---:|---:|---:|---:|---:|"
+          } >> "$GITHUB_STEP_SUMMARY"
+          for run in 1 2 3; do
+            echo "::group::run $run (${CONFIG})"
+            build/${{ matrix.preset }}/bench/nj2k_enc_t1_ratio --rounds 41 --blocks 256 | tee "bench-$run.txt"
+            echo "::endgroup::"
+            awk -v run="$run" '/^RESULT /{ for (i = 2; i <= NF; i++) { split($i, kv, "="); v[kv[1]] = kv[2] }
+              printf "| %s | %s | %s | %s | %s | %s | %s |\n", run, v["set"], v["ratio_median"], v["ratio_p10"], v["ratio_p90"], v["old_mcyc"], v["new_mcyc"] }' \
+              "bench-$run.txt" >> "$GITHUB_STEP_SUMMARY"
+          done
+          {
+            echo
+            head -n 3 bench-1.txt | sed 's/^nj2k_enc_t1_ratio: /- /'
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
