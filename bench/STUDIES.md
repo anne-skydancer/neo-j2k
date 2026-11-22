@@ -9,6 +9,7 @@ project that builds the library's sources from `../../src` and its own prototype
 | `bench/t1_study/` | Encoder MQ coder and Tier-1 (stages 1-2: count-leading-zeros renormalisation, state index plus selects) | `doc/enc_t1_study.md` |
 | `bench/mqng_study/` | MQ-NG decoder (state words, select decision, AGG run) | `doc/mqng_study.md` |
 | `bench/ebcotng_study/` | EBCOT-NG Tier-1 (bit-packed state; encoder steps E1-E3, decoder step D1) | `doc/ebcotng_study.md` |
+| `doc/e3_clang_study.md` (no folder; tags `archive/bench-clang-linux`, `archive/enc-e3-clang`) | E3 on clang: variants of the refinement MQ loop (closed, no gain) | `doc/e3_clang_study.md` |
 
 Decisions taken from them: `doc/mq-encoder-redesign-decisions.md` and
 `doc/ngcodec-program-alternative.md`. The resulting work is in pull requests #21 (encoder MQ),
