@@ -1,0 +1,149 @@
+# SPDX-License-Identifier: BSD-2-Clause
+# Copyright (c) 2026, Anne Skydancer (neo-j2k)
+#
+# THROWAWAY (branch bench-clang-linux, never merged): the encoder's Tier-1 kernel on real Linux, the E3 base against
+# variants of the refinement change (src/enc_mq.h, "Bench variants"), on the same machine. For GCC 14, GCC 15 and
+# Clang, the AVX2 build and the scalar one, each job builds nj2k_enc_t1_ratio from the base ref (E3, as it is) and
+# once for each variant K of the head ref (the same preset, flags and tree; only NJ2K_ENC_VARIANT, the bit mask of
+# enc_mq.h, differs, and it reaches enc_t1.cpp alone), prints the CPU once, and runs the binaries alternately (base,
+# then each variant in turn; 3 runs of 41 rounds each). Each binary is the encoder against the frozen reference in one
+# process; the result of a variant is its ratio over the base's ratio (medians of the three runs), so the effect is
+# read in one job, on one CPU. Only the ratios inside one job count, never numbers compared across jobs.
+#
+# A variant is a number, or a number and a code-layout perturbation (K p N: K's bits, and a stub function of N * 16
+# bytes ahead of the refinement pass, never called: it moves the code behind it). Variant 0 is E3's own code in this tree
+# (the refactored coder, no variant bit): its difference to the base is what the tree alone does. The bits:
+#   1 the refinement list on a local copy of the coder's registers      2 the row's bit from the shifted magnitude
+#   4 the magnitude-context states in registers (with 1)                8 the significance and cleanup passes on a local copy
+#  16 the byte-out loop marked unlikely
+# The default list: 0 (control), 1 (a without 2), 3 (a), 7 (b), 11 (c), 19 (d).
+# Run by hand:
+#   gh workflow run bench-clang-linux.yml -f head_ref=bench-clang-linux [-f base_ref=enc-e3-refinement] [-f variants="0 1 3 7 11 19"]
+name: Bench encoder kernel, E3 against the clang variants (Linux)
+
+on:
+  workflow_dispatch:
+    inputs:
+      base_ref:
+        description: Ref of E3 (the base)
+        required: false
+        default: enc-e3-refinement
+        type: string
+      head_ref:
+        description: Ref that holds the variants
+        required: false
+        default: bench-clang-linux
+        type: string
+      variants:
+        description: Variants to build, space separated (a bit mask, or K p N for a layout perturbation)
+        required: false
+        default: "0 1 3 7 11 19"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  bench:
+    name: bench (${{ matrix.cc }}, ${{ matrix.simd }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: ubuntu-24.04, cc: gcc-14, cxx: g++-14, preset: linux-gcc, packages: g++-14, simd: AVX2 }
+          - { runner: ubuntu-24.04, cc: gcc-14, cxx: g++-14, preset: linux-gcc, packages: g++-14, simd: SCALAR }
+          - { runner: ubuntu-26.04, cc: gcc-15, cxx: g++-15, preset: linux-gcc, packages: g++-15, simd: AVX2 }
+          - { runner: ubuntu-26.04, cc: gcc-15, cxx: g++-15, preset: linux-gcc, packages: g++-15, simd: SCALAR }
+          - { runner: ubuntu-26.04, cc: clang, cxx: clang++, preset: linux-clang, packages: "clang lld", simd: AVX2 }
+          - { runner: ubuntu-26.04, cc: clang, cxx: clang++, preset: linux-clang, packages: "clang lld", simd: SCALAR }
+    env:
+      CC: ${{ matrix.cc }}
+      CXX: ${{ matrix.cxx }}
+      HEAD_REF: ${{ inputs.head_ref }}
+      BASE_REF: ${{ inputs.base_ref }}
+      VARIANTS: ${{ inputs.variants }}
+    steps:
+      - name: Head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ inputs.head_ref }}
+          path: head
+          persist-credentials: false
+      - name: Base
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ inputs.base_ref }}
+          path: base
+          persist-credentials: false
+      - name: Toolchain
+        run: |
+          set -euo pipefail
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 update -qq
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 install -y -qq ninja-build ${{ matrix.packages }}
+          "$CC" --version | head -n 1
+          cmake --version | head -n 1
+      - name: Build the base and every variant
+        run: |
+          set -euo pipefail
+          echo "::group::build base"
+          (cd base && cmake --preset ${{ matrix.preset }} -B build/base -DNJ2K_BUILD_TESTS=OFF -DNJ2K_SIMD=${{ matrix.simd }} \
+            && cmake --build build/base --target nj2k_enc_t1_ratio --parallel 2)
+          echo "::endgroup::"
+          for spec in $VARIANTS; do
+            k="${spec%%p*}"
+            args="-DNJ2K_ENC_VARIANT=$k"
+            if [ "$k" != "$spec" ]; then args="$args -DNJ2K_ENC_PAD=${spec#*p}"; fi
+            echo "::group::build variant $spec ($args)"
+            (cd head && cmake --preset ${{ matrix.preset }} -B "build/v$spec" -DNJ2K_BUILD_TESTS=OFF -DNJ2K_SIMD=${{ matrix.simd }} $args \
+              && cmake --build "build/v$spec" --target nj2k_enc_t1_ratio --parallel 2)
+            echo "::endgroup::"
+          done
+      - name: Bench (base and the variants alternately, 3 runs)
+        env:
+          CONFIG: ${{ matrix.cc }}, ${{ matrix.simd }}
+        run: |
+          set -euo pipefail
+          cpu="$(grep -m1 'model name' /proc/cpuinfo | sed 's/^[^:]*: *//')"
+          echo "CPU: $cpu ($(nproc) cores)"
+          bins="base:base/build/base/bench/nj2k_enc_t1_ratio"
+          for spec in $VARIANTS; do bins="$bins v$spec:head/build/v$spec/bench/nj2k_enc_t1_ratio"; done
+          {
+            echo "### ${CONFIG}"
+            echo
+            echo "CPU: ${cpu}; head \`$(git -C head rev-parse --short HEAD)\`, base \`$(git -C base rev-parse --short HEAD)\`"
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+          for run in 1 2 3; do
+            for entry in $bins; do
+              name="${entry%%:*}"; bin="${entry#*:}"
+              echo "::group::run $run, $name (${CONFIG})"
+              "$bin" --rounds 41 --blocks 256 | tee "bench-$name-$run.txt"
+              echo "::endgroup::"
+            done
+          done
+          python3 - $bins >> "$GITHUB_STEP_SUMMARY" <<'PY'
+          import statistics as st, sys
+          names = [e.split(":", 1)[0] for e in sys.argv[1:]]
+          def results(name):
+              out = {}
+              for run in (1, 2, 3):
+                  for line in open(f"bench-{name}-{run}.txt"):
+                      if line.startswith("RESULT "):
+                          kv = dict(f.split("=", 1) for f in line.split()[1:])
+                          out.setdefault(kv["set"], []).append(float(kv["ratio_median"]))
+              return out
+          res = {n: results(n) for n in names}
+          base = res["base"]
+          print("Change in percent against the E3 base (minus = faster), the median of the three runs and each run:")
+          print()
+          print("| variant | set | change vs base, % | each run, % |")
+          print("|---|---|---:|---|")
+          for n in names[1:]:
+              for s in sorted(base):
+                  per = [(h / b - 1) * 100 for h, b in zip(res[n][s], base[s])]
+                  print(f"| {n} | {s} | **{st.median(per):+.1f}** | {' '.join(f'{x:+.1f}' for x in per)} |")
+          print()
+          print("Each ratio is that binary's encoder over the frozen pre-redesign reference, in one process; the change is the variant's ratio over the base's.")
+          PY

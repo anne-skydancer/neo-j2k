@@ -40,6 +40,16 @@ else()
   list(APPEND NJ2K_SOURCES limit_profile_opensim_off.cpp)
 endif()
 
+# (bench-clang-linux only, not for release) the Linux CI bench builds the encoder's Tier-1 in variants of one source:
+# NJ2K_ENC_VARIANT is the bit mask of src/enc_mq.h, NJ2K_ENC_PAD (optional) a code-layout perturbation (enc_t1.cpp)
+if(DEFINED NJ2K_ENC_VARIANT)
+  set(_nj2k_variant_defs "NJ2K_ENC_VARIANT=${NJ2K_ENC_VARIANT}")
+  if(DEFINED NJ2K_ENC_PAD)
+    list(APPEND _nj2k_variant_defs "NJ2K_PAD=${NJ2K_ENC_PAD}")
+  endif()
+  set_source_files_properties(enc_t1.cpp PROPERTIES COMPILE_DEFINITIONS "${_nj2k_variant_defs}")
+endif()
+
 # No link-time code generation, in every configuration: the generic IPO property alone is not
 # enough, since INTERPROCEDURAL_OPTIMIZATION_<CONFIG> (which CMAKE_INTERPROCEDURAL_OPTIMIZATION_<CONFIG>
 # initialises, for example in a superproject that turns LTO on everywhere) overrides it.

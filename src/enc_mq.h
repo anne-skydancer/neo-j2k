@@ -13,7 +13,24 @@
 
 #include "enc_luts.h"
 #include "t1.h"
+#include "t1_flags.h"
 #include "t1_tables.h"
+
+// Bench variants of the coder (the Linux CI bench; not for release). A bit mask:
+//   1: the refinement list on a local copy of the coder's registers (MqEnc::encode_pairs)
+//   2: the refinement row's bit from the shifted magnitude (enc_t1.cpp)
+//   4: the three magnitude-context states held in registers (with 1)
+//   8: the significance and cleanup passes on a local copy too (enc_t1.cpp)
+//  16: the byte-out loop of the renormalisation marked unlikely
+// 0 is the encoder as it was before the variants (E3).
+#ifndef NJ2K_ENC_VARIANT
+#define NJ2K_ENC_VARIANT 3
+#endif
+#if NJ2K_ENC_VARIANT & 16
+#define NJ2K_V_UNLIKELY [[unlikely]]
+#else
+#define NJ2K_V_UNLIKELY
+#endif
 
 namespace nj2k::detail {
 
@@ -77,7 +94,7 @@ struct MqCore {
         // c, ct and the bytes are the loop's at every step
         std::uint32_t k = mq_shifts(a);
         a <<= k;
-        while (k >= ct) {
+        while (k >= ct) NJ2K_V_UNLIKELY {
             c <<= ct;
             k -= ct;
             byteout();
@@ -94,8 +111,14 @@ struct MqCore {
     // `slot` is the context's state byte. Precondition: d is 0 or 1.
     NJ2K_FORCE_INLINE void encode(std::uint8_t* slot, std::uint32_t d) noexcept
     {
+        *slot = static_cast<std::uint8_t>(decide(*slot, d));
+        renorme();
+    }
+
+    // The decision on the state index i, without the renormalisation; returns the state after it.
+    NJ2K_FORCE_INLINE std::uint32_t decide(std::uint32_t i, std::uint32_t d) noexcept
+    {
         assert(d <= 1U);
-        const std::uint32_t i = *slot;
         const MqEncState e = kMqEncStates.t[i];
         const std::uint32_t q = e.qe;
         const std::uint32_t lps = (i ^ d) & 1U;
@@ -111,7 +134,7 @@ struct MqCore {
         const std::uint32_t next = reinterpret_cast<const std::uint8_t*>(&kMqEncStates.t[i])[2U + lps];
         // an MPS whose a' keeps bit 15 keeps its state (as a bit expression: GCC branches on `!lps && ...`)
         const std::uint32_t mkeep = 0U - (((an >> 15) & ~lps) & 1U);
-        *slot = static_cast<std::uint8_t>(next ^ ((next ^ i) & mkeep));
+        const std::uint32_t ns = next ^ ((next ^ i) & mkeep);
 #else
         a = swap ? q : an;
         c += swap ? 0U : q;
@@ -119,9 +142,9 @@ struct MqCore {
         // an MPS (lps == 0) whose a' keeps bit 15 keeps its state; written as one compare, since MSVC turns
         // `!lps && (an & 0x8000U)` into a branch
         const bool keep = (lps | (an & 0x8000U)) == 0x8000U;
-        *slot = static_cast<std::uint8_t>(keep ? i : next);
+        const std::uint32_t ns = keep ? i : next;
 #endif
-        renorme();
+        return ns;
     }
 };
 
@@ -170,6 +193,32 @@ struct MqEnc : MqCore {
             const std::uint32_t p = list[j];
             s.encode(states + (p >> 1), p & 1U);
         }
+        static_cast<MqCore&>(*this) = s;
+        if (n != 0U) {
+            cx = list[n - 1U] >> 1;
+        }
+    }
+
+    // encode_pairs for a list of the three magnitude contexts only (14, 15, 16): their states live in registers
+    void encode_pairs_mag(const std::uint8_t* list, std::uint32_t n) noexcept
+    {
+        MqCore s = *this;
+        std::uint32_t m0 = ctxs[T1_CTXNO_MAG];
+        std::uint32_t m1 = ctxs[T1_CTXNO_MAG + 1];
+        std::uint32_t m2 = ctxs[T1_CTXNO_MAG + 2];
+        for (std::uint32_t j = 0; j < n; ++j) {
+            const std::uint32_t p = list[j];
+            const std::uint32_t x = (p >> 1) - T1_CTXNO_MAG;
+            const std::uint32_t i = x == 0U ? m0 : x == 1U ? m1 : m2;
+            const std::uint32_t ns = s.decide(i, p & 1U);
+            s.renorme();
+            m0 = x == 0U ? ns : m0;
+            m1 = x == 1U ? ns : m1;
+            m2 = x == 2U ? ns : m2;
+        }
+        ctxs[T1_CTXNO_MAG] = static_cast<std::uint8_t>(m0);
+        ctxs[T1_CTXNO_MAG + 1] = static_cast<std::uint8_t>(m1);
+        ctxs[T1_CTXNO_MAG + 2] = static_cast<std::uint8_t>(m2);
         static_cast<MqCore&>(*this) = s;
         if (n != 0U) {
             cx = list[n - 1U] >> 1;
