@@ -128,7 +128,7 @@ inline std::uint8_t getctxno_zc(const MqEnc* mqc, OPJ_UINT32 f) noexcept
     return mqc->lut_ctxno_zc_orient[(f & T1_SIGMA_NEIGHBOURS)];
 }
 
-inline OPJ_UINT32 getctxtno_sc_or_spb_index(OPJ_UINT32 fX, OPJ_UINT32 pfX, OPJ_UINT32 nfX, OPJ_UINT32 ci) noexcept
+NJ2K_FORCE_INLINE OPJ_UINT32 getctxtno_sc_or_spb_index(OPJ_UINT32 fX, OPJ_UINT32 pfX, OPJ_UINT32 nfX, OPJ_UINT32 ci) noexcept
 {
     OPJ_UINT32 lu = (fX >> (ci * 3U)) & (T1_SIGMA_1 | T1_SIGMA_3 | T1_SIGMA_5 | T1_SIGMA_7);
 
@@ -167,7 +167,7 @@ inline std::int16_t getnmsedec_ref(OPJ_UINT32 x, OPJ_UINT32 bitpos) noexcept
 }
 
 // opj_t1_update_flags with vsc = 0
-inline void update_flags(opj_flag_t* flagsp, OPJ_UINT32 ci, OPJ_UINT32 s, OPJ_UINT32 stride) noexcept
+NJ2K_FORCE_INLINE void update_flags(opj_flag_t* flagsp, OPJ_UINT32 ci, OPJ_UINT32 s, OPJ_UINT32 stride) noexcept
 {
     /* east */
     flagsp[-1] |= T1_SIGMA_5 << (3U * ci);
@@ -378,6 +378,27 @@ NJ2K_FORCE_INLINE void enc_clnpass_step(EncT1* t1, opj_flag_t* flagspIn, const O
     }
 }
 
+// one row of a column of the cleanup pass outside run mode: coded when its bit is in the column's candidate mask
+template <OPJ_UINT32 ci>
+NJ2K_FORCE_INLINE void enc_clnpass_row(EncT1* t1, opj_flag_t* f, const OPJ_INT32* datap, OPJ_UINT32 cand,
+                                       OPJ_INT32 one, OPJ_INT32* nmsedec, OPJ_INT32 bpno) noexcept
+{
+    if ((cand >> (3U * ci)) & 1U) {
+        MqEnc* mqc = &t1->mqc;
+        mqc->setcurctx(getctxno_zc(mqc, *f >> (3U * ci)));
+        OPJ_UINT32 v = (smr_abs(datap[ci]) & static_cast<OPJ_UINT32>(one)) ? 1 : 0;
+        mqc->encode(v);
+        if (v) {
+            const OPJ_UINT32 lu = getctxtno_sc_or_spb_index(*f, f[-1], f[1], ci);
+            v = smr_sign(datap[ci]);
+            *nmsedec += getnmsedec_sig(smr_abs(datap[ci]), static_cast<OPJ_UINT32>(bpno));
+            mqc->setcurctx(kLutCtxnoSc[lu]);
+            mqc->encode(v ^ kLutSpb[lu]);
+            update_flags(f, ci, v, t1->w + 2U);
+        }
+    }
+}
+
 void enc_clnpass(EncT1* t1, OPJ_INT32 bpno, OPJ_INT32* nmsedec) noexcept
 {
     OPJ_UINT32 i, k;
@@ -407,7 +428,20 @@ void enc_clnpass(EncT1* t1, OPJ_INT32 bpno, OPJ_INT32* nmsedec) noexcept
                 mqc->encode(runlen >> 1);
                 mqc->encode(runlen & 1);
             } else {
-                runlen = 0;
+                // a column outside run mode: its candidates are fixed here, at its start. A row is coded
+                // (zero coding, and sign coding when it turns significant) when it is neither significant
+                // nor visited, and coding a row sets the significance of that row alone (its neighbours' flags
+                // change, not the other rows' own sigma and pi), so the set cannot change inside the column.
+                // Row r is bit 3r of cand (sigma at bit 4 + 3r, pi at bit 21 + 3r of the word); the rows are
+                // unrolled, so that each one's shifts and its update_flags branches are constants.
+                const OPJ_UINT32 cand = ~((*f >> 4) | (*f >> 21)) & 0x249U;
+                enc_clnpass_row<0>(t1, f, datap, cand, one, nmsedec, bpno);
+                enc_clnpass_row<1>(t1, f, datap, cand, one, nmsedec, bpno);
+                enc_clnpass_row<2>(t1, f, datap, cand, one, nmsedec, bpno);
+                enc_clnpass_row<3>(t1, f, datap, cand, one, nmsedec, bpno);
+                *f &= ~(T1_PI_0 | T1_PI_1 | T1_PI_2 | T1_PI_3);
+                datap += 4;
+                continue;
             }
             enc_clnpass_step(t1, f, datap, bpno, one, nmsedec, agg, runlen, 4U);
             datap += 4 - runlen;
