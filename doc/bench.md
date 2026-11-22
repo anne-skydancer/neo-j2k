@@ -1324,16 +1324,48 @@ against this branch's:
 | MinGW GCC 13.2 `-O2` (baseline) | 0.952 | 0.951 | 0.952 | 0.951 | 0.952 | 0.951 |
 | MinGW GCC 13.2 `-O2 -march=x86-64-v3` | 0.960 | 0.957 | 0.959 | 0.953 | 0.960 | 0.954 |
 
-None misses (the worst cell is 0.960); unlike E1, clang-cl gains as much as MSVC. The Linux numbers (GCC 14, GCC 15 and
-Clang on Ubuntu, AVX2 and scalar) are not in this document yet: the workflow `bench-kernel-compare.yml` builds
-`nj2k_enc_t1_ratio` for two refs on the same runner and runs the two binaries alternately (3 runs x 41 rounds); the E2
-effect on Linux is the head-vs-base ratio of its result for head = the E2 commit, base = main.
+None misses (the worst cell is 0.960); unlike E1, clang-cl gains as much as MSVC.
+
+### Linux, GCC 14, GCC 15 and Clang (E2)
+
+Workflow `bench-kernel-compare.yml`, run 45056793413 (head = `enc-e2-cleanup` at `0459480`, base = main at `a60e153`):
+each of the six jobs builds `nj2k_enc_t1_ratio` for both refs and runs the two binaries alternately on the same machine
+(head, base, head, base, head, base; 3 runs of 41 rounds, 256 blocks of 64 x 64). Each number is a ratio of the
+encoder's kernel to the frozen pre-redesign reference in one process (smaller is faster); E2 / main is the E2 ratio over main's,
+run by run. These are same-machine ratios, one CPU per job, and are the table of record for Linux; the absolute ratios differ
+from job to job with the CPU. The output is identical (the kernel hash of the lossy and lossless sets is the same for both refs).
+
+E2 / main, the three runs' median (all three runs in brackets), lossless and lossy:
+
+| Job | CPU | Lossless | Lossy |
+|---|---|---|---|
+| gcc-14, AVX2 | Intel Xeon Platinum 8573C | 0.954 (0.954, 0.954, 0.952) | 0.954 (0.954, 0.955, 0.953) |
+| gcc-14, SCALAR | Intel Xeon 6975P-C | 0.937 (0.937, 0.937, 0.937) | 0.945 (0.945, 0.945, 0.945) |
+| gcc-15, AVX2 | AMD EPYC 7763 | 0.940 (0.944, 0.940, 0.940) | 0.943 (0.946, 0.942, 0.943) |
+| gcc-15, SCALAR | AMD EPYC 7763 | 0.940 (0.940, 0.940, 0.940) | 0.944 (0.942, 0.944, 0.944) |
+| clang, AVX2 | AMD EPYC 7763 | 0.936 (0.940, 0.935, 0.936) | 0.945 (0.949, 0.945, 0.945) |
+| clang, SCALAR | Intel Xeon Platinum 8573C | 0.942 (0.938, 0.942, 0.942) | 0.952 (0.951, 0.952, 0.952) |
+
+The ratios against the frozen reference behind them, E2 against main (the median of three runs, lossless / lossy):
+
+| Job | E2 | main |
+|---|---|---|
+| gcc-14, AVX2 | 0.509 / 0.534 | 0.534 / 0.560 |
+| gcc-14, SCALAR | 0.534 / 0.562 | 0.570 / 0.595 |
+| gcc-15, AVX2 | 0.588 / 0.603 | 0.625 / 0.639 |
+| gcc-15, SCALAR | 0.686 / 0.702 | 0.730 / 0.744 |
+| clang, AVX2 | 0.547 / 0.573 | 0.584 / 0.607 |
+| clang, SCALAR | 0.531 / 0.556 | 0.564 / 0.585 |
+
+E2 gains about 5 to 6 % on all six Linux builds (0.936 to 0.954; the three runs of a job agree within 0.005), clang
+included, unlike E1, which had nothing to gain with clang. gcc-15 SCALAR on that EPYC reads 0.73 to 0.74 on main and 0.69 to
+0.70 with E2 (the level accepted in Stage 6c is about 0.70).
 
 ### Not measured, and the gaps (E2)
 
-- No Linux or WSL here: the `linux-*` presets, UBSan, TSan and libFuzzer were not run locally (the repository's CI runs
-  them), and the E2 Linux numbers wait for the same-machine `bench-kernel-compare` run. `nj2k_enc_t1_unit` was not run locally with GCC or
-  clang (the ctest on clang-cl was).
+- No Linux or WSL here: the `linux-*` presets run in the repository's CI; UBSan, TSan and libFuzzer were not run
+  locally. `nj2k_enc_t1_unit` was not run locally with GCC or clang (the ctest on clang-cl was). The Linux kernel numbers
+  above are from the bench workflow only (kernel, no whole-encode figure on Linux).
 - MSVC ASan: 124 ran and passed; 4 were excluded and not run (`decode_unit`, `decode_threads` and two
   `fuzz_replay.decode*`: the decoder is not touched, and those tests ran for over an hour under AddressSanitizer here
   without finishing); every encoder test, `enc_t1_unit` among them, ran. The ASan preset registers 128 tests with the
