@@ -11,7 +11,10 @@
 # one after the other (so the sanitizers see the threaded path), and compares; and
 # nj2k_fuzz_decode_threads_replay, the decode target built with NJ2K_FUZZ_THREADS, does the same
 # through a pool of threads (the ThreadSanitizer job replays the seeds and regressions through it).
-set(NJ2K_FUZZ_TARGETS header decode roundtrip encode)
+set(NJ2K_FUZZ_TARGETS header decode roundtrip encode t1)
+
+# the T1 target compares the library's Tier-1 with the frozen copy of the decoder before the MQ-NG redesign
+set(_nj2k_fuzz_extra_t1 "${PROJECT_SOURCE_DIR}/tests/unit/t1_frozen.cpp")
 
 if(NJ2K_BUILD_FUZZERS)
   if(NJ2K_CL)
@@ -31,7 +34,7 @@ if(NJ2K_BUILD_FUZZERS)
   endif()
   separate_arguments(_nj2k_engine)
   foreach(t IN LISTS NJ2K_FUZZ_TARGETS)
-    add_executable(nj2k_fuzz_${t} fuzz_${t}.cpp)
+    add_executable(nj2k_fuzz_${t} fuzz_${t}.cpp ${_nj2k_fuzz_extra_${t}})
     target_link_libraries(nj2k_fuzz_${t} PRIVATE nj2k_test_common)
     if(NJ2K_CL)
       target_compile_options(nj2k_fuzz_${t} PRIVATE /fsanitize=fuzzer)
@@ -46,7 +49,7 @@ if(NJ2K_BUILD_TESTS)
   set(_nj2k_corpus "${PROJECT_SOURCE_DIR}/corpus/generated")
   set(_nj2k_regressions "${CMAKE_CURRENT_SOURCE_DIR}/regressions")
   foreach(t IN LISTS NJ2K_FUZZ_TARGETS)
-    add_executable(nj2k_fuzz_${t}_replay fuzz_${t}.cpp standalone_main.cpp)
+    add_executable(nj2k_fuzz_${t}_replay fuzz_${t}.cpp standalone_main.cpp ${_nj2k_fuzz_extra_${t}})
     target_link_libraries(nj2k_fuzz_${t}_replay PRIVATE nj2k_test_common)
     nj2k_fp_strict(nj2k_fuzz_${t}_replay)
     nj2k_program_exceptions(nj2k_fuzz_${t}_replay)
@@ -94,6 +97,10 @@ if(NJ2K_BUILD_TESTS)
            COMMAND nj2k_fuzz_roundtrip_replay "${CMAKE_CURRENT_SOURCE_DIR}/seeds/roundtrip" "${_nj2k_regressions}")
   add_test(NAME fuzz_replay.encode
            COMMAND nj2k_fuzz_encode_replay "${CMAKE_CURRENT_SOURCE_DIR}/seeds/encode" "${_nj2k_regressions}")
+
+  # the Tier-1 target's inputs are code-blocks, not codestreams: its own seeds
+  add_test(NAME fuzz_replay.t1
+           COMMAND nj2k_fuzz_t1_replay "${CMAKE_CURRENT_SOURCE_DIR}/seeds/t1" "${_nj2k_regressions}")
 
   add_executable(nj2k_fuzz_filter_check filter_check.cpp)
   target_link_libraries(nj2k_fuzz_filter_check PRIVATE nj2k_test_common)

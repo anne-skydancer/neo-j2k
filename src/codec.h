@@ -69,8 +69,8 @@ struct Scratch {
 };
 
 // The Tier-1 scratches of a threaded tile's parts (stage 5), kept between decodes as the decoder's
-// own T1 is. Each is 256 bytes (sizeof(T1)), in an array aligned to 64 bytes, so two parts' scratches
-// never share a cache line.
+// own T1 is. Each is a whole number of cache lines (T1 is alignas(64)), in an array aligned to 64
+// bytes, so two parts' scratches never share a cache line.
 struct T1Parts {
     T1* t1 = nullptr;
     std::uint32_t count = 0;
@@ -80,6 +80,10 @@ struct T1Parts {
     std::size_t bytes() const noexcept;
 };
 
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4324)  // padded for the alignment of its Tier-1 scratch, as intended
+#endif
 struct Decoder {
     static constexpr std::uint32_t kMagic = 0x4E4A3244u;  // "NJ2D"
     enum class State : std::uint8_t { created, header, decoded, failed };
@@ -158,5 +162,8 @@ struct Decoder {
     void release_all() noexcept;
     std::size_t kept_bytes() const noexcept;
 };
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
 
 }  // namespace nj2k::detail

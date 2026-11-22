@@ -5,7 +5,12 @@
 // (mqc_inl.h, mqc.c), the context tables (t1_luts.h) and the three decoding passes with their raw
 // (BYPASS) variants (t1.c) are OpenJPEG's code, unchanged but for the C++ adjustments (no
 // 'register', static inline functions, file-local names); the code-block driver and the store into
-// the tile buffer follow opj_t1_decode_cblk and opj_t1_clbl_decode_processor. OpenJPEG's notice:
+// the tile buffer follow opj_t1_decode_cblk and opj_t1_clbl_decode_processor. What departs from
+// OpenJPEG's text are operations, not results (the coefficients are OpenJPEG's, tests/unit/t1_unit.cpp
+// holds them to a frozen copy of the earlier text): the MQ decision and its renormalisation (t1_mq.h:
+// state words, selects, the renormalisation always run), the cleanup pass's run of AGG decisions taken at
+// once, the segment lengths cut to the bytes present, and the dropped end_of_byte_stream_counter.
+// OpenJPEG's notice:
 //
 /*
  * The copyright in this software is being made available under the 2-clauses
@@ -49,6 +54,7 @@
  */
 #include "t1.h"
 #include "t1_flags.h"
+#include "t1_mq.h"
 #include "t1_tables.h"
 
 #include <cassert>
@@ -72,58 +78,22 @@ using OPJ_INT32 = std::int32_t;
 using OPJ_UINT32 = std::uint32_t;
 using OPJ_BOOL = int;
 using opj_flag_t = std::uint32_t;
-using opj_mqc_state_t = MqState;
 using opj_mqc_t = Mqc;
 using opj_t1_t = T1;
 constexpr OPJ_BOOL OPJ_TRUE = 1, OPJ_FALSE = 0;
 constexpr OPJ_UINT32 OPJ_COMMON_CBLK_DATA_EXTRA = 2;
-constexpr OPJ_UINT32 MQC_NUMCTXS = 19;
 constexpr OPJ_UINT32 J2K_CCP_CBLKSTY_LAZY = kCblkLazy, J2K_CCP_CBLKSTY_RESET = kCblkReset,
                      J2K_CCP_CBLKSTY_VSC = kCblkVsc, J2K_CCP_CBLKSTY_SEGSYM = kCblkSegsym;
 
-#define opj_mqc_setcurctx(mqc, ctxno) (mqc)->curctx = &(mqc)->ctxs[(OPJ_UINT32)(ctxno)]
+#define opj_mqc_setcurctx(mqc, ctxno) (mqc)->curctx = &(mqc)->ctx.slot[(OPJ_UINT32)(ctxno)]
 
 // t1.c
 #define T1_FLAGS(x, y) (t1->flags[x + 1 + ((y / 4) + 1) * (t1->w + 2)])
-#define opj_t1_setcurctx(curctx, ctxno) curctx = &(mqc)->ctxs[(OPJ_UINT32)(ctxno)]
-
-// The Tier-1 trace of the lane-per-code-block MQ prototype bench (bench/nj2k_mq_lanes.cpp, stage
-// 4): a copy of the library built with NJ2K_T1_TRACE reports every MQ segment and decision. The
-// library itself is built without it, and the hooks compile to nothing.
-#if defined(NJ2K_T1_TRACE)
-#define NJ2K_T1_TRACE_DECISION(ctx, d) g_t1_trace.decision(g_t1_trace.user, static_cast<std::uint32_t>(ctx), (d))
-#else
-#define NJ2K_T1_TRACE_DECISION(ctx, d)
-#endif
+#define opj_t1_setcurctx(curctx, ctxno) curctx = &(mqc)->ctx.slot[(OPJ_UINT32)(ctxno)]
 
 // ---- mqc_inl.h: the MQ decoder ----
 
-/* For internal use of opj_mqc_decode_macro() */
-#define opj_mqc_mpsexchange_macro(d, curctx, a) \
-{ \
-    if (a < (*curctx)->qeval) { \
-        d = !((*curctx)->mps); \
-        *curctx = (*curctx)->nlps; \
-    } else { \
-        d = (*curctx)->mps; \
-        *curctx = (*curctx)->nmps; \
-    } \
-}
-
-/* For internal use of opj_mqc_decode_macro() */
-#define opj_mqc_lpsexchange_macro(d, curctx, a) \
-{ \
-    if (a < (*curctx)->qeval) { \
-        a = (*curctx)->qeval; \
-        d = (*curctx)->mps; \
-        *curctx = (*curctx)->nmps; \
-    } else { \
-        a = (*curctx)->qeval; \
-        d = !((*curctx)->mps); \
-        *curctx = (*curctx)->nlps; \
-    } \
-}
-
+// the decision (opj_mqc_decode_macro) with its byte-in and renormalisation is in t1_mq.h
 
 /**
 Decode a symbol using raw-decoder. Cfr p.506 TAUBMAN
@@ -158,74 +128,8 @@ static inline OPJ_UINT32 opj_mqc_raw_decode(opj_mqc_t *mqc)
 }
 
 
-#define opj_mqc_bytein_macro(mqc, c, ct) \
-{ \
-        OPJ_UINT32 l_c;  \
-        /* Given opj_mqc_init_dec() we know that at some point we will */ \
-        /* have a 0xFF 0xFF artificial marker */ \
-        l_c = *(mqc->bp + 1); \
-        if (*mqc->bp == 0xff) { \
-            if (l_c > 0x8f) { \
-                c += 0xff00; \
-                ct = 8; \
-                mqc->end_of_byte_stream_counter ++; \
-            } else { \
-                mqc->bp++; \
-                c += l_c << 9; \
-                ct = 7; \
-            } \
-        } else { \
-            mqc->bp++; \
-            c += l_c << 8; \
-            ct = 8; \
-        } \
-}
-
-// mq_shifts (the renormalisation's shifts, by count-leading-zeros) is in t1.h, shared with the encoder
-
-/* For internal use of opj_mqc_decode_macro() */
-/* neo-j2k (stage 4): the shifts counted at once (count-leading-zeros) and taken as many at a time */
-/* as c has bits left, a byte read whenever none is left: the same byte reads at the same shifts */
-/* as OpenJPEG's one-bit loop (a is 1 to 0x7fff here: 1 to 15 shifts) */
-#define opj_mqc_renormd_macro(mqc, a, c, ct) \
-{ \
-    OPJ_UINT32 shifts_ = mq_shifts(a); \
-    do { \
-        if (ct == 0) { \
-            opj_mqc_bytein_macro(mqc, c, ct); \
-        } \
-        const OPJ_UINT32 k_ = shifts_ < ct ? shifts_ : ct; \
-        a <<= k_; \
-        c <<= k_; \
-        ct -= k_; \
-        shifts_ -= k_; \
-    } while (shifts_ != 0); \
-}
-
-#define opj_mqc_decode_macro(d, mqc, curctx, a, c, ct) \
-{ \
-    /* Implements ISO 15444-1 C.3.2 Decoding a decision (DECODE) */ \
-    /* Note: alternate "J.2 - Decoding an MPS or an LPS in the */ \
-    /* software-conventions decoder" has been tried, but does not bring any */ \
-    /* improvement. See https://github.com/uclouvain/openjpeg/issues/921 */ \
-    a -= (*curctx)->qeval;  \
-    if ((c >> 16) < (*curctx)->qeval) {  \
-        opj_mqc_lpsexchange_macro(d, curctx, a);  \
-        opj_mqc_renormd_macro(mqc, a, c, ct);  \
-    } else {  \
-        c -= (*curctx)->qeval << 16;  \
-        if ((a & 0x8000) == 0) { \
-            opj_mqc_mpsexchange_macro(d, curctx, a); \
-            opj_mqc_renormd_macro(mqc, a, c, ct); \
-        } else { \
-            d = (*curctx)->mps; \
-        } \
-    } \
-    NJ2K_T1_TRACE_DECISION(curctx - mqc->ctxs, d); \
-}
-
 #define DOWNLOAD_MQC_VARIABLES(mqc, curctx, a, c, ct) \
-        const opj_mqc_state_t **curctx = mqc->curctx; \
+        OPJ_UINT32 *curctx = mqc->curctx; \
         OPJ_UINT32 c = mqc->c; \
         OPJ_UINT32 a = mqc->a; \
         OPJ_UINT32 ct = mqc->ct
@@ -292,7 +196,6 @@ void opj_mqc_init_dec(opj_mqc_t *mqc, OPJ_BYTE *bp, OPJ_UINT32 len,
     /* See https://github.com/uclouvain/openjpeg/issues/921 */
     opj_mqc_init_dec_common(mqc, bp, len, extra_writable_bytes);
     opj_mqc_setcurctx(mqc, 0);
-    mqc->end_of_byte_stream_counter = 0;
     if (len == 0) {
         mqc->c = 0xff << 16;
     } else {
@@ -323,16 +226,7 @@ void opq_mqc_finish_dec(opj_mqc_t *mqc)
 
 void opj_mqc_resetstates(opj_mqc_t *mqc)
 {
-    OPJ_UINT32 i;
-    for (i = 0; i < MQC_NUMCTXS; i++) {
-        mqc->ctxs[i] = kMqcStates;
-    }
-}
-
-void opj_mqc_setstate(opj_mqc_t *mqc, OPJ_UINT32 ctxno, OPJ_UINT32 msb,
-                      OPJ_INT32 prob)
-{
-    mqc->ctxs[ctxno] = &kMqcStates[msb + (OPJ_UINT32)(prob << 1)];
+    mqc->ctx = kMqContextsInit;
 }
 
 // ---- t1_luts.h: the context tables (decoding) ----
@@ -890,6 +784,17 @@ static void opj_t1_dec_clnpass_step(
             if (flags == 0) { \
                 OPJ_UINT32 partial = OPJ_TRUE; \
                 opj_t1_setcurctx(curctx, T1_CTXNO_AGG); \
+                { \
+                    /* the columns of empty stripes that decode 0 without renormalisation, at once */ \
+                    OPJ_UINT32 run_; \
+                    opj_mqc_agg_run_macro(run_, a, c, curctx, flagsp, l_w - i); \
+                    if (run_ != 0) { \
+                        i += run_ - 1; \
+                        data += run_ - 1; \
+                        flagsp += run_ - 1; \
+                        continue; \
+                    } \
+                } \
                 opj_mqc_decode_macro(v, mqc, curctx, a, c, ct); \
                 if (!v) { \
                     continue; \
@@ -1164,9 +1069,6 @@ bool t1_decode_cblk(T1& t1_ref, const T1Block& b, const Messages& msg) noexcept
     OPJ_UINT32 passtype = 2;
 
     opj_mqc_resetstates(mqc);
-    opj_mqc_setstate(mqc, T1_CTXNO_UNI, 0, 46);
-    opj_mqc_setstate(mqc, T1_CTXNO_AGG, 0, 3);
-    opj_mqc_setstate(mqc, T1_CTXNO_ZC, 0, 4);
 
     if (b.nchunks == 0) {
         return true;
@@ -1187,6 +1089,10 @@ bool t1_decode_cblk(T1& t1_ref, const T1Block& b, const Messages& msg) noexcept
     OPJ_UINT32 cblkdataindex = 0;
     for (OPJ_UINT32 segno = 0; segno < b.nsegs; ++segno) {
         const Segment* seg = &b.segs[segno];
+        // The one length check of a block: a segment longer than the bytes that are left is cut to them (Tier-2
+        // gives segments that fit; the decoder's sentinel write below must not write past the buffer whatever it
+        // is given; what a hostile segment makes the decoder read is another matter)
+        const OPJ_UINT32 seglen = seg->len < cblk_len - cblkdataindex ? seg->len : cblk_len - cblkdataindex;
 
         /* BYPASS mode */
         const OPJ_BYTE type = ((bpno_plus_one <= ((OPJ_INT32)(b.numbps)) - 4) && (passtype < 2) &&
@@ -1195,23 +1101,33 @@ bool t1_decode_cblk(T1& t1_ref, const T1Block& b, const Messages& msg) noexcept
                                   : T1_TYPE_MQ;
 
         if (type == T1_TYPE_RAW) {
-            opj_mqc_raw_init_dec(mqc, cblkdata + cblkdataindex, seg->len, OPJ_COMMON_CBLK_DATA_EXTRA);
+            opj_mqc_raw_init_dec(mqc, cblkdata + cblkdataindex, seglen, OPJ_COMMON_CBLK_DATA_EXTRA);
         } else {
-            opj_mqc_init_dec(mqc, cblkdata + cblkdataindex, seg->len, OPJ_COMMON_CBLK_DATA_EXTRA);
+            opj_mqc_init_dec(mqc, cblkdata + cblkdataindex, seglen, OPJ_COMMON_CBLK_DATA_EXTRA);
 #if defined(NJ2K_T1_TRACE)
             {
-                std::uint8_t states[MQC_NUMCTXS];
-                for (OPJ_UINT32 k = 0; k < MQC_NUMCTXS; ++k) {
-                    states[k] = static_cast<std::uint8_t>(mqc->ctxs[k] - kMqcStates);
+                std::uint8_t states[19];
+                for (OPJ_UINT32 k = 0; k < 19; ++k) {
+                    OPJ_UINT32 i = 0;
+                    while (kMqWords.w[i] != mqc->ctx.slot[k]) {
+                        ++i;
+                    }
+                    states[k] = static_cast<std::uint8_t>(i);
                 }
-                g_t1_trace.segment(g_t1_trace.user, cblkdata + cblkdataindex, seg->len, states,
+                g_t1_trace.segment(g_t1_trace.user, cblkdata + cblkdataindex, seglen, states,
                                    (cblksty & J2K_CCP_CBLKSTY_RESET) != 0);
             }
 #endif
         }
-        cblkdataindex += seg->len;
+        cblkdataindex += seglen;
 
         for (OPJ_UINT32 passno = 0; (passno < seg->real_num_passes) && (bpno_plus_one >= 1); ++passno) {
+            // A segment that BYPASS types raw holds significance and refinement passes only (Tier-2 gives it at most two).
+            // A cleanup pass would run the arithmetic decoder on registers nobody initialised and could read past the
+            // bytes; OpenJPEG does that. The passes of such a segment end here.
+            if (type == T1_TYPE_RAW && passtype == 2) {
+                break;
+            }
             switch (passtype) {
             case 0:
                 if (type == T1_TYPE_RAW) {
@@ -1234,9 +1150,6 @@ bool t1_decode_cblk(T1& t1_ref, const T1Block& b, const Messages& msg) noexcept
 
             if ((cblksty & J2K_CCP_CBLKSTY_RESET) && type == T1_TYPE_MQ) {
                 opj_mqc_resetstates(mqc);
-                opj_mqc_setstate(mqc, T1_CTXNO_UNI, 0, 46);
-                opj_mqc_setstate(mqc, T1_CTXNO_AGG, 0, 3);
-                opj_mqc_setstate(mqc, T1_CTXNO_ZC, 0, 4);
             }
             if (++passtype == 3) {
                 passtype = 0;

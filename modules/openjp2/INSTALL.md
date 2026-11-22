@@ -10,8 +10,12 @@ textures. You put it in the viewer's folder under the name the viewer looks for,
 back at any time.
 
 **Status.** Built and tested against the reference library's own header and neo-j2k's test suite (the same
-decodes as OpenJPEG 2.5.4, the library the viewers use today, bit for bit). It has not yet been tried in a viewer.
-If you try it, please say how it went: <https://github.com/anne-skydancer/neo-j2k/issues>.
+decodes as OpenJPEG 2.5.4, bit for bit). **Confirmed working in a Firestorm built without Kakadu.** It has not been
+tried in any other viewer. If you try it, please say how it went: <https://github.com/anne-skydancer/neo-j2k/issues>.
+
+**Who it is for.** Viewers that load OpenJPEG as a separate `openjp2.dll`. **The official Firestorm releases are not
+among them:** they link Kakadu statically and contain no `openjp2.dll`, so there is nothing to swap. A Firestorm
+compiled without Kakadu does ship the file, and that is where this works.
 
 ## What the file is, and what it is not
 
@@ -26,8 +30,9 @@ different program with different internals, tests and fixes.) To see it for your
 - **Windows, 64-bit**, and a **64-bit viewer**. The file is x64 only.
 - **A processor with AVX2**: Intel from Haswell (2013) on, AMD from Ryzen (2017) on, and most machines since.
   On an older one the library refuses to start and the viewer shows no textures (put the old file back).
-- A viewer that keeps its JPEG 2000 library in a **separate `openjp2.dll`** next to its program. Look in the
-  viewer's folder: if there is no `openjp2.dll`, there is nothing to swap. (Vulkanstorm-Release 1.0.1 has none:
+- A viewer that keeps its JPEG 2000 library in a **separate `openjp2.dll`** next to its program, such as Firestorm
+  compiled without Kakadu. Look in the viewer's folder: if there is no `openjp2.dll`, there is nothing to swap
+  (the official Firestorm releases, with Kakadu built in, have none). (Vulkanstorm-Release 1.0.1 has none:
   it already uses neo-j2k, as `neoj2k.dll`. A viewer with the library built into its program has no file to swap
   either.)
 

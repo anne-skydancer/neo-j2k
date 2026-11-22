@@ -5,7 +5,8 @@
 
 > **[Download neo-j2k 0.1.2 for Windows x64 (ZIP)](https://github.com/anne-skydancer/neo-j2k/releases/download/v0.1.2/neoj2k-viewer-0.1.2-win-x64.zip)**
 >
-> Prerelease for 64-bit Windows viewers that load a separate `openjp2.dll`. Requires AVX2.
+> Prerelease for 64-bit Windows viewers that load a separate `openjp2.dll`. Requires AVX2. Not for the official Firestorm
+> releases, which link Kakadu statically and have no `openjp2.dll`: it works in Firestorm builds compiled without Kakadu.
 > [Installation instructions](modules/openjp2/INSTALL.md) · [Release notes and checksums](https://github.com/anne-skydancer/neo-j2k/releases/tag/v0.1.2)
 
 A JPEG 2000 Part 1 codec (decode and encode, lossless 5/3 and lossy 9/7) in C++20, built as a static library or
@@ -51,6 +52,12 @@ Stage 5, threads in one image: the library starts no thread; a host lends it an 
 (`nj2k_decoder_set_executor` or `nj2k_encoder_set_executor`), and a tile whose largest component has 2^18 samples or more is split across it,
 with the same output at any thread count. The host lends only when it has idle cores (stage 5b,
 `doc/api.md`).
+
+Stage 6d, the MQ decoder (MQ-NG), with the same coefficients: a context's state as one 32-bit word, the decision by
+selects with the renormalisation always run, and the cleanup pass's runs of empty columns taken at once. One-thread
+Tier-1 takes 0.71 to 0.72 of the time lossless and 0.78 to 0.85 lossy with MSVC (0.77 and 0.81 to 0.84 with clang-cl),
+the whole decode 0.71 to 0.73 lossless and 0.80 to 0.88 lossy (MSVC AVX2; MSVC SCALAR 0.72 to 0.74 and 0.82 to 0.88,
+clang-cl 0.76 to 0.77 and 0.81 to 0.86; `doc/bench.md`, "Stage 6d").
 
 The encoder takes the settings the Second Life viewer encodes with (RLCP, 64 x 64 code-blocks, 5/3 lossless or
 9/7 with rate layers, the colour transform, 8-bit components of up to 4,096 samples a side), through OpenJPEG's

@@ -7,6 +7,7 @@
 *.jp2 binary
 *.pgx binary
 *.bin binary
+*.blk binary
 *.jph binary
 *.ppm binary
 *.pgm binary

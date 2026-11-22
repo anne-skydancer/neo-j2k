@@ -34,6 +34,20 @@ nj2k_test_program(nj2k_encode_unit unit/encode_unit.cpp)
 # the encoder's MQ coder and Tier-1 against a frozen copy of their text before the MQ redesign (byte identity)
 nj2k_test_program(nj2k_enc_t1_unit unit/enc_t1_unit.cpp unit/enc_t1_frozen.cpp)
 nj2k_simd(nj2k_enc_t1_unit)
+# the decoder's Tier-1 (MQ decoder, passes, code-block driver) against a frozen copy of its text before the MQ-NG
+# redesign (coefficient identity); the vectors are code-blocks as Tier-1 receives them (tests/vectors/t1)
+nj2k_test_program(nj2k_t1_unit unit/t1_unit.cpp unit/t1_frozen.cpp)
+nj2k_simd(nj2k_t1_unit)
+# the same with the mask form of the MQ decision (the form GCC gets) compiled in on any compiler, so both forms are tested
+# everywhere. It links no library (a copy of t1.cpp beside the library's would be a duplicate definition to lld-link):
+# the three sources Tier-1 needs are built into the test, with a stub for the harness's one function.
+add_executable(nj2k_t1_unit_masks unit/t1_unit.cpp unit/t1_frozen.cpp unit/t1_masks_stub.cpp
+               ../src/t1.cpp ../src/memory.cpp ../src/messages.cpp)
+target_include_directories(nj2k_t1_unit_masks PRIVATE "${PROJECT_SOURCE_DIR}/include" common)
+target_compile_definitions(nj2k_t1_unit_masks PRIVATE NJ2K_STATIC NJ2K_MQ_FORCE_MASKS=1 _CRT_SECURE_NO_WARNINGS)
+nj2k_fp_strict(nj2k_t1_unit_masks)
+nj2k_program_exceptions(nj2k_t1_unit_masks)
+nj2k_simd(nj2k_t1_unit_masks)
 # the Rust twin's plan, findings C2 (memory-limit outcomes and the codec's history: none found) and
 # C3 (the host's workers' floating-point environment reaches the samples: fixed, held as same), each held as today's
 # behaviour (unit/findings_unit.cpp)
@@ -90,6 +104,14 @@ nj2k_add_test(decode_unit nj2k_decode_unit "${NJ2K_CORPUS}")
 nj2k_add_test(decode_threads nj2k_decode_unit "${NJ2K_CORPUS}" --threads)
 nj2k_add_test(encode_unit nj2k_encode_unit "${NJ2K_CORPUS}")
 nj2k_add_test(enc_t1_unit nj2k_enc_t1_unit)
+nj2k_add_test(t1_unit nj2k_t1_unit "${PROJECT_SOURCE_DIR}/tests/vectors/t1")
+nj2k_add_test(t1_unit_masks nj2k_t1_unit_masks "${PROJECT_SOURCE_DIR}/tests/vectors/t1")
+# NJ2K_T1_VECTORS: a folder of .blk dumps of more files (the full set's 35,390 mode-switch conformance blocks), run too
+set(NJ2K_T1_VECTORS "$ENV{NJ2K_T1_VECTORS}" CACHE PATH "Folder of .blk code-block dumps for t1_unit_more (not committed)")
+if(NJ2K_T1_VECTORS)
+  file(TO_CMAKE_PATH "${NJ2K_T1_VECTORS}" _nj2k_t1_vectors)
+  nj2k_add_test(t1_unit_more nj2k_t1_unit --no-exhaustive "${_nj2k_t1_vectors}")
+endif()
 nj2k_add_test(findings_c2 nj2k_findings_unit --c2 "${NJ2K_CORPUS},${PROJECT_SOURCE_DIR}/fuzz/regressions" --expect none)
 nj2k_add_test(findings_c3 nj2k_findings_unit --c3 "${NJ2K_CORPUS}" --expect same)
 nj2k_add_test(fpenv_unit nj2k_fpenv_unit "${NJ2K_CORPUS}")
@@ -152,6 +174,8 @@ nj2k_add_test(oracle_layers nj2k_diff layers --a oracle --files "${NJ2K_CORPUS}"
 if(NJ2K_TEST_NIGHTLY)
   # every MQ decision of the redesigned encoder against the frozen one: 4.4 billion, a few minutes
   nj2k_add_test(enc_t1_exhaustive nj2k_enc_t1_unit --exhaustive-full)
+  # every MQ decision of the redesigned decoder against the frozen one and the standard's model
+  nj2k_add_test(t1_exhaustive nj2k_t1_unit --exhaustive-full)
 endif()
 if(NJ2K_TEST_NIGHTLY)
   set(_nj2k_ref_nightly "${NJ2K_CORPUS}/oracle-reference-nightly.tsv")
