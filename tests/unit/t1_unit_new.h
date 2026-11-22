@@ -72,8 +72,28 @@ inline bool t1_unit_one_decision_new(std::uint32_t a, std::uint32_t state, std::
     return true;
 }
 
-// The redesigned run of AGG decisions over cols empty columns from (a, c) with the AGG state (MPS 0) takes `run` of them.
-inline bool t1_unit_agg_run_new(std::uint32_t, std::uint32_t, std::uint32_t, std::uint32_t, std::uint32_t)
+// The redesigned run of AGG decisions over cols empty columns from (a, c) with the AGG state (MPS 0) takes `run` of them
+// (the decisions one at a time did), and takes no more where a column has flags; its registers fall by n * qe.
+inline bool t1_unit_agg_run_new(std::uint32_t state, std::uint32_t a, std::uint32_t c, std::uint32_t cols,
+                                std::uint32_t run)
 {
+    const std::uint32_t qe = nj2k::detail::kMqcStates[state].qeval;
+    for (std::uint32_t at = 0; at <= cols; at += (at < 2 ? 1 : 3)) {
+        // a column with flags at index `at` (none when at == cols); column 0 is the one being decided
+        std::uint32_t f[66] = {};
+        if (at < cols) {
+            f[at] = 0x10;
+        }
+        const std::uint32_t word = nj2k::detail::kMqWords.w[state];
+        std::uint32_t slot = word, aa = a, cc = c, n;
+        opj_mqc_agg_run_macro(n, aa, cc, &slot, f, cols);
+        // a flag at column 0 is not looked at (the caller found that column empty); at k stops the run before column k
+        const std::uint32_t want = (at > 0 && at < run) ? at : run;
+        if (n != want || aa != a - n * qe || cc != c - ((n * qe) << 16) || slot != word) {
+            std::fprintf(stderr, "AGG run macro: state %u a=%04x c=%08x cols %u flags at %u: %u columns, want %u\n", state, a, c,
+                         cols, at, n, want);
+            return false;
+        }
+    }
     return true;
 }

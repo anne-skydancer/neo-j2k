@@ -779,6 +779,17 @@ static void opj_t1_dec_clnpass_step(
             if (flags == 0) { \
                 OPJ_UINT32 partial = OPJ_TRUE; \
                 opj_t1_setcurctx(curctx, T1_CTXNO_AGG); \
+                { \
+                    /* the columns of empty stripes that decode 0 without renormalisation, at once */ \
+                    OPJ_UINT32 run_; \
+                    opj_mqc_agg_run_macro(run_, a, c, curctx, flagsp, l_w - i); \
+                    if (run_ != 0) { \
+                        i += run_ - 1; \
+                        data += run_ - 1; \
+                        flagsp += run_ - 1; \
+                        continue; \
+                    } \
+                } \
                 opj_mqc_decode_macro(v, mqc, curctx, a, c, ct); \
                 if (!v) { \
                     continue; \

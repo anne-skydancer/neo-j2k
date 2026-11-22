@@ -184,3 +184,30 @@ inline constexpr MqContexts kMqContextsInit = mq_contexts_init();
     NJ2K_T1_TRACE_DECISION((curctx) - (mqc)->ctx.slot, d); \
 }
 #endif
+
+// A run of the cleanup pass's AGG decisions taken at once (stage 2). A column of an empty stripe (flags 0) asks the AGG
+// context first; when its MPS is 0 and the interval and the code register have room for it (a decision that is an MPS
+// without renormalisation: a - qe keeps bit 15 and c_hi >= qe), it decodes 0 and the pass goes on to the next column,
+// which is again an empty one or not. Step j of such a run needs j * qe <= a - 0x8000 and j * qe <= c_hi, so the run
+// lasts while n * qe <= room = min(a - 0x8000, c_hi): the n columns are each a decision of 0 that changes a by -qe and
+// c by -(qe << 16), no state, no byte; they take a -= n * qe, c -= (n * qe) << 16 at once (no division). n counts the
+// columns from the current one that the run takes (0: not a run, the caller decides as usual); `left` is how many
+// columns remain in the row, flagsp[k] the flags of the k-th.
+#define opj_mqc_agg_run_macro(n, a, c, curctx, flagsp, left) \
+{ \
+    const std::uint32_t wa_ = *(curctx); \
+    const std::uint32_t qa_ = wa_ & 0xFFFFU; \
+    const std::uint32_t ra_ = (a) - 0x8000U, rc_ = (c) >> 16; \
+    const std::uint32_t room_ = ra_ < rc_ ? ra_ : rc_; \
+    n = 0; \
+    if ((wa_ & 0x10000U) == 0 && qa_ <= room_) { \
+        std::uint32_t used_ = qa_; \
+        n = 1; \
+        while (n < (left) && (flagsp)[n] == 0 && used_ + qa_ <= room_) { \
+            used_ += qa_; \
+            ++n; \
+        } \
+        a -= used_; \
+        c -= used_ << 16; \
+    } \
+}
