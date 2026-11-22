@@ -10,7 +10,6 @@
 
 #include <cassert>
 #include <cstdint>
-#include <cstring>
 
 #include "enc_luts.h"
 #include "t1.h"
@@ -25,33 +24,6 @@ namespace nj2k::detail {
 #define NJ2K_FORCE_INLINE __forceinline
 #else
 #define NJ2K_FORCE_INLINE inline __attribute__((always_inline))
-#endif
-
-// ---- candidate formulations of the GCC path (bench-enc-linux only; 0 is the committed form) ----
-#if defined(__GNUC__) && !defined(__clang__)
-#ifndef NJ2K_ENC_GCC_VARIANT
-#define NJ2K_ENC_GCC_VARIANT 0
-#endif
-#else
-#undef NJ2K_ENC_GCC_VARIANT
-#define NJ2K_ENC_GCC_VARIANT 0
-#endif
-#define NJ2K_GV_SWAP (NJ2K_ENC_GCC_VARIANT == 1 || NJ2K_ENC_GCC_VARIANT == 9 || NJ2K_ENC_GCC_VARIANT == 13)  // the exchange from the borrow
-#define NJ2K_GV_NEXTBYTE (NJ2K_ENC_GCC_VARIANT == 2 || NJ2K_ENC_GCC_VARIANT == 7 || NJ2K_ENC_GCC_VARIANT == 9 || NJ2K_ENC_GCC_VARIANT == 12 || NJ2K_ENC_GCC_VARIANT == 13)  // next state a byte load
-#define NJ2K_GV_PACKED (NJ2K_ENC_GCC_VARIANT == 3)                                     // one 4-byte table load
-#define NJ2K_GV_DOWHILE (NJ2K_ENC_GCC_VARIANT == 4)                                    // byte-out loop unlikely, do-while
-#define NJ2K_GV_COLD (NJ2K_ENC_GCC_VARIANT == 5 || NJ2K_ENC_GCC_VARIANT == 7 || NJ2K_ENC_GCC_VARIANT == 8 || NJ2K_ENC_GCC_VARIANT == 9)  // byte-out loop out of line
-#define NJ2K_GV_LOCALS (NJ2K_ENC_GCC_VARIANT == 6 || NJ2K_ENC_GCC_VARIANT == 8 || NJ2K_ENC_GCC_VARIANT == 9)  // the coder in a local per pass
-#define NJ2K_GV_BSR (NJ2K_ENC_GCC_VARIANT == 10 || NJ2K_ENC_GCC_VARIANT == 12 || NJ2K_ENC_GCC_VARIANT == 13)  // scalar build: 15 - bsr, no xor/sub
-#define NJ2K_GV_INLINEBYTEOUT (NJ2K_ENC_GCC_VARIANT == 11)                             // byteout forced inline
-
-#if NJ2K_GV_BSR && !defined(__AVX2__) && defined(__x86_64__)
-inline std::uint32_t mq_shifts_enc(std::uint32_t a) noexcept
-{
-    return 15U - static_cast<std::uint32_t>(__builtin_ia32_bsrsi(static_cast<int>(a)));
-}
-#else
-inline std::uint32_t mq_shifts_enc(std::uint32_t a) noexcept { return mq_shifts(a); }
 #endif
 
 struct MqEnc {
@@ -89,9 +61,6 @@ struct MqEnc {
     }
     std::uint32_t numbytes() const noexcept { return static_cast<std::uint32_t>(bp - start); }
 
-#if NJ2K_GV_INLINEBYTEOUT
-    NJ2K_FORCE_INLINE
-#endif
     void byteout() noexcept
     {
         if (bp >= limit) {
@@ -126,45 +95,18 @@ struct MqEnc {
         }
     }
 
-#if NJ2K_GV_COLD
-    // the byte-out loop out of line: it runs for 1 decision in 9
-    __attribute__((noinline)) std::uint32_t renorm_bytes(std::uint32_t k) noexcept
-    {
-        do {
-            c <<= ct;
-            k -= ct;
-            byteout();
-        } while (k >= ct);
-        return k;
-    }
-#endif
-
     NJ2K_FORCE_INLINE void renorme() noexcept
     {
         // every shift at once (count-leading-zeros) instead of OpenJPEG's one bit a turn: as many as c has
         // bits left to the next byte-out, which comes where the one-bit loop has it (when ct reaches 0), so
         // c, ct and the bytes are the loop's at every step
-        std::uint32_t k = mq_shifts_enc(a);
+        std::uint32_t k = mq_shifts(a);
         a <<= k;
-#if NJ2K_GV_COLD
-        if (__builtin_expect(k >= ct, 0)) {
-            k = renorm_bytes(k);
-        }
-#elif NJ2K_GV_DOWHILE
-        if (__builtin_expect(k >= ct, 0)) {
-            do {
-                c <<= ct;
-                k -= ct;
-                byteout();
-            } while (k >= ct);
-        }
-#else
         while (k >= ct) {
             c <<= ct;
             k -= ct;
             byteout();
         }
-#endif
         c <<= k;
         ct -= k;
     }
@@ -178,45 +120,24 @@ struct MqEnc {
     NJ2K_FORCE_INLINE void encode(std::uint32_t d) noexcept
     {
         assert(d <= 1U);
-#if defined(__GNUC__) && !defined(__clang__)
         const std::uint32_t i = ctxs[cx];
-#if NJ2K_GV_PACKED && defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
-        std::uint32_t w;
-        std::memcpy(&w, &kMqEncStates.t[i], sizeof w);
-        const std::uint32_t q = w & 0xffffU;
-#else
         const MqEncState e = kMqEncStates.t[i];
         const std::uint32_t q = e.qe;
-#endif
         const std::uint32_t lps = (i ^ d) & 1U;
         const std::uint32_t an = a - q;
-#if NJ2K_GV_SWAP
-        const std::uint32_t swap = ((an - q) >> 31) ^ lps;  // a' < q is the borrow of a' - q (both under 2^17)
-#else
         const std::uint32_t swap = static_cast<std::uint32_t>(an < q) ^ lps;
-#endif
+#if defined(__GNUC__) && !defined(__clang__)
         // GCC turns the selects below back into branches (measured: 0.95 of the old coder against 0.70)
         const std::uint32_t mswap = 0U - swap;
         a = an ^ ((an ^ q) & mswap);
         c += q & ~mswap;
-#if NJ2K_GV_NEXTBYTE
+        // the next state is the table entry's byte 2 (MPS) or 3 (LPS), loaded in place of a mask (on Linux CI
+        // 3 to 4 % faster than the mask on GCC 14 and 15; enc_luts.h asserts the layout)
         const std::uint32_t next = reinterpret_cast<const std::uint8_t*>(&kMqEncStates.t[i])[2U + lps];
-#elif NJ2K_GV_PACKED && defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
-        const std::uint32_t next = (w >> (16U + 8U * lps)) & 0xffU;
-#else
-        const std::uint32_t mlps = 0U - lps;
-        const std::uint32_t next = e.nmps ^ ((e.nmps ^ e.nlps) & mlps);
-#endif
         // an MPS whose a' keeps bit 15 keeps its state (as a bit expression: GCC branches on `!lps && ...`)
         const std::uint32_t mkeep = 0U - (((an >> 15) & ~lps) & 1U);
         ctxs[cx] = static_cast<std::uint8_t>(next ^ ((next ^ i) & mkeep));
 #else
-        const std::uint32_t i = ctxs[cx];
-        const MqEncState e = kMqEncStates.t[i];
-        const std::uint32_t q = e.qe;
-        const std::uint32_t lps = (i ^ d) & 1U;
-        const std::uint32_t an = a - q;
-        const std::uint32_t swap = static_cast<std::uint32_t>(an < q) ^ lps;
         a = swap ? q : an;
         c += swap ? 0U : q;
         const std::uint32_t next = lps ? e.nlps : e.nmps;

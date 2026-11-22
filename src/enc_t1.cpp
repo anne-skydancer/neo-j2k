@@ -120,22 +120,6 @@ struct EncT1 {
 
 namespace {
 
-// the coder in a local copy for the length of a pass (a GCC candidate, bench-enc-linux): the steps then get it
-// as a parameter; otherwise they take t1->mqc as before
-#if NJ2K_GV_LOCALS
-#define NJ2K_MQ_PARAM MqEnc* mqc,
-#define NJ2K_MQ_ARG mqc,
-#define NJ2K_MQ_STEP_INIT
-#define NJ2K_MQ_PASS_BEGIN MqEnc mq_local = t1->mqc; MqEnc* const mqc = &mq_local;
-#define NJ2K_MQ_PASS_END t1->mqc = mq_local;
-#else
-#define NJ2K_MQ_PARAM
-#define NJ2K_MQ_ARG
-#define NJ2K_MQ_STEP_INIT MqEnc* mqc = &t1->mqc;
-#define NJ2K_MQ_PASS_BEGIN
-#define NJ2K_MQ_PASS_END
-#endif
-
 #define T1_FLAGS(x, y) (t1->flags[x + 1 + ((y / 4) + 1) * (t1->w + 2)])
 
 inline std::uint8_t getctxno_zc(const MqEnc* mqc, OPJ_UINT32 f) noexcept
@@ -210,10 +194,10 @@ inline void update_flags(opj_flag_t* flagsp, OPJ_UINT32 ci, OPJ_UINT32 s, OPJ_UI
     }
 }
 
-NJ2K_FORCE_INLINE void enc_sigpass_step(EncT1* t1, NJ2K_MQ_PARAM opj_flag_t* flagsp, const OPJ_INT32* datap, OPJ_INT32 bpno,
+NJ2K_FORCE_INLINE void enc_sigpass_step(EncT1* t1, opj_flag_t* flagsp, const OPJ_INT32* datap, OPJ_INT32 bpno,
                                         OPJ_INT32 one, OPJ_INT32* nmsedec, OPJ_UINT32 ci) noexcept
 {
-    NJ2K_MQ_STEP_INIT
+    MqEnc* mqc = &t1->mqc;
     OPJ_UINT32 v;
     OPJ_UINT32 const flags = *flagsp;
     if ((flags & ((T1_SIGMA_THIS | T1_PI_THIS) << (ci * 3U))) == 0U &&
@@ -238,7 +222,6 @@ NJ2K_FORCE_INLINE void enc_sigpass_step(EncT1* t1, NJ2K_MQ_PARAM opj_flag_t* fla
 
 void enc_sigpass(EncT1* t1, OPJ_INT32 bpno, OPJ_INT32* nmsedec) noexcept
 {
-    NJ2K_MQ_PASS_BEGIN
     OPJ_UINT32 i, k;
     OPJ_INT32 const one = 1 << (bpno + T1_NMSEDEC_FRACBITS);
     opj_flag_t* f = &T1_FLAGS(0, 0);
@@ -253,10 +236,10 @@ void enc_sigpass(EncT1* t1, OPJ_INT32 bpno, OPJ_INT32* nmsedec) noexcept
                 /* Nothing to do for any of the 4 data points */
                 continue;
             }
-            enc_sigpass_step(t1, NJ2K_MQ_ARG f, &datap[0], bpno, one, nmsedec, 0);
-            enc_sigpass_step(t1, NJ2K_MQ_ARG f, &datap[1], bpno, one, nmsedec, 1);
-            enc_sigpass_step(t1, NJ2K_MQ_ARG f, &datap[2], bpno, one, nmsedec, 2);
-            enc_sigpass_step(t1, NJ2K_MQ_ARG f, &datap[3], bpno, one, nmsedec, 3);
+            enc_sigpass_step(t1, f, &datap[0], bpno, one, nmsedec, 0);
+            enc_sigpass_step(t1, f, &datap[1], bpno, one, nmsedec, 1);
+            enc_sigpass_step(t1, f, &datap[2], bpno, one, nmsedec, 2);
+            enc_sigpass_step(t1, f, &datap[3], bpno, one, nmsedec, 3);
         }
     }
 
@@ -269,18 +252,17 @@ void enc_sigpass(EncT1* t1, OPJ_INT32 bpno, OPJ_INT32* nmsedec) noexcept
                 continue;
             }
             for (j = k; j < t1->h; ++j, ++datap) {
-                enc_sigpass_step(t1, NJ2K_MQ_ARG f, &datap[0], bpno, one, nmsedec, j - k);
+                enc_sigpass_step(t1, f, &datap[0], bpno, one, nmsedec, j - k);
             }
         }
     }
-    NJ2K_MQ_PASS_END
 }
 
-NJ2K_FORCE_INLINE void enc_refpass_step([[maybe_unused]] EncT1* t1, NJ2K_MQ_PARAM OPJ_UINT32 flags, OPJ_UINT32& flagsUpdated,
+NJ2K_FORCE_INLINE void enc_refpass_step(EncT1* t1, OPJ_UINT32 flags, OPJ_UINT32& flagsUpdated,
                                         const OPJ_INT32* datap, OPJ_INT32 bpno, OPJ_INT32 one,
                                         OPJ_INT32* nmsedec, OPJ_UINT32 ci) noexcept
 {
-    NJ2K_MQ_STEP_INIT
+    MqEnc* mqc = &t1->mqc;
     OPJ_UINT32 v;
     if ((flags & ((T1_SIGMA_THIS | T1_PI_THIS) << ((ci) * 3U))) == (T1_SIGMA_THIS << ((ci) * 3U))) {
         const OPJ_UINT32 shift_flags = (flags >> ((ci) * 3U));
@@ -296,7 +278,6 @@ NJ2K_FORCE_INLINE void enc_refpass_step([[maybe_unused]] EncT1* t1, NJ2K_MQ_PARA
 
 void enc_refpass(EncT1* t1, OPJ_INT32 bpno, OPJ_INT32* nmsedec) noexcept
 {
-    NJ2K_MQ_PASS_BEGIN
     OPJ_UINT32 i, k;
     const OPJ_INT32 one = 1 << (bpno + T1_NMSEDEC_FRACBITS);
     opj_flag_t* f = &T1_FLAGS(0, 0);
@@ -317,10 +298,10 @@ void enc_refpass(EncT1* t1, OPJ_INT32 bpno, OPJ_INT32* nmsedec) noexcept
                 continue;
             }
 
-            enc_refpass_step(t1, NJ2K_MQ_ARG flags, flagsUpdated, &datap[0], bpno, one, nmsedec, 0);
-            enc_refpass_step(t1, NJ2K_MQ_ARG flags, flagsUpdated, &datap[1], bpno, one, nmsedec, 1);
-            enc_refpass_step(t1, NJ2K_MQ_ARG flags, flagsUpdated, &datap[2], bpno, one, nmsedec, 2);
-            enc_refpass_step(t1, NJ2K_MQ_ARG flags, flagsUpdated, &datap[3], bpno, one, nmsedec, 3);
+            enc_refpass_step(t1, flags, flagsUpdated, &datap[0], bpno, one, nmsedec, 0);
+            enc_refpass_step(t1, flags, flagsUpdated, &datap[1], bpno, one, nmsedec, 1);
+            enc_refpass_step(t1, flags, flagsUpdated, &datap[2], bpno, one, nmsedec, 2);
+            enc_refpass_step(t1, flags, flagsUpdated, &datap[3], bpno, one, nmsedec, 3);
             *f = flagsUpdated;
         }
     }
@@ -335,19 +316,18 @@ void enc_refpass(EncT1* t1, OPJ_INT32 bpno, OPJ_INT32* nmsedec) noexcept
                 continue;
             }
             for (j = 0; j < remaining_lines; j++, datap++) {
-                enc_refpass_step(t1, NJ2K_MQ_ARG *f, *f, &datap[0], bpno, one, nmsedec, j);
+                enc_refpass_step(t1, *f, *f, &datap[0], bpno, one, nmsedec, j);
             }
         }
     }
-    NJ2K_MQ_PASS_END
 }
 
 // opj_t1_enc_clnpass_step_macro with the viewer's modes (no vertically causal contexts)
-NJ2K_FORCE_INLINE void enc_clnpass_step(EncT1* t1, NJ2K_MQ_PARAM opj_flag_t* flagspIn, const OPJ_INT32* datapIn,
+NJ2K_FORCE_INLINE void enc_clnpass_step(EncT1* t1, opj_flag_t* flagspIn, const OPJ_INT32* datapIn,
                                         OPJ_INT32 bpno, OPJ_INT32 one, OPJ_INT32* nmsedec, OPJ_UINT32 agg,
                                         OPJ_UINT32 runlen, OPJ_UINT32 lim) noexcept
 {
-    NJ2K_MQ_STEP_INIT
+    MqEnc* mqc = &t1->mqc;
     OPJ_UINT32 v;
     OPJ_UINT32 ci;
     opj_flag_t* const flagsp = flagspIn;
@@ -399,12 +379,9 @@ NJ2K_FORCE_INLINE void enc_clnpass_step(EncT1* t1, NJ2K_MQ_PARAM opj_flag_t* fla
 
 void enc_clnpass(EncT1* t1, OPJ_INT32 bpno, OPJ_INT32* nmsedec) noexcept
 {
-    NJ2K_MQ_PASS_BEGIN
     OPJ_UINT32 i, k;
     const OPJ_INT32 one = 1 << (bpno + T1_NMSEDEC_FRACBITS);
-#if !NJ2K_GV_LOCALS
     MqEnc* mqc = &t1->mqc;
-#endif
     const OPJ_INT32* datap = t1->data;
     opj_flag_t* f = &T1_FLAGS(0, 0);
     const OPJ_UINT32 extra = 2U;
@@ -431,7 +408,7 @@ void enc_clnpass(EncT1* t1, OPJ_INT32 bpno, OPJ_INT32* nmsedec) noexcept
             } else {
                 runlen = 0;
             }
-            enc_clnpass_step(t1, NJ2K_MQ_ARG f, datap, bpno, one, nmsedec, agg, runlen, 4U);
+            enc_clnpass_step(t1, f, datap, bpno, one, nmsedec, agg, runlen, 4U);
             datap += 4 - runlen;
         }
     }
@@ -439,11 +416,10 @@ void enc_clnpass(EncT1* t1, OPJ_INT32 bpno, OPJ_INT32* nmsedec) noexcept
         const OPJ_UINT32 agg = 0;
         const OPJ_UINT32 runlen = 0;
         for (i = 0; i < t1->w; ++i, f++) {
-            enc_clnpass_step(t1, NJ2K_MQ_ARG f, datap, bpno, one, nmsedec, agg, runlen, t1->h - k);
+            enc_clnpass_step(t1, f, datap, bpno, one, nmsedec, agg, runlen, t1->h - k);
             datap += t1->h - k;
         }
     }
-    NJ2K_MQ_PASS_END
 }
 
 double getwmsedec(OPJ_INT32 nmsedec, OPJ_UINT32 compno, OPJ_UINT32 level, OPJ_UINT32 orient, OPJ_INT32 bpno,

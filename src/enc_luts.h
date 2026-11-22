@@ -23,6 +23,9 @@ struct MqEncState {
 // (not std::size: <iterator> pulls in an MSVC runtime weak variable the scalar build's object check refuses)
 inline constexpr std::size_t kMqStateCount = sizeof(kMqcStates) / sizeof(kMqcStates[0]);
 
+static_assert(sizeof(MqEncState) == 4 && offsetof(MqEncState, nmps) == 2 && offsetof(MqEncState, nlps) == 3,
+              "the GCC path of MqEnc::encode reads the next state as byte 2 + lps of the entry");
+
 struct MqEncStateTable {
     MqEncState t[kMqStateCount];
     constexpr MqEncStateTable() noexcept : t{}
