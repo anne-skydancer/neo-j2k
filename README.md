@@ -91,10 +91,10 @@ outputs. Times are medians from the detailed tables below; lower is faster.
 | Decode 1,024² whole | 1 | 37.176 ms | 26.158 ms | 0.70 | neo-j2k 1.42× faster |
 | Decode 4,096², one-tile 9/7 | 1 | 392 ms | 234 ms | 0.60 | neo-j2k 1.68× faster |
 | Decode 4,096², one-tile 9/7 | 8 | 136 ms | 46 ms | 0.34 | neo-j2k 2.96× faster |
-| Encode 1,024² RGB, lossy | 1 | 250.0 ms | 284.5 ms | 1.14 | OpenJPEG 1.14× faster |
-| Encode 1,024² RGB, lossless | 1 | 262.8 ms | 295.9 ms | 1.13 | OpenJPEG 1.13× faster |
+| Encode 1,024² RGB, lossy | 1 | 240.4 ms | 183.7 ms | 0.76 | neo-j2k 1.31× faster |
+| Encode 1,024² RGB, lossless | 1 | 253.9 ms | 178.8 ms | 0.70 | neo-j2k 1.42× faster |
 
-The encode rows are the equal one-thread comparison. With a host executor, neo-j2k C++ encodes the same
+The encode rows are the equal one-thread comparison, measured after the MQ coder redesign (`doc/bench.md`, "Stage 6c"; before it neo-j2k took 284.5 and 295.9 ms against OpenJPEG's 250.0 and 262.8). With a host executor, neo-j2k C++ encodes the same
 1,024² inputs in 62.43 ms lossy and 52.57 ms lossless at eight threads; that table measures C++ scaling rather
 than a like-for-like OpenJPEG comparison. All encoded bytes remain identical.
 
@@ -159,7 +159,9 @@ largest component has at least 2^18 samples (512 x 512).
 ### The upload encode, one thread
 
 The Second Life viewer's upload settings, three components, byte for byte OpenJPEG's codestream. Load 28 %
-mean. The adaptive multi-core results follow in `doc/bench.md`.
+mean. This table is from before the MQ coder redesign (stage 6c in `doc/bench.md`), which made the one-thread
+encode about 0.61 to 0.67 of these times (1,024²: 183.7 ms lossy and 178.8 ms lossless, against OpenJPEG's 240.4
+and 253.9 in a later run). The adaptive multi-core results follow in `doc/bench.md`.
 
 | Size | Mode | OpenJPEG ms | neo-j2k ms | Ratio | Peak MB, OpenJPEG / neo-j2k |
 |---|---|---|---|---|---|
