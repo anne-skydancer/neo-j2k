@@ -7,7 +7,7 @@
 // does, and compares the two). Stage 6a's report: correctness first, speed is stage 6b's.
 //
 //   nj2k_encode_bench --backend oracle|neoj2k|lib:<path>[=<name>] --size N [--height H] [--comps C] [--mode lossy|lossless]
-//                     [--threads N] [--budget-ms 6000] [--min-iters 3] [--max-iters 200]
+//                     [--threads N] [--budget-ms 6000] [--min-iters 3] [--max-iters 200] [--pin CPU]
 //
 // lib:<path> runs the same sequence through an OpenJPEG-ABI shared library loaded by path (the shipped
 // openjp2.dll, the openjp2 module, a shared OpenJPEG build), calling only opj_* functions through
@@ -16,7 +16,12 @@
 // refused for the linked oracle only. The checksum is an FNV-1a of the codestream: equal across
 // backends when their output is byte-identical.
 //
-// One CSV line: backend,width,height,comps,mode,bytes,checksum,iters,median_ms,min_ms,peak_extra_mb.
+// --pin CPU restricts the process to one logical CPU (off by default), for one-thread runs.
+//
+// Every timed encode must succeed and give the first encode's bytes and checksum; if one does not, the line
+// says FAILED in its last field and the exit status is 1.
+//
+// One CSV line: backend,width,height,comps,mode,bytes,checksum,iters,median_ms,min_ms,peak_extra_mb,status.
 // peak_extra_mb is the process's peak commit (Windows; peak resident set elsewhere) above what it held
 // before its first encode, which includes the viewer's own buffers (the raw image, the OpenJPEG image
 // of int32 planes, the output) that both encoders share.
@@ -27,6 +32,10 @@
 #include <cstring>
 #include <string>
 #include <vector>
+
+#if !defined(_WIN32)
+#include <sched.h>
+#endif
 
 #if defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
@@ -84,8 +93,21 @@ Memory memory_now()
     std::fprintf(stderr, "nj2k_encode_bench: %s\n", why);
     std::fprintf(stderr,
                  "usage: nj2k_encode_bench --backend oracle|neoj2k|lib:<path>[=<name>] --size N [--height H] [--comps C]\n"
-                 "       [--mode lossy|lossless] [--threads N] [--budget-ms 6000] [--min-iters 3] [--max-iters 200]\n");
+                 "       [--mode lossy|lossless] [--threads N] [--budget-ms 6000] [--min-iters 3] [--max-iters 200] [--pin CPU]\n");
     std::exit(2);
+}
+
+// The process on one logical CPU; false when the system refuses.
+bool pin_process(int cpu)
+{
+#if defined(_WIN32)
+    return cpu >= 0 && cpu < 64 && SetProcessAffinityMask(GetCurrentProcess(), DWORD_PTR(1) << cpu) != 0;
+#else
+    cpu_set_t set;
+    CPU_ZERO(&set);
+    CPU_SET(cpu, &set);
+    return cpu >= 0 && sched_setaffinity(0, sizeof(set), &set) == 0;
+#endif
 }
 
 bool lend_encoder(void* codec, void* user)
@@ -103,7 +125,7 @@ int main(int argc, char** argv)
     std::string backend;
     int width = 0, height = 0, comps = 3;
     bool reversible = false;
-    int budget_ms = 6000, min_iters = 3, max_iters = 200, threads = 1;
+    int budget_ms = 6000, min_iters = 3, max_iters = 200, threads = 1, pin = -1;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         auto next = [&]() -> const char* {
@@ -128,6 +150,8 @@ int main(int argc, char** argv)
             reversible = m == "lossless";
         } else if (a == "--budget-ms") {
             budget_ms = std::atoi(next());
+        } else if (a == "--pin") {
+            pin = std::atoi(next());
         } else if (a == "--threads") {
             threads = std::atoi(next());
         } else if (a == "--min-iters") {
@@ -151,6 +175,10 @@ int main(int argc, char** argv)
         lib = make_upload_library(path, label, &error);
         if (!lib) {
             std::fprintf(stderr, "nj2k_encode_bench: %s\n", error.c_str());
+            return 1;
+        }
+        if (threads > 1 && !lib->supports_threads()) {
+            std::fprintf(stderr, "nj2k_encode_bench: %s lacks opj_codec_set_threads: --threads %d needs it\n", path.c_str(), threads);
             return 1;
         }
         std::fprintf(stderr, "nj2k_encode_bench: %s is %s, opj_version %s\n", label.c_str(), path.c_str(),
@@ -184,7 +212,7 @@ int main(int argc, char** argv)
     std::unique_ptr<ThreadPool> pool;
     nj2k_executor_t executor = {};
     if (threads > 1 && !lib) {
-        pool =std::make_unique<ThreadPool>(static_cast<unsigned>(threads - 1));
+        pool = std::make_unique<ThreadPool>(static_cast<unsigned>(threads - 1));
         executor = pool->executor(static_cast<std::uint32_t>(threads));
         us.configure_encoder = lend_encoder;
         us.configure_user = &executor;
@@ -196,6 +224,9 @@ int main(int argc, char** argv)
         return backend == "oracle" ? oracle_upload(us, out) : neoj2k_upload(us, out);
     };
 
+    if (pin >= 0 && !pin_process(pin)) {
+        std::fprintf(stderr, "nj2k_encode_bench: cannot pin to CPU %d\n", pin);
+    }
     const Memory before = memory_now();
     std::vector<std::uint8_t> out;
     if (!encode(out)) {  // the first encode also warms the caches
@@ -205,13 +236,21 @@ int main(int argc, char** argv)
     const std::size_t bytes = out.size();
     Fnv64 hash;
     hash.bytes(out.data(), out.size());
+    const std::uint64_t first_checksum = hash.value();
+    const char* status = "ok";
     std::vector<double> times;
     const auto start = std::chrono::steady_clock::now();
     while (int(times.size()) < max_iters) {
         const auto t0 = std::chrono::steady_clock::now();
-        (void)encode(out);
+        const bool done = encode(out);
         const auto t1 = std::chrono::steady_clock::now();
         times.push_back(std::chrono::duration<double, std::milli>(t1 - t0).count());
+        Fnv64 again;  // untimed: every encode gives the first one's codestream
+        again.bytes(out.data(), out.size());
+        if (!done || out.size() != bytes || again.value() != first_checksum) {
+            status = done ? "FAILED:output differs from the first encode" : "FAILED:encode refused";
+            break;
+        }
         if (int(times.size()) >= min_iters &&
             std::chrono::duration<double, std::milli>(t1 - start).count() >= double(budget_ms)) {
             break;
@@ -220,8 +259,8 @@ int main(int argc, char** argv)
     std::sort(times.begin(), times.end());
     const double median = times[times.size() / 2];
     const Memory after = memory_now();
-    std::printf("%s,%d,%d,%d,%s,%zu,%s,%zu,%.3f,%.3f,%.1f\n", label.c_str(), width, height, comps,
+    std::printf("%s,%d,%d,%d,%s,%zu,%s,%zu,%.3f,%.3f,%.1f,%s\n", label.c_str(), width, height, comps,
                 reversible ? "lossless" : "lossy", bytes, hex64(hash.value()).c_str(), times.size(), median,
-                times.front(), after.peak_mb - before.current_mb);
-    return 0;
+                times.front(), after.peak_mb - before.current_mb, status);
+    return std::strcmp(status, "ok") == 0 ? 0 : 1;
 }

@@ -77,10 +77,13 @@ if(NJ2K_BUILD_BENCH AND NOT NJ2K_SANITIZE)
   endif()
 endif()
 
-# Bench only, off by default (NJ2K_BENCH_OPENJP2_DLL): the oracle as OpenJPEG's own shared library, openjp2.dll
-# (libopenjp2.so), with the flags above and, with MSVC, the static runtime as the module has, so that an application's
-# view of the module (modules/openjp2) can be measured against OpenJPEG 2.5.4 through the same opj_* API
-# (bench/api_bench.py). Its sources are the oracle's, unchanged; it sits in its own folder, away from the module's file.
+# Bench only (NJ2K_BENCH_OPENJP2_DLL, on in the presets): the oracle, our pinned fork commit of OpenJPEG 2.5.4 (oracle/PIN),
+# as a shared library, openjp2.dll (libopenjp2.so), so that an application's view of the module (modules/openjp2) can be
+# measured against it through the same opj_* API (bench/api_bench.py). Matched with the module: the oracle's own flags
+# above (they decide the output) and, with MSVC, the static runtime (/MT), which is what the released module is built with
+# (-DNJ2K_MSVC_STATIC_RUNTIME=ON; the module's default build is /MD). Not matched: the module's hardening and
+# no-IPO settings (nj2k_hardening, nj2k_no_ipo), and inlining (/Ob2 from the build type, not /Ob3). Its sources are the
+# oracle's, unchanged; it sits in its own folder, away from the module's file of the same name.
 if(NJ2K_BENCH_OPENJP2_DLL AND NOT NJ2K_SANITIZE)
   add_library(nj2k_oracle_openjp2 SHARED ${NJ2K_ORACLE_SOURCES} openjp2/opj_malloc.c)
   target_compile_definitions(nj2k_oracle_openjp2 PRIVATE OPJ_EXPORTS)

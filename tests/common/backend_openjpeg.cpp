@@ -6,6 +6,8 @@
 // counting oracle module).
 #include <openjpeg.h>
 
+#include <filesystem>
+
 #include "common.h"
 #include "decoder.h"
 
@@ -67,19 +69,27 @@ public:
 #endif
     }
 
+    // The path is made absolute first: a bare name would make dlopen search the system's folders, and
+    // LOAD_WITH_ALTERED_SEARCH_PATH wants a full path (the program's argument is in the ANSI code page).
     bool open(const std::string& path, std::string* error)
     {
+        const std::filesystem::path full = std::filesystem::absolute(std::filesystem::path(path));
 #if defined(_WIN32)
-        const int n = MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, nullptr, 0);
-        std::wstring wide(static_cast<std::size_t>(n > 0 ? n : 1), L'\0');
-        MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, wide.data(), n);
-        handle_ = LoadLibraryExW(wide.c_str(), nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
-#else
-        handle_ = dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL);
-#endif
+        handle_ = LoadLibraryExW(full.c_str(), nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
         if (!handle_ && error) {
-            *error = "cannot load " + path;
+            char text[256] = {};
+            const DWORD code = GetLastError();
+            FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS, nullptr, code, 0, text,
+                           sizeof(text) - 1, nullptr);
+            *error = "cannot load " + path + " (error " + std::to_string(code) + ": " + text + ")";
         }
+#else
+        handle_ = dlopen(full.c_str(), RTLD_NOW | RTLD_LOCAL);
+        if (!handle_ && error) {
+            const char* why = dlerror();
+            *error = "cannot load " + path + " (" + (why ? why : "no reason given") + ")";
+        }
+#endif
         return handle_ != nullptr;
     }
 
@@ -189,6 +199,7 @@ public:
 
     const std::string& name() const noexcept override { return name_; }
     const char* version() const noexcept override { return version_.c_str(); }
+    bool supports_threads() const noexcept override { return api_.opj_codec_set_threads != nullptr; }
     bool upload(const UploadSpec& spec, int threads, std::vector<std::uint8_t>& out) override
     {
         UploadSpec us = spec;

@@ -18,7 +18,9 @@
 //       lib:PATH is a library with OpenJPEG's ABI loaded by path (the shipped openjp2.dll, a shared
 //       OpenJPEG build): the same memory decode through its opj_* calls only (tests/common's backend, plain
 //       mode), N threads by its opj_codec_set_threads when N > 1, ms the median of R decodes (R is 1 by
-//       default), the hash over the geometry and every sample from one more, untimed decode. Two libraries
+//       default; every one must succeed), the hash over the geometry and every sample from two more, untimed
+//       decodes that must agree; peak_mb is the peak above what the process held before its first decode, one
+//       decimal. Two libraries
 //       decoding one file give one hash when their samples are identical.
 //   nj2k_large sat <file> <hosts> <decodes> <threads>
 //       the saturated host: <hosts> threads each decode the file <decodes> times through
@@ -89,6 +91,26 @@ double peak_mb()
     rusage ru{};
     getrusage(RUSAGE_SELF, &ru);
     return double(ru.ru_maxrss) / 1024.0;  // KiB on Linux
+#endif
+}
+
+// What the process holds now (private commit on Windows, resident set elsewhere), the baseline of a peak above it
+double current_mb()
+{
+#if defined(_WIN32)
+    PROCESS_MEMORY_COUNTERS_EX pmc{};
+    pmc.cb = sizeof pmc;
+    GetProcessMemoryInfo(GetCurrentProcess(), reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&pmc), sizeof pmc);
+    return double(pmc.PrivateUsage) / (1024.0 * 1024.0);
+#else
+    unsigned long pages = 0, resident = 0;
+    if (std::FILE* f = std::fopen("/proc/self/statm", "r")) {
+        if (std::fscanf(f, "%lu %lu", &pages, &resident) != 2) {
+            resident = 0;
+        }
+        std::fclose(f);
+    }
+    return double(resident) * 4096.0 / (1024.0 * 1024.0);
 #endif
 }
 
@@ -267,8 +289,8 @@ int dec_library(const std::string& spec, const char* file, int threads, int repe
     std::string error;
     const std::unique_ptr<nj2k::test::Backend> backend = nj2k::test::make_backend(spec, &error);
     if (!backend) {
-        std::printf("%s\n", error.c_str());
-        return 2;
+        std::fprintf(stderr, "nj2k_large: %s\n", error.c_str());
+        return 1;
     }
     nj2k::test::Request rq;
     rq.data = bytes.data();
@@ -278,6 +300,7 @@ int dec_library(const std::string& spec, const char* file, int threads, int repe
     rq.threads = threads > 1 ? threads : 0;
     std::vector<double> ms;
     bool ok = true;
+    const double baseline = current_mb();
     for (int i = 0; i < repeat; ++i) {
         const auto t0 = std::chrono::steady_clock::now();
         const nj2k::test::Outcome o = backend->decode(rq);
@@ -285,12 +308,14 @@ int dec_library(const std::string& spec, const char* file, int threads, int repe
         ok = ok && o.ok;
         ms.push_back(std::chrono::duration<double, std::milli>(t1 - t0).count());
     }
-    const double peak = peak_mb();  // before the hashing decode
+    const double peak = peak_mb() - baseline;  // above what the process held before its first decode; before the hashing decodes
+    // two more decodes, untimed, hashed: they must agree with each other (the timed ones only had to succeed)
     rq.inspect = true;
     const nj2k::test::Outcome h = backend->decode(rq);
-    ok = ok && h.ok;
+    const nj2k::test::Outcome h2 = backend->decode(rq);
+    ok = ok && h.ok && h2.ok && h.hash == h2.hash;
     std::sort(ms.begin(), ms.end());
-    std::printf("ms %.3f peak_mb %.0f hash %016llx %s\n", ms[ms.size() / 2], peak,
+    std::printf("ms %.3f peak_mb %.1f hash %016llx %s\n", ms[ms.size() / 2], peak,
                 static_cast<unsigned long long>(h.hash), ok ? "ok" : "FAILED");
     return ok ? 0 : 1;
 }
