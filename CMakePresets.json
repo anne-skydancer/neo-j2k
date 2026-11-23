@@ -6,7 +6,7 @@
       "name": "base",
       "hidden": true,
       "binaryDir": "${sourceDir}/build/${presetName}",
-      "cacheVariables": { "NJ2K_WERROR": "ON", "NJ2K_MODULE_OPENJP2": "ON" }
+      "cacheVariables": { "NJ2K_WERROR": "ON", "NJ2K_MODULE_OPENJP2": "ON", "NJ2K_BENCH_OPENJP2_DLL": "ON" }
     },
     {
       "name": "windows-base",

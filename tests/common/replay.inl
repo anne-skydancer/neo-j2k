@@ -33,6 +33,17 @@
     X(opj_start_compress) X(opj_encode) X(opj_end_compress) X(opj_image_create)                    \
     X(opj_codec_set_threads)
 
+// What the upload encode (replay_upload_ex) calls, and nothing else: a library loaded only to encode
+// resolves these (opj_codec_set_threads when it is asked for threads, opj_version for a report).
+// Keep it in step with replay_upload_ex: a call added there must be listed here.
+#define REPLAY_UPLOAD_FUNCS(X)                                                                     \
+    X(opj_set_default_encoder_parameters) X(opj_image_create) X(opj_create_compress)               \
+    X(opj_destroy_codec) X(opj_image_destroy) X(opj_set_error_handler) X(opj_set_warning_handler)  \
+    X(opj_set_info_handler) X(opj_setup_encoder) X(opj_stream_create) X(opj_stream_destroy)        \
+    X(opj_stream_set_user_data) X(opj_stream_set_user_data_length) X(opj_stream_set_write_function) \
+    X(opj_stream_set_skip_function) X(opj_stream_set_seek_function) X(opj_start_compress)          \
+    X(opj_encode) X(opj_end_compress)
+
 // The decoder limits API of the fork's 1a hotfix, which OpenJPEG 2.5.4 as released lacks: a library
 // loaded at run time may not have it, and then takes no request with limits.
 #define REPLAY_LIMIT_FUNCS(X) X(opj_decoder_limits_init) X(opj_decoder_set_limits)
@@ -616,6 +627,7 @@ inline OPJ_BOOL grow_seek(OPJ_OFF_T to, void* user)
 // The viewer's upload encode (UploadSpec, decoder.h). Lossy: RLCP 9/7 with rate layers by surface
 // (estimate_num_layers, rates 8 * 4^i); lossless: 5/3, one layer. MCT from 3 components; fewer
 // resolutions for images below 128 px a side; the "no comment" comment; the spec's fields override.
+// Calls only the functions of REPLAY_UPLOAD_FUNCS (and opj_codec_set_threads through us.configure_encoder).
 inline bool replay_upload_ex(const Api& A, const nj2k::test::UploadSpec& us, std::vector<std::uint8_t>& out)
 {
     const std::uint8_t* raw = us.raw;

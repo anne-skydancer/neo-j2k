@@ -76,3 +76,26 @@ if(NJ2K_BUILD_BENCH AND NOT NJ2K_SANITIZE)
     target_link_options(nj2k_oracle_counting PRIVATE LINKER:-Bsymbolic)
   endif()
 endif()
+
+# Bench only (NJ2K_BENCH_OPENJP2_DLL, on in the presets): the oracle, our pinned fork commit of OpenJPEG 2.5.4 (oracle/PIN),
+# as a shared library, openjp2.dll (libopenjp2.so), so that an application's view of the module (modules/openjp2) can be
+# measured against it through the same opj_* API (bench/api_bench.py). Matched with the module: the oracle's own flags
+# above (they decide the output) and, with MSVC, the static runtime (/MT), which is what the released module is built with
+# (-DNJ2K_MSVC_STATIC_RUNTIME=ON; the module's default build is /MD). Not matched: the module's hardening and
+# no-IPO settings (nj2k_hardening, nj2k_no_ipo), and inlining (/Ob2 from the build type, not /Ob3). Its sources are the
+# oracle's, unchanged; it sits in its own folder, away from the module's file of the same name.
+if(NJ2K_BENCH_OPENJP2_DLL AND NOT NJ2K_SANITIZE)
+  add_library(nj2k_oracle_openjp2 SHARED ${NJ2K_ORACLE_SOURCES} openjp2/opj_malloc.c)
+  target_compile_definitions(nj2k_oracle_openjp2 PRIVATE OPJ_EXPORTS)
+  nj2k_oracle_flags(nj2k_oracle_openjp2)
+  set_target_properties(nj2k_oracle_openjp2 PROPERTIES
+    OUTPUT_NAME openjp2
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/openjp2-shared"
+    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/openjp2-shared"
+    PDB_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/openjp2-shared"
+    C_VISIBILITY_PRESET hidden
+    MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+  if(NOT WIN32)
+    target_link_options(nj2k_oracle_openjp2 PRIVATE LINKER:-Bsymbolic)
+  endif()
+endif()
