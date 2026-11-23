@@ -1561,7 +1561,7 @@ them) in each orientation, in a column of a block one wide and in each column of
 unless every one was decoded. Mutation checks, each built from scratch (the test program deleted and relinked) and each caught
 by `nj2k_t1_unit --split` alone: the sign context of the significance pass or of the cleanup pass reading the flags without chi;
 the column's closing store of either pass dropping chi; the partial-stripe step of either pass dropping its merge; the sign
-placed one row down.
+placed one row down. Four mutations of the refinement mask were also built and run (the pi mask dropped, 0x2480 for 0x2490, the mu bits set 15 instead of 16 up, the row index one too high): each is caught by the committed vectors, by the generated blocks of the default run and by `--split`.
 
 **Method.** Ryzen 9 9950X3D, Windows 11, one thread pinned to CPU 7 (CPU 5 as well for 256² lossy), TSC cycles. Two library
 builds of `nj2k_t1_dec` (`bench/nj2k_t1_dec.cpp`, the library's own flags): `main` (`040a5f9`) and D2, each timing
