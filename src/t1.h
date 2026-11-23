@@ -87,6 +87,15 @@ inline std::uint32_t ctz32(std::uint32_t x) noexcept
     _BitScanForward(&lsb, x);
     return static_cast<std::uint32_t>(lsb);
 #endif
+#elif defined(__AVX2__)
+    return static_cast<std::uint32_t>(__builtin_ctz(x));
+#elif defined(__x86_64__) || defined(__i386__)
+    // GCC and clang compile __builtin_ctz to tzcnt, or to rep bsf, which disassembles as tzcnt, and the scalar build's object
+    // check refuses it as a newer instruction (clang also turns 31 ^ clz(x & -x) back into it). Plain bsf: the same index for
+    // a non-zero word on every x86 processor.
+    std::uint32_t idx;
+    __asm__("bsfl %1, %0" : "=r"(idx) : "rm"(x) : "cc");
+    return idx;
 #else
     return static_cast<std::uint32_t>(__builtin_ctz(x));
 #endif
