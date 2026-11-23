@@ -26,7 +26,7 @@ test (the bench checks every block against the frozen reference before it times 
 
 ## Format
 
-The "MQNG" format of `tests/vectors/t1/README.md` (little-endian u32 but the bytes): the magic `MQNG`, the block count, then for each
+The "MQNG" format of `tests/vectors/t1/README.md` (every field a little-endian u32, except the code-block bytes): the magic `MQNG`, the block count, then for each
 block `w h numbps orient roishift cblksty`, the segment count, `len passes` for each segment, the byte count and the bytes.
 
 ## Use
