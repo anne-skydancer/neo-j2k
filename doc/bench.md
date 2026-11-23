@@ -1659,6 +1659,9 @@ Caveats:
 
 - The 1,024² lossy figure is -32.8 % against stage 6c's -24.0 % (183.7 against 240.4 ms). Stage 6c was measured before E1, E2 and E3; the OpenJPEG time is
   within 1 % of the earlier 240.4 ms. The 64² row's eight-thread change is noise (the encode of a small image is serial).
+- A second batch (5 repetitions of 90 processes, the load gate at 10 % before each run, 20 waits in all) gave the same rows within 1 point: one thread -37.5 % (64²), -33.0 % (256²),
+  -32.8 % (512²), -32.4 % (1,024² lossy), -38.0 % (1,024² lossless), -31.8 % (2,048²); eight threads against OpenJPEG on one thread -78.1 % (256²) to -87.5 % (1,024² lossless).
+  The 64² row, an encode of about 1 ms, varied by 5.4 points between runs (-41.2 % to -35.8 %): read it as about -38 %. Bytes identical in all 90 runs.
 - The 2,048² runs did only 3 to 4 encodes each and the 1,024² one-thread runs 13, so those medians rest on few samples; the spread is 1.1 points or less.
 - One machine (Zen 5), Windows and MSVC only; no GCC or clang whole-encode figure exists; the texture is synthetic; the viewer's real uploads were not measured.
 - The decode rows of the README's comparison table were not measured again.

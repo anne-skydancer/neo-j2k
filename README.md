@@ -302,7 +302,7 @@ a few runs, mostly the small sizes. Change is neo-j2k's time against OpenJPEG's 
 | 1,024² | lossless | 256.3 | 158.8 | -38.2 % | Yes | 38.9 / 37.5 |
 | 2,048² | lossy | 978.7 | 664.6 | -32.1 % | Yes | 153.9 / 148.0 |
 
-The encoded bytes were identical to OpenJPEG's in every cell. The 2,048² runs each did only 3 to 4 encodes, so their medians rest on few samples.
+The encoded bytes were identical to OpenJPEG's in every cell. The 2,048² runs each did only 3 to 4 encodes, so their medians rest on few samples. A second batch of five repetitions gave the same rows within 1 point (-37.5 % to -31.8 %); the 64² row, an encode of about 1 ms, varies by about 5 points between runs (-41.2 % to -35.8 %), so read it as about -38 %.
 
 With eight threads (the adaptive setting; below 256² the encode stays on one thread), against OpenJPEG on one thread and against neo-j2k on one thread:
 
