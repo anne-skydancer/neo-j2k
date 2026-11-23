@@ -25,7 +25,7 @@
 //   5. the run of AGG decisions: the cleanup pass's column of an empty stripe taken at once equals the same decisions
 //      one at a time (a, c and the byte position).
 //   6. the split of a newly significant sample's sign from its significance (decoder step D2): tiny code-blocks over every
-//      sign and significance pattern of a column, in every orientation, with and without vertically causal contexts;
+//      sign and significance pattern of a column, in every orientation, with and without vertically causal contexts.
 // Usage: nj2k_t1_unit [--exhaustive-full] [--no-exhaustive] [--split] [PATH ...]   (PATH: a .blk file or a folder of them;
 //        --split runs test 6 alone)
 #include <algorithm>
@@ -463,12 +463,13 @@ void test_raw_cleanup()
 
 // The significance and the sign of a newly significant sample (decoder step D2): the passes put the significance in the
 // column's flags at once and keep the sign in a register of their own until the column is done, so the sign context of the
-// row below must read both and the closing store must write both. Tiny code-blocks (one to three columns, the stripe's four
-// rows and the remainder rows of a partial stripe, every orientation, with and without vertically causal contexts) are
-// decoded from random bytes, each stream giving another pattern of zeros, positive and negative samples; each is compared
-// with the frozen decode, and the test counts the patterns of a column's four rows (3^4 = 81 of zero, positive and
-// negative) per orientation and refuses to pass unless every one was seen in the column of a block one wide and in each
-// column of a block three wide.
+// row below must read both and the closing store must write both. Tiny code-blocks (one to five columns, the stripe's four
+// rows and the remainder rows of a partial stripe, every orientation, code-block styles 00 and VSC only) are decoded from
+// random bytes, each stream giving another pattern of zeros, positive and negative samples; each is compared with the
+// frozen decode, and the test counts the patterns of a column's four rows in the frozen decode's final output (3^4 = 81 of
+// zero, positive and negative) per orientation and refuses to pass unless every one was seen in the column of a block one
+// wide and in each column of a block three wide. (The output shows which samples ended significant and their signs, not the
+// order they became significant in, which the random streams vary.)
 void test_split()
 {
     Runner r;
@@ -524,8 +525,11 @@ void test_split()
             }
         }
     }
-    CHECK_MSG(missing == 0, "split: %u of the %u (orientation, column kind, pattern) cases were never decoded: the test is too weak", missing, 4u * 4u * 81u);
-    std::printf("split: %u code-blocks identical, every sign and significance pattern of a column's four rows decoded in each orientation\n", total);
+    if (missing != 0) {
+        CHECK_MSG(false, "split: %u of the %u (orientation, column kind, pattern) cases were never decoded: the test is too weak", missing, 4u * 4u * 81u);
+        return;
+    }
+    std::printf("split: %u code-blocks identical, every zero, positive and negative pattern of a column's four rows (final output, styles 00 and VSC) seen in each orientation\n", total);
 }
 
 // ---- 3. the tables ----
@@ -832,7 +836,13 @@ int main(int argc, char** argv)
         test_generated();
         test_overlong();
         test_raw_cleanup();
-        test_split();
+#if !defined(NJ2K_MQ_FORCE_MASKS)
+        // 4 s on release builds, 28 s under AddressSanitizer: not repeated by the mask-form build (t1_unit_masks) nor by
+        // the runs over folders of dumps; --split runs it alone anywhere
+        if (vectors.empty()) {
+            test_split();
+        }
+#endif
         if (exhaustive) {
             test_single(false);
         }
