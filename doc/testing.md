@@ -174,6 +174,19 @@ Linux, for GCC 14, GCC 15 and Clang, the AVX2 and the scalar builds: `gh workflo
 pre-redesign reference, in one process) and runs the two binaries alternately, 3 runs of 41 rounds; the summary lists head / base. GitHub's runners are
 shared and differ from job to job, so only the ratios inside one job count; do not compare numbers across jobs or workflow runs.
 
+## Comparing two refs on Linux (decoder Tier-1 bench)
+
+`.github/workflows/bench-decoder-compare.yml` (manual only) is the same for the decoder's Tier-1: `gh workflow run bench-decoder-compare.yml
+--ref main -f head_ref=<branch or sha>` (`-f base_ref=<ref>`, default `main`). Each of the six jobs (GCC 14, GCC 15 and Clang, AVX2 and
+scalar) builds `nj2k_t1_dec` (`bench/nj2k_t1_dec.cpp`: `t1_decode_cblk` of the ref against the frozen pre-MQ-NG decoder, in one process,
+interleaved rounds) from both refs and runs the two binaries alternately, 3 runs of 41 rounds, on the six dumps of `tests/vectors/t1_bench`
+(the synthetic texture at 256, 512 and 1,024 pixels square, lossy and lossless; `--inner auto` repeats a file's blocks until a timed unit
+takes 30 Mcycles; every block is checked against the frozen decoder before anything is timed). The bench source and the dumps are those of
+the ref the workflow runs from (`--ref main`), copied into both checkouts, so a head or base that predates them is measured the same way. The
+summary lists, for each file, the change of the head's ratio against the base's in percent (minus is faster). GitHub's runners are shared and differ
+from job to job, so only the ratios inside one job count; do not compare numbers across jobs or workflow runs. By hand:
+`nj2k_t1_dec --rounds 21 --inner auto tests/vectors/t1_bench/*.blk`.
+
 ## The corpora
 
 - **Generated** (`corpus/generated`, committed, 63 files, 236 KB): written by `nj2k_corpus_gen` with the

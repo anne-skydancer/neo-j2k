@@ -1,0 +1,152 @@
+# SPDX-License-Identifier: BSD-2-Clause
+# Copyright (c) 2026, Anne Skydancer (neo-j2k)
+#
+# The decoder's Tier-1 on real Linux, one ref against another, on the same machine: for GCC 14, GCC 15 and Clang,
+# the AVX2 build and the scalar one, each job builds nj2k_t1_dec (bench/nj2k_t1_dec.cpp: the current decoder against the
+# frozen pre-MQ-NG reference, in one process, interleaved rounds) from the head ref and from the base ref, prints the CPU
+# once, and runs the two binaries alternately (head, base, head, base, ...; 3 runs of 41 rounds each) on the committed
+# dumps of the synthetic texture (tests/vectors/t1_bench: 256, 512 and 1,024 pixels square, lossy and lossless; every
+# timed unit takes at least 30 Mcycles, --inner auto). The bench source and the dumps are those of the ref the workflow
+# runs from (main, once it holds them), copied into both checkouts, so a head or base that predates them is measured with
+# the same bench and decodes the same blocks. The result of a job is head ratio / base ratio (the medians of the three runs; each ratio is
+# that ref's decoder over the frozen reference), shown as the change of the head against the base in percent (minus is
+# faster), so the effect of the head's change is read in one job, on one CPU. GitHub's runners are shared and differ between
+# jobs (even for the same label): only the ratios inside one job count, never numbers compared across jobs. Run by hand:
+#   gh workflow run bench-decoder-compare.yml -f head_ref=<branch or sha> [-f base_ref=<ref, default main>]
+# Both refs must hold the decoder MQ-NG and its frozen reference (tests/unit/t1_frozen.cpp).
+name: Bench decoder Tier-1, head against base (Linux)
+
+on:
+  workflow_dispatch:
+    inputs:
+      base_ref:
+        description: Ref to compare against (branch, tag or sha)
+        required: false
+        default: main
+        type: string
+      head_ref:
+        description: Ref to measure (branch, tag or sha)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  bench:
+    name: bench (${{ matrix.cc }}, ${{ matrix.simd }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: ubuntu-24.04, cc: gcc-14, cxx: g++-14, preset: linux-gcc, packages: g++-14, simd: AVX2 }
+          - { runner: ubuntu-24.04, cc: gcc-14, cxx: g++-14, preset: linux-gcc, packages: g++-14, simd: SCALAR }
+          - { runner: ubuntu-26.04, cc: gcc-15, cxx: g++-15, preset: linux-gcc, packages: g++-15, simd: AVX2 }
+          - { runner: ubuntu-26.04, cc: gcc-15, cxx: g++-15, preset: linux-gcc, packages: g++-15, simd: SCALAR }
+          - { runner: ubuntu-26.04, cc: clang, cxx: clang++, preset: linux-clang, packages: "clang lld", simd: AVX2 }
+          - { runner: ubuntu-26.04, cc: clang, cxx: clang++, preset: linux-clang, packages: "clang lld", simd: SCALAR }
+    env:
+      CC: ${{ matrix.cc }}
+      CXX: ${{ matrix.cxx }}
+      HEAD_REF: ${{ inputs.head_ref }}
+      BASE_REF: ${{ inputs.base_ref }}
+    steps:
+      - name: Head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ inputs.head_ref }}
+          path: head
+          persist-credentials: false
+      - name: Base
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ inputs.base_ref }}
+          path: base
+          persist-credentials: false
+      - name: Harness (the bench source and the dumps of the ref this workflow runs from)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          path: harness
+          persist-credentials: false
+      - name: Both refs hold the decoder and its frozen reference; the harness holds the bench and the dumps
+        run: |
+          set -euo pipefail
+          for side in head base; do
+            if [ ! -f "$side/tests/unit/t1_frozen.cpp" ] || [ ! -f "$side/tests/unit/t1_frozen.h" ] || [ ! -f "$side/src/t1.cpp" ]; then
+              ref="$HEAD_REF"
+              if [ "$side" = base ]; then ref="$BASE_REF"; fi
+              echo "::error::the $side ref ($ref) has no tests/unit/t1_frozen.cpp: it predates the decoder MQ-NG; choose a later ref"
+              exit 1
+            fi
+          done
+          if [ ! -f harness/bench/nj2k_t1_dec.cpp ] || ! ls harness/tests/vectors/t1_bench/*.blk >/dev/null 2>&1; then
+            echo "::error::this workflow's own ref has no bench/nj2k_t1_dec.cpp or tests/vectors/t1_bench/*.blk: dispatch it from main (--ref main)"
+            exit 1
+          fi
+          # The same bench source is built against both refs (a ref that predates it, or the dump set, is measured all the
+          # same), and both binaries read the same dumps.
+          for side in head base; do
+            cp harness/bench/nj2k_t1_dec.cpp "$side/bench/nj2k_t1_dec.cpp"
+          done
+      - name: Toolchain
+        run: |
+          set -euo pipefail
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 update -qq
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 install -y -qq ninja-build ${{ matrix.packages }}
+          "$CC" --version | head -n 1
+          cmake --version | head -n 1
+      - name: Build the bench from both refs
+        run: |
+          set -euo pipefail
+          for side in head base; do
+            echo "::group::build $side"
+            (cd "$side" && cmake --preset ${{ matrix.preset }} -DNJ2K_BUILD_TESTS=OFF -DNJ2K_BUILD_BENCH=ON -DNJ2K_SIMD=${{ matrix.simd }} \
+              && cmake --build --preset ${{ matrix.preset }} --target nj2k_t1_dec --parallel 2)
+            echo "::endgroup::"
+          done
+      - name: Bench (head and base alternately, 3 runs)
+        env:
+          CONFIG: ${{ matrix.cc }}, ${{ matrix.simd }}
+          PRESET: ${{ matrix.preset }}
+        run: |
+          set -euo pipefail
+          cpu="$(grep -m1 'model name' /proc/cpuinfo | sed 's/^[^:]*: *//')"
+          echo "CPU: $cpu ($(nproc) cores)"
+          for side in head base; do
+            echo "$side: $(git -C "$side" rev-parse --short HEAD)"
+          done
+          {
+            echo "### ${CONFIG}"
+            echo
+            echo "CPU: ${cpu}; head \`$(git -C head rev-parse --short HEAD)\`, base \`$(git -C base rev-parse --short HEAD)\`"
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+          dumps=(harness/tests/vectors/t1_bench/*.blk)
+          for run in 1 2 3; do
+            for side in head base; do
+              echo "::group::run $run, $side (${CONFIG})"
+              "$side/build/${PRESET}/bench/nj2k_t1_dec" --rounds 41 --inner auto "${dumps[@]}" | tee "bench-$side-$run.txt"
+              echo "::endgroup::"
+            done
+          done
+          python3 - >> "$GITHUB_STEP_SUMMARY" <<'PY'
+          import statistics as st
+          def results(side):
+              out = {}
+              for run in (1, 2, 3):
+                  for line in open(f"bench-{side}-{run}.txt"):
+                      if line.startswith("RESULT "):
+                          kv = dict(f.split("=", 1) for f in line.split()[1:])
+                          out.setdefault(kv["set"], []).append(float(kv["ratio_median"]))
+              return out
+          head, base = results("head"), results("base")
+          print("| set | head ratio (each run) | base ratio (each run) | change of head against base, median of the runs |")
+          print("|---|---|---|---:|")
+          for s in sorted(head):
+              per_run = [100.0 * (h / b - 1.0) for h, b in zip(head[s], base[s])]
+              print(f"| {s} | {' '.join(f'{x:.3f}' for x in head[s])} | {' '.join(f'{x:.3f}' for x in base[s])} | **{st.median(per_run):+.1f} %** |")
+          print()
+          print("Ratios are each ref's decoder over the frozen pre-MQ-NG reference, same process; a minus change means the head is faster.")
+          PY
