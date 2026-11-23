@@ -1525,3 +1525,79 @@ E3 on every compiler, and the code grew (`enc_t1` text +0.8 % on clang, +2.1 % o
 `encode_pairs` change is byte-identical and is offered as PR 28 with those numbers; the variants, the table and
 the reproduction steps are archived (tags `archive/bench-clang-linux` and `archive/enc-e3-clang`, and
 `doc/studies/e3_clang_study.md`).
+
+## Stage 6h (D2): the decoder's Tier-1 passes (2026-11-23)
+
+Step D2 of the EBCOT-NG plan, on `main` after the MQ-NG decoder (stage 6d) and the encoder steps E1 to E3. It changes the
+decoder's Tier-1 passes (`src/t1.cpp`: the significance, refinement and cleanup passes) and nothing else: the MQ decision
+macro (`src/t1_mq.h`), the MQ-NG state words and the encoder are untouched, the raw (BYPASS) path is unchanged, and the
+coefficients are the same. Three parts, taken together because D1 alone misses the gate at 256² lossy (-1.6 % to -1.9 %) and
+the other two alone gain -1.1 % to -2.6 % there:
+
+1. **Refinement pass driven by the flag-word mask (D1).** The pass forms `refm = f & ~(f >> 17) & 0x2490` (the significant
+   samples of the column that this bit-plane has not visited: sigma at bit 4 + 3r without pi at 21 + 3r) and walks its set bits
+   with a count-trailing-zeros helper (`mq_ctz`, `src/t1.h`; only the decoder's passes use it), so a column with nothing to
+   refine costs one test and the others one decision a sample, and the mu bits are set with one OR.
+2. **Sign bit kept out of the significance flag until read (sigma/chi split).** `opj_t1_update_flags_macro` ORed a newly
+   significant sample's sigma bit and its sign (chi) bit into the column's flag register as one value, so the next row's
+   zero-coding context (table index, table load, context slot load, then the interval) waited on the sign decision: a false data
+   dependence of about ten cycles after every significance. Sigma now goes into the register at once and chi into a per-column
+   local; the sign context of the row below reads `flags | chi`, and the column's closing store (and, for the partial stripe at
+   the bottom, each row's step) writes `flags | chi`. The zero-coding and eligibility masks never cover the sign bits and no
+   other sample reads a column's own chi bits, so the flags every decision sees are the same.
+3. **ZC-table pointer held in a local.** MSVC has no type-based alias analysis, so it reloaded `mqc->lut_ctxno_zc_orient` after
+   every coefficient or flag store; the significance and cleanup passes take the pointer once.
+
+Correctness first: the output is coefficient for coefficient the frozen decoder's. `t1_unit` (3,927 vectors, 21,164 generated
+code-blocks, overlong segments, raw segments, the state table, single decisions, the AGG runs) and the new test 6 (below) pass,
+`t1_unit` also on the 37,424 code-blocks of the full dump set (`NJ2K_T1_VECTORS`), `t1_exhaustive` (`--exhaustive-full`, 887
+million single decisions) unchanged and passing, and the whole ctest (122 tests, 2 skipped for want of the conformance data) on MSVC
+AVX2 and SCALAR; the Tier-1 tests and fuzz replays also under clang-cl and MSVC AddressSanitizer. A first run of the test
+programs after the mutation checks used a program that had not been relinked; every test program was deleted and rebuilt
+before the results here.
+
+**The new test.** `t1_unit` test 6 (`--split` runs it alone) decodes 3,840,000 tiny code-blocks from random bytes (1 to 5
+columns, the stripe's four rows and the remainder rows of a partial stripe, every orientation, with and without vertically
+causal contexts) against the frozen decoder, and counts the zero, positive and negative patterns of a column's four rows (81 of
+them) in each orientation, in a column of a block one wide and in each column of a block three wide: the test refuses to pass
+unless every one was decoded. Mutation checks, each built from scratch (the test program deleted and relinked) and each caught
+by `nj2k_t1_unit --split` alone: the sign context of the significance pass or of the cleanup pass reading the flags without chi;
+the column's closing store of either pass dropping chi; the partial-stripe step of either pass dropping its merge; the sign
+placed one row down.
+
+**Method.** Ryzen 9 9950X3D, Windows 11, one thread pinned to CPU 7 (CPU 5 as well for 256² lossy), TSC cycles. Two library
+builds of `nj2k_t1_dec` (`bench/nj2k_t1_dec.cpp`, the library's own flags): `main` (`040a5f9`) and D2, each timing
+`t1_decode_cblk` against the same frozen reference in one process, 21 rounds, the order swapped every round; the figure is
+D2's ratio over main's ratio (the ratio of the two ratios), minus 1. A third build, an identical copy of main, runs in the same
+sweep as the control. Each timed unit repeats the dump so that it takes at least 30 Mcycles (10 times for 256² lossy, 3 for 256²
+lossless and 512², once for 1,024²). Five sweeps of the three processes for every configuration (the order reversed on odd
+sweeps); 256² lossy: two link orders (the frozen object before or after the bench's own) times two cores, five sweeps each
+(eight in a second run), the figure the median of all of them. Every block is checked against the frozen decoder before
+anything is timed. The gate: coefficient-identical, at least 3.0 % faster than main on every MSVC configuration, AVX2 and
+SCALAR, the control within +-1 %, and the code not larger.
+
+Change against main (minus is faster), D2 as a whole, with the control (main against its identical copy; the largest of the
+six cells in the last column but one):
+
+| Build | 256² lossy | 256² lossless | 512² lossy | 512² lossless | 1,024² lossy | 1,024² lossless | Control | Passes gate |
+|---|---|---|---|---|---|---|---|---|
+| MSVC AVX2 | -3.2 % / -3.6 % | -6.1 % | -5.6 % | -5.2 % | -5.6 % | -5.3 % | 0.3 % | Yes |
+| MSVC SCALAR | -4.0 % | -6.6 % | -5.6 % | -5.6 % | -5.1 % | -5.5 % | 0.1 % | Yes |
+| clang-cl AVX2 (information) | -3.7 % | -6.5 % | -5.6 % | -6.0 % | -5.6 % | -6.0 % | 0.1 % | n/a |
+| MinGW GCC 13.2, `-O3`, AVX2 flags (information) | -2.3 % | -5.3 % | -4.0 % | -4.7 % | -3.7 % | -4.4 % | 0.3 % | n/a |
+
+MSVC AVX2 at 256² lossy is the cell on the gate: two runs of it, 20 pairs (-3.2 %, interquartile -4.2 % to -2.6 %) and 32
+pairs (-3.6 %, interquartile -3.9 % to -3.3 %); by link order and core the medians were -4.2 %, -2.6 %, -4.2 % and -2.4 %
+(first run, the second link order being the weaker) and -3.8 %, -3.3 %, -3.9 % and -3.3 % (second). So the figure is above 3.0 %,
+but one link order on a run can sit below it; the layout swing is about 0.6 points. The Windows machine was not otherwise idle.
+
+Costs:
+
+- Code size, `.text` of `t1.obj`: MSVC AVX2 60,116 to 59,509 bytes (-1.0 %), MSVC SCALAR 60,131 to 59,384 bytes (-1.2 %),
+  clang-cl AVX2 66,689 to 64,021 bytes (-4.0 %). Leaner, not larger.
+- Scratch: none (a register for chi and one for the table pointer a column).
+- Decisions, their order, the flags written and the bytes read are the same; the encoder, `t1_mq.h` and the raw path are untouched.
+- Linux (GCC 14, GCC 15, Clang) is not measured here: `bench-decoder-compare.yml` (`doc/testing.md`) runs it; only same-job
+  ratios count.
+- One machine (Zen 5), one synthetic texture (gradients, edges, noise); real images may have a different share of refinement
+  and significance decisions.
