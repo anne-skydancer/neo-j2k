@@ -105,7 +105,16 @@ int main(int argc, char** argv)
             pin = std::atoi(argv[++i]);
         } else if (std::strcmp(argv[i], "--inner") == 0 && i + 1 < argc) {
             ++i;
-            inner = std::strcmp(argv[i], "auto") == 0 ? 0 : std::max(1L, std::atol(argv[i]));
+            if (std::strcmp(argv[i], "auto") == 0) {
+                inner = 0;
+            } else {
+                char* end = nullptr;
+                inner = std::strtol(argv[i], &end, 10);
+                if (end == argv[i] || *end != '\0' || inner < 1) {
+                    std::fprintf(stderr, "--inner takes a count of 1 or more, or auto\n");
+                    return 2;
+                }
+            }
         } else {
             files.push_back(argv[i]);
         }

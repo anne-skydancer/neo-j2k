@@ -11,8 +11,9 @@ test (the bench checks every block against the frozen reference before it times 
 ## Provenance
 
 - The image is the synthetic texture of `bench/nj2k_encode_bench.cpp` (gradients, a few edges and noise from a fixed xorshift
-  generator, three 8-bit components): it is computed by a formula, no file of any kind went into it. The owner's own data,
-  BSD-2-Clause, as the rest of the repository.
+  generator, three 8-bit components): it is computed by a formula, no file of any kind went into it. This repository's own
+  data, under the repository's licence (BSD-2-Clause); the encoder is a port of OpenJPEG (BSD-2-Clause, see
+  `LICENSE.OpenJPEG`); the dumps carry no OpenJPEG data.
 - It was encoded by this repository's own encoder with the viewer's upload parameters (one layer, 64 x 64 code-blocks, code-block
   style 00; lossy = the 9/7 transform, lossless = the 5/3), at 256, 512 and 1,024 pixels square.
 - Not in these files: any block derived from openjpeg-data, the conformance suite, or textures of the viewer. (The study's other
