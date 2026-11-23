@@ -75,6 +75,32 @@ inline std::uint32_t mq_shifts(std::uint32_t a) noexcept
 #endif
 }
 
+// The index of the lowest set bit of a non-zero word. Only the decoder's Tier-1 passes use it (the refinement pass walks the
+// samples of a mask with it); it is not part of the MQ coder, nor of the encoder.
+inline std::uint32_t ctz32(std::uint32_t x) noexcept
+{
+#if defined(_MSC_VER) && !defined(__clang__)
+#if defined(__AVX2__)
+    return _tzcnt_u32(x);
+#else
+    unsigned long lsb;
+    _BitScanForward(&lsb, x);
+    return static_cast<std::uint32_t>(lsb);
+#endif
+#elif defined(__AVX2__)
+    return static_cast<std::uint32_t>(__builtin_ctz(x));
+#elif defined(__x86_64__) || defined(__i386__)
+    // GCC and clang compile __builtin_ctz to tzcnt, or to rep bsf, which disassembles as tzcnt, and the scalar build's object
+    // check refuses it as a newer instruction (clang also turns 31 ^ clz(x & -x) back into it). Plain bsf: the same index for
+    // a non-zero word on every x86 processor.
+    std::uint32_t idx;
+    __asm__("bsfl %1, %0" : "=r"(idx) : "rm"(x) : "cc");
+    return idx;
+#else
+    return static_cast<std::uint32_t>(__builtin_ctz(x));
+#endif
+}
+
 // One MQ state of the standard's Table C.2 (OpenJPEG's opj_mqc_state_t), the 94 of kMqcStates (t1_tables.h): the encoder
 // reads them, and the decoder's context words (t1_mq.h) are built from them at compile time.
 struct MqState {

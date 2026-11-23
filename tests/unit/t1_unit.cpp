@@ -24,7 +24,10 @@
 //      (a = 0x8000 + qe) edges; --exhaustive-full takes every interval and more bytes;
 //   5. the run of AGG decisions: the cleanup pass's column of an empty stripe taken at once equals the same decisions
 //      one at a time (a, c and the byte position).
-// Usage: nj2k_t1_unit [--exhaustive-full] [--no-exhaustive] [PATH ...]   (PATH: a .blk file or a folder of them)
+//   6. the split of a newly significant sample's sign from its significance (decoder step D2): tiny code-blocks over every
+//      sign and significance pattern of a column, in every orientation, with and without vertically causal contexts.
+// Usage: nj2k_t1_unit [--exhaustive-full] [--no-exhaustive] [--split] [PATH ...]   (PATH: a .blk file or a folder of them;
+//        --split runs test 6 alone)
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
@@ -458,6 +461,77 @@ void test_raw_cleanup()
                 static_cast<unsigned long long>(r.blocks), raw_segments);
 }
 
+// The significance and the sign of a newly significant sample (decoder step D2): the passes put the significance in the
+// column's flags at once and keep the sign in a register of their own until the column is done, so the sign context of the
+// row below must read both and the closing store must write both. Tiny code-blocks (one to five columns, the stripe's four
+// rows and the remainder rows of a partial stripe, every orientation, code-block styles 00 and VSC only) are decoded from
+// random bytes, each stream giving another pattern of zeros, positive and negative samples; each is compared with the
+// frozen decode, and the test counts the patterns of a column's four rows in the frozen decode's final output (3^4 = 81 of
+// zero, positive and negative) per orientation and refuses to pass unless every one was seen in the column of a block one
+// wide and in each column of a block three wide. (The output shows which samples ended significant and their signs, not the
+// order they became significant in, which the random streams vary.)
+void test_split()
+{
+    Runner r;
+    Rng rng(20261124);
+    struct Shape {
+        u32 w, h;
+    };
+    const Shape shapes[] = {{1, 4}, {2, 4}, {3, 4}, {1, 8}, {3, 8}, {2, 5}, {3, 6}, {2, 7}, {1, 3}, {3, 1}, {3, 2}, {5, 12}};
+    // seen[orient][column kind][pattern of rows 0..3]: the kinds are the column of a block one wide and the three columns
+    // of a block three wide (the first, the middle, the last), all four rows high
+    static bool seen[4][4][81];
+    std::memset(seen, 0, sizeof seen);
+    u32 total = 0;
+    for (u32 orient = 0; orient < 4; ++orient) {
+        for (const Shape& sh : shapes) {
+            for (u32 style : {0u, static_cast<u32>(d::kCblkVsc)}) {
+                for (u32 i = 0; i < 40000; ++i) {
+                    Spec s;
+                    s.w = sh.w, s.h = sh.h, s.cblksty = style, s.orient = orient;
+                    s.numbps = 1 + rng.u(5);
+                    const u32 len = 1 + rng.u(sh.w * sh.h * 3 / 2 + 6);
+                    s.len.push_back(len);
+                    s.passes.push_back(1 + 3 * (s.numbps - 1));  // every pass of the bit-planes
+                    s.bytes.resize(len);
+                    fill_bytes(s.bytes, rng, i % 7 == 6 ? 4u : 0u);
+                    if (!r.run(s, "split")) {
+                        ++g_failures;
+                        return;
+                    }
+                    ++total;
+                    if (sh.h == 4 && (sh.w == 1 || sh.w == 3)) {
+                        for (u32 x = 0; x < sh.w; ++x) {
+                            const u32 kind = sh.w == 1 ? 0u : 1u + x;
+                            u32 pat = 0;
+                            for (u32 row = 4; row-- > 0;) {
+                                const std::int32_t v = r.ref.t.data[row * sh.w + x];
+                                pat = pat * 3 + (v == 0 ? 0u : v > 0 ? 1u : 2u);
+                            }
+                            seen[orient][kind][pat] = true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    u32 missing = 0;
+    for (u32 o = 0; o < 4; ++o) {
+        for (u32 k = 0; k < 4; ++k) {
+            for (u32 p = 0; p < 81; ++p) {
+                if (!seen[o][k][p]) {
+                    ++missing;
+                }
+            }
+        }
+    }
+    if (missing != 0) {
+        CHECK_MSG(false, "split: %u of the %u (orientation, column kind, pattern) cases were never decoded: the test is too weak", missing, 4u * 4u * 81u);
+        return;
+    }
+    std::printf("split: %u code-blocks identical, every zero, positive and negative pattern of a column's four rows (final output, styles 00 and VSC) seen in each orientation\n", total);
+}
+
 // ---- 3. the tables ----
 
 // ISO 15444-1 Table C.2: qe, next state on an MPS, on an LPS, switch (the MPS flips); 47 states
@@ -733,20 +807,25 @@ int main(int argc, char** argv)
     nj2k::test::console_reports();
     bool full = false;
     bool exhaustive = true;
+    bool split_only = false;
     std::vector<std::string> vectors;
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--exhaustive-full") == 0) {
             full = true;
         } else if (std::strcmp(argv[i], "--no-exhaustive") == 0) {
             exhaustive = false;
+        } else if (std::strcmp(argv[i], "--split") == 0) {
+            split_only = true;
         } else if (argv[i][0] == '-') {
-            std::fprintf(stderr, "usage: nj2k_t1_unit [--exhaustive-full] [--no-exhaustive] [PATH ...]\n");
+            std::fprintf(stderr, "usage: nj2k_t1_unit [--exhaustive-full] [--no-exhaustive] [--split] [PATH ...]\n");
             return 2;
         } else {
             vectors.push_back(argv[i]);
         }
     }
-    if (full) {
+    if (split_only) {
+        test_split();
+    } else if (full) {
         // the nightly run: only the exhaustive comparison
         test_single(true);
     } else {
@@ -757,6 +836,13 @@ int main(int argc, char** argv)
         test_generated();
         test_overlong();
         test_raw_cleanup();
+#if !defined(NJ2K_MQ_FORCE_MASKS)
+        // 4 s on release builds, 28 s under AddressSanitizer: not repeated by the mask-form build (t1_unit_masks) nor by
+        // the runs over folders of dumps; --split runs it alone anywhere
+        if (vectors.empty()) {
+            test_split();
+        }
+#endif
         if (exhaustive) {
             test_single(false);
         }

@@ -235,9 +235,11 @@ void opj_mqc_resetstates(opj_mqc_t *mqc)
 
 // ---- t1.c: the decoding passes ----
 
-static inline OPJ_BYTE opj_t1_getctxno_zc(opj_mqc_t *mqc, OPJ_UINT32 f)
+// zc: the orientation's table (mqc->lut_ctxno_zc_orient), held in a local by each pass: the compiler cannot tell that the
+// stores to the flags and the data leave the pointer in the Mqc alone (MSVC has no type-based alias analysis)
+static inline OPJ_BYTE opj_t1_getctxno_zc(const OPJ_BYTE *zc, OPJ_UINT32 f)
 {
-    return mqc->lut_ctxno_zc_orient[(f & T1_SIGMA_NEIGHBOURS)];
+    return zc[(f & T1_SIGMA_NEIGHBOURS)];
 }
 
 static inline OPJ_UINT32 opj_t1_getctxtno_sc_or_spb_index(OPJ_UINT32 fX,
@@ -288,13 +290,16 @@ static inline OPJ_BYTE opj_t1_getspb(OPJ_UINT32 lu)
 }
 
 
-#define opj_t1_update_flags_macro(flags, flagsp, ci, s, stride, vsc) \
+// The target's significance goes into `flags` and its sign into `chi` (the same word, or a local the caller merges into it
+// later): the sign is decided by a longer chain than the significance, and the next row's context needs only the latter.
+#define opj_t1_update_flags_macro(flags, chi, flagsp, ci, s, stride, vsc) \
 { \
     /* east */ \
     flagsp[-1] |= T1_SIGMA_5 << (3U * ci); \
  \
     /* mark target as significant */ \
-    flags |= ((s << T1_CHI_1_I) | T1_SIGMA_4) << (3U * ci); \
+    flags |= T1_SIGMA_4 << (3U * ci); \
+    chi |= (s << T1_CHI_1_I) << (3U * ci); \
  \
     /* west */ \
     flagsp[1] |= T1_SIGMA_3 << (3U * ci); \
@@ -321,7 +326,7 @@ static inline void opj_t1_update_flags(opj_flag_t *flagsp, OPJ_UINT32 ci,
                                        OPJ_UINT32 s, OPJ_UINT32 stride,
                                        OPJ_UINT32 vsc)
 {
-    opj_t1_update_flags_macro(*flagsp, flagsp, ci, s, stride, vsc);
+    opj_t1_update_flags_macro(*flagsp, *flagsp, flagsp, ci, s, stride, vsc);
 }
 
 static inline void opj_t1_dec_sigpass_step_raw(
@@ -348,18 +353,18 @@ static inline void opj_t1_dec_sigpass_step_raw(
     }
 }
 
-#define opj_t1_dec_sigpass_step_mqc_macro(flags, flagsp, flags_stride, data, \
+#define opj_t1_dec_sigpass_step_mqc_macro(flags, chi, zc, flagsp, flags_stride, data, \
                                           data_stride, ci, mqc, curctx, \
                                           v, a, c, ct, oneplushalf, vsc) \
 { \
     if ((flags & ((T1_SIGMA_THIS | T1_PI_THIS) << (ci * 3U))) == 0U && \
         (flags & (T1_SIGMA_NEIGHBOURS << (ci * 3U))) != 0U) { \
-        OPJ_UINT32 ctxt1 = opj_t1_getctxno_zc(mqc, flags >> (ci * 3U)); \
+        OPJ_UINT32 ctxt1 = opj_t1_getctxno_zc(zc, flags >> (ci * 3U)); \
         opj_t1_setcurctx(curctx, ctxt1); \
         opj_mqc_decode_macro(v, mqc, curctx, a, c, ct); \
         if (v) { \
             OPJ_UINT32 lu = opj_t1_getctxtno_sc_or_spb_index( \
-                                flags, \
+                                flags | chi, /* the chi of the rows above in this column is still in the local */ \
                                 flagsp[-1], flagsp[1], \
                                 ci); \
             OPJ_UINT32 ctxt2 = opj_t1_getctxno_sc(lu); \
@@ -368,7 +373,7 @@ static inline void opj_t1_dec_sigpass_step_raw(
             opj_mqc_decode_macro(v, mqc, curctx, a, c, ct); \
             v = v ^ spb; \
             data[ci*data_stride] = v ? -oneplushalf : oneplushalf; \
-            opj_t1_update_flags_macro(flags, flagsp, ci, v, flags_stride, vsc); \
+            opj_t1_update_flags_macro(flags, chi, flagsp, ci, v, flags_stride, vsc); \
         } \
         flags |= T1_PI_THIS << (ci * 3U); \
     } \
@@ -386,9 +391,12 @@ static inline void opj_t1_dec_sigpass_step_mqc(
     OPJ_UINT32 v;
 
     opj_mqc_t *mqc = &(t1->mqc);       /* MQC component */
-    opj_t1_dec_sigpass_step_mqc_macro(*flagsp, flagsp, flags_stride, datap,
+    const OPJ_BYTE *const zc = mqc->lut_ctxno_zc_orient;
+    OPJ_UINT32 chi = 0;
+    opj_t1_dec_sigpass_step_mqc_macro(*flagsp, chi, zc, flagsp, flags_stride, datap,
                                       0, ci, mqc, mqc->curctx,
                                       v, mqc->a, mqc->c, mqc->ct, oneplushalf, vsc);
+    *flagsp |= chi;
 }
 
 static void opj_t1_dec_sigpass_raw(
@@ -463,6 +471,7 @@ static void opj_t1_dec_sigpass_raw(
         opj_flag_t *flagsp = &t1->flags[(flags_stride) + 1]; \
         const OPJ_UINT32 l_w = w; \
         opj_mqc_t* mqc = &(t1->mqc); \
+        const OPJ_BYTE* const zc = mqc->lut_ctxno_zc_orient; \
         DOWNLOAD_MQC_VARIABLES(mqc, curctx, a, c, ct); \
         OPJ_UINT32 v; \
         one = 1 << bpno; \
@@ -472,19 +481,20 @@ static void opj_t1_dec_sigpass_raw(
                 for (i = 0; i < l_w; ++i, ++data, ++flagsp) { \
                         opj_flag_t flags = *flagsp; \
                         if( flags != 0 ) { \
+                            OPJ_UINT32 chi = 0; \
                             opj_t1_dec_sigpass_step_mqc_macro( \
-                                flags, flagsp, flags_stride, data, \
+                                flags, chi, zc, flagsp, flags_stride, data, \
                                 l_w, 0, mqc, curctx, v, a, c, ct, oneplushalf, vsc); \
                             opj_t1_dec_sigpass_step_mqc_macro( \
-                                flags, flagsp, flags_stride, data, \
+                                flags, chi, zc, flagsp, flags_stride, data, \
                                 l_w, 1, mqc, curctx, v, a, c, ct, oneplushalf, OPJ_FALSE); \
                             opj_t1_dec_sigpass_step_mqc_macro( \
-                                flags, flagsp, flags_stride, data, \
+                                flags, chi, zc, flagsp, flags_stride, data, \
                                 l_w, 2, mqc, curctx, v, a, c, ct, oneplushalf, OPJ_FALSE); \
                             opj_t1_dec_sigpass_step_mqc_macro( \
-                                flags, flagsp, flags_stride, data, \
+                                flags, chi, zc, flagsp, flags_stride, data, \
                                 l_w, 3, mqc, curctx, v, a, c, ct, oneplushalf, OPJ_FALSE); \
-                            *flagsp = flags; \
+                            *flagsp = flags | chi; \
                         } \
                 } \
         } \
@@ -667,20 +677,23 @@ static void opj_t1_dec_refpass_raw(
         for (k = 0; k < (h & ~3u); k += 4, data += 3*l_w, flagsp += 2) { \
                 for (i = 0; i < l_w; ++i, ++data, ++flagsp) { \
                         opj_flag_t flags = *flagsp; \
-                        if( flags != 0 ) { \
-                            opj_t1_dec_refpass_step_mqc_macro( \
-                                flags, data, l_w, 0, \
-                                mqc, curctx, v, a, c, ct, poshalf); \
-                            opj_t1_dec_refpass_step_mqc_macro( \
-                                flags, data, l_w, 1, \
-                                mqc, curctx, v, a, c, ct, poshalf); \
-                            opj_t1_dec_refpass_step_mqc_macro( \
-                                flags, data, l_w, 2, \
-                                mqc, curctx, v, a, c, ct, poshalf); \
-                            opj_t1_dec_refpass_step_mqc_macro( \
-                                flags, data, l_w, 3, \
-                                mqc, curctx, v, a, c, ct, poshalf); \
-                            *flagsp = flags; \
+                        /* The samples of the column that the pass refines (significant, not yet visited in this */ \
+                        /* bit-plane): the sigma bits 4, 7, 10 and 13 (0x2490) without those whose pi bit (17 bits higher) */ \
+                        /* is set. They are taken lowest first, as ci = 0 to 3 would be; sh = 3 * ci. */ \
+                        const OPJ_UINT32 refm = flags & ~(flags >> 17) & 0x2490U; \
+                        if( refm != 0 ) { \
+                            OPJ_UINT32 bits = refm; \
+                            do { \
+                                const OPJ_UINT32 sh = nj2k::detail::ctz32(bits) - 4U; /* 3 * ci */ \
+                                const OPJ_UINT32 ci = sh / 3U; \
+                                const OPJ_UINT32 ctxt = opj_t1_getctxno_mag(flags >> sh); \
+                                opj_t1_setcurctx(curctx, ctxt); \
+                                opj_mqc_decode_macro(v, mqc, curctx, a, c, ct); \
+                                OPJ_INT32 *dp = data + ci * l_w; \
+                                *dp += (v ^ (*dp < 0)) ? poshalf : -poshalf; \
+                                bits &= bits - 1U; \
+                            } while (bits != 0); \
+                            *flagsp = flags | (refm << 16); \
                         } \
                 } \
         } \
@@ -720,14 +733,14 @@ static void opj_t1_dec_refpass_mqc(
 }
 
 #define opj_t1_dec_clnpass_step_macro(check_flags, partial, \
-                                      flags, flagsp, flags_stride, data, \
+                                      flags, chi, zc, flagsp, flags_stride, data, \
                                       data_stride, ci, mqc, curctx, \
                                       v, a, c, ct, oneplushalf, vsc) \
 { \
     if ( !check_flags || !(flags & ((T1_SIGMA_THIS | T1_PI_THIS) << (ci * 3U)))) {\
         do { \
             if( !partial ) { \
-                OPJ_UINT32 ctxt1 = opj_t1_getctxno_zc(mqc, flags >> (ci * 3U)); \
+                OPJ_UINT32 ctxt1 = opj_t1_getctxno_zc(zc, flags >> (ci * 3U)); \
                 opj_t1_setcurctx(curctx, ctxt1); \
                 opj_mqc_decode_macro(v, mqc, curctx, a, c, ct); \
                 if( !v ) \
@@ -735,13 +748,13 @@ static void opj_t1_dec_refpass_mqc(
             } \
             { \
                 OPJ_UINT32 lu = opj_t1_getctxtno_sc_or_spb_index( \
-                                    flags, flagsp[-1], flagsp[1], \
+                                    flags | chi, flagsp[-1], flagsp[1], /* the chi of the rows above is in the local */ \
                                     ci); \
                 opj_t1_setcurctx(curctx, opj_t1_getctxno_sc(lu)); \
                 opj_mqc_decode_macro(v, mqc, curctx, a, c, ct); \
                 v = v ^ opj_t1_getspb(lu); \
                 data[ci*data_stride] = v ? -oneplushalf : oneplushalf; \
-                opj_t1_update_flags_macro(flags, flagsp, ci, v, flags_stride, vsc); \
+                opj_t1_update_flags_macro(flags, chi, flagsp, ci, v, flags_stride, vsc); \
             } \
         } while(0); \
     } \
@@ -758,10 +771,13 @@ static void opj_t1_dec_clnpass_step(
     OPJ_UINT32 v;
 
     opj_mqc_t *mqc = &(t1->mqc);   /* MQC component */
+    const OPJ_BYTE *const zc = mqc->lut_ctxno_zc_orient;
+    OPJ_UINT32 chi = 0;
     opj_t1_dec_clnpass_step_macro(OPJ_TRUE, OPJ_FALSE,
-                                  *flagsp, flagsp, t1->w + 2U, datap,
+                                  *flagsp, chi, zc, flagsp, t1->w + 2U, datap,
                                   0, ci, mqc, mqc->curctx,
                                   v, mqc->a, mqc->c, mqc->ct, oneplushalf, vsc);
+    *flagsp |= chi;
 }
 
 #define opj_t1_dec_clnpass_internal(t1, bpno, vsc, w, h, flags_stride) \
@@ -771,6 +787,7 @@ static void opj_t1_dec_clnpass_step(
     OPJ_UINT32 i, j, k; \
     const OPJ_UINT32 l_w = w; \
     opj_mqc_t* mqc = &(t1->mqc); \
+    const OPJ_BYTE* const zc = mqc->lut_ctxno_zc_orient; \
     OPJ_INT32 *data = t1->data; \
     opj_flag_t *flagsp = &t1->flags[flags_stride + 1]; \
     DOWNLOAD_MQC_VARIABLES(mqc, curctx, a, c, ct); \
@@ -781,6 +798,7 @@ static void opj_t1_dec_clnpass_step(
     for (k = 0; k < (h & ~3u); k += 4, data += 3*l_w, flagsp += 2) { \
         for (i = 0; i < l_w; ++i, ++data, ++flagsp) { \
             opj_flag_t flags = *flagsp; \
+            OPJ_UINT32 chi = 0; \
             if (flags == 0) { \
                 OPJ_UINT32 partial = OPJ_TRUE; \
                 opj_t1_setcurctx(curctx, T1_CTXNO_AGG); \
@@ -806,51 +824,51 @@ static void opj_t1_dec_clnpass_step(
                 switch(runlen) { \
                     case 0: \
                         opj_t1_dec_clnpass_step_macro(OPJ_FALSE, OPJ_TRUE,\
-                                            flags, flagsp, flags_stride, data, \
+                                            flags, chi, zc, flagsp, flags_stride, data, \
                                             l_w, 0, mqc, curctx, \
                                             v, a, c, ct, oneplushalf, vsc); \
                         partial = OPJ_FALSE; \
                         /* FALLTHRU */ \
                     case 1: \
                         opj_t1_dec_clnpass_step_macro(OPJ_FALSE, partial,\
-                                            flags, flagsp, flags_stride, data, \
+                                            flags, chi, zc, flagsp, flags_stride, data, \
                                             l_w, 1, mqc, curctx, \
                                             v, a, c, ct, oneplushalf, OPJ_FALSE); \
                         partial = OPJ_FALSE; \
                         /* FALLTHRU */ \
                     case 2: \
                         opj_t1_dec_clnpass_step_macro(OPJ_FALSE, partial,\
-                                            flags, flagsp, flags_stride, data, \
+                                            flags, chi, zc, flagsp, flags_stride, data, \
                                             l_w, 2, mqc, curctx, \
                                             v, a, c, ct, oneplushalf, OPJ_FALSE); \
                         partial = OPJ_FALSE; \
                         /* FALLTHRU */ \
                     case 3: \
                         opj_t1_dec_clnpass_step_macro(OPJ_FALSE, partial,\
-                                            flags, flagsp, flags_stride, data, \
+                                            flags, chi, zc, flagsp, flags_stride, data, \
                                             l_w, 3, mqc, curctx, \
                                             v, a, c, ct, oneplushalf, OPJ_FALSE); \
                         break; \
                 } \
             } else { \
                 opj_t1_dec_clnpass_step_macro(OPJ_TRUE, OPJ_FALSE, \
-                                    flags, flagsp, flags_stride, data, \
+                                    flags, chi, zc, flagsp, flags_stride, data, \
                                     l_w, 0, mqc, curctx, \
                                     v, a, c, ct, oneplushalf, vsc); \
                 opj_t1_dec_clnpass_step_macro(OPJ_TRUE, OPJ_FALSE, \
-                                    flags, flagsp, flags_stride, data, \
+                                    flags, chi, zc, flagsp, flags_stride, data, \
                                     l_w, 1, mqc, curctx, \
                                     v, a, c, ct, oneplushalf, OPJ_FALSE); \
                 opj_t1_dec_clnpass_step_macro(OPJ_TRUE, OPJ_FALSE, \
-                                    flags, flagsp, flags_stride, data, \
+                                    flags, chi, zc, flagsp, flags_stride, data, \
                                     l_w, 2, mqc, curctx, \
                                     v, a, c, ct, oneplushalf, OPJ_FALSE); \
                 opj_t1_dec_clnpass_step_macro(OPJ_TRUE, OPJ_FALSE, \
-                                    flags, flagsp, flags_stride, data, \
+                                    flags, chi, zc, flagsp, flags_stride, data, \
                                     l_w, 3, mqc, curctx, \
                                     v, a, c, ct, oneplushalf, OPJ_FALSE); \
             } \
-            *flagsp = flags & ~(T1_PI_0 | T1_PI_1 | T1_PI_2 | T1_PI_3); \
+            *flagsp = (flags | chi) & ~(T1_PI_0 | T1_PI_1 | T1_PI_2 | T1_PI_3); \
         } \
     } \
     UPLOAD_MQC_VARIABLES(mqc, curctx, a, c, ct); \
