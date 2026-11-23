@@ -1602,9 +1602,20 @@ Costs:
   clang; GCC at `-O2` grows by 0.5 %.
 - Scratch: none (a register for chi a column and one for the table pointer per pass).
 - Decisions, their order, the flags written and the bytes read are the same; the encoder, `t1_mq.h` and the raw path are untouched.
-- Linux (GCC 14, GCC 15, Clang) is not measured here. The workflow `.github/workflows/bench-decoder-compare.yml` (`doc/testing.md`)
-  runs it on the six dumps in `tests/vectors/t1_bench`; both exist only on the branch `bench-decoder-workflow`, which lands first
-  (a workflow can be dispatched only once it is on main): `gh workflow run bench-decoder-compare.yml --ref main -f head_ref=<ref>`.
-  Only same-job ratios count.
+- Linux, same machine per job (workflow run 45135880138, `.github/workflows/bench-decoder-compare.yml`, `doc/testing.md`): D2 against
+  `main`, three alternating runs per job; only same-job ratios count. Change in the Tier-1 time, minus is faster; the last
+  column counts the cells at -3.0 % or better (the gate is MSVC only; Linux is a confirmation, not a gate):
+
+  | Job | 1,024² lossless | 1,024² lossy | 512² lossless | 512² lossy | 256² lossless | 256² lossy | At -3.0 % or better |
+  |---|---:|---:|---:|---:|---:|---:|---:|
+  | GCC 14, AVX2 | -5.1 % | -5.4 % | -5.0 % | -5.2 % | -5.2 % | -3.7 % | 6 of 6 |
+  | GCC 14, SCALAR | -0.4 % | -2.9 % | -0.4 % | -2.7 % | -0.6 % | -2.0 % | 0 of 6 |
+  | GCC 15, AVX2 | -2.2 % | -4.2 % | -2.2 % | -4.0 % | -2.4 % | -2.7 % | 2 of 6 |
+  | GCC 15, SCALAR | -4.1 % | -4.3 % | -4.1 % | -4.4 % | -4.1 % | -2.6 % | 5 of 6 |
+  | Clang, AVX2 | -3.5 % | -4.7 % | -3.6 % | -5.0 % | -4.5 % | -2.6 % | 5 of 6 |
+  | Clang, SCALAR | -2.1 % | -4.0 % | -2.2 % | -3.7 % | -2.8 % | -3.2 % | 3 of 6 |
+
+  Every one of the 36 cells is faster than `main`; 21 reach -3.0 %. The weakest are GCC 14 SCALAR (-0.4 % to -2.9 %) and the 256²
+  lossy column (-2.0 % to -3.7 %). The three runs of a cell agree within 2 points.
 - One machine (Zen 5), one synthetic texture (gradients, edges, noise); real images may have a different share of refinement
   and significance decisions.
