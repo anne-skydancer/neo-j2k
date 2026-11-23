@@ -36,7 +36,7 @@ The 8-thread rows start OpenJPEG's thread pool inside the timed call, for both l
 the README's rows of the linked neo-j2k backend, whose pool is started before the timing. generate() reuses a
 g<N>_97.j2k that is already in --files.
 
---check runs a tiny encode (64 and 256 pixels, 1 and 2 threads, both modes) of every --lib and of the linked oracle,
+--check runs a tiny encode (64 pixels at 1 and 2 threads, 256 pixels at 2 threads, both modes) of every --lib and of the linked oracle,
 one run each, and exits 1 unless every codestream checksum is the oracle's (the ctest of the harness); with --large-exe
 and two --lib it also decodes generated 64 and 640 pixel images (the larger above the module's parallel floors)
 through both and compares their sample hashes.
