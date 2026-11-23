@@ -1689,3 +1689,54 @@ Caveats:
 - The OpenJPEG times are higher than the earlier rows' (392 ms one thread, 136 ms eight threads) and neo-j2k's lower (234 and 46 ms at one thread and eight) or close; the earlier runs had a mean load of 26 %, these 3 %, so the two sets are not directly comparable.
 - The 64² and 1,024² whole-image rows: not measured on v0.1.3 (see above).
 - One machine, one synthetic image, Windows and MSVC only.
+
+## The API bench: the openjp2 DLL as an application loads it
+
+`bench/api_bench.py` measures the shipped openjp2 module (`neoj2k-viewer.dll` of a release, or the `neoj2k_openjp2` target) against a real OpenJPEG 2.5.4 `openjp2.dll`,
+both loaded by path and driven through the same OpenJPEG C API (`opj_*`), decode and encode, with the same calls and the same thread counts (`opj_codec_set_threads` on both when
+the count is above 1: OpenJPEG has its own thread pool, so one and eight threads are like for like). It is what an application that loads `openjp2.dll` sees: neither library is
+linked into a program of the bench, each is opened with `LoadLibraryExW` or `dlopen` and called through function pointers resolved from it.
+
+- Encode: `nj2k_encode_bench --backend lib:<path>[=<name>]` runs the viewer's upload sequence (`opj_set_default_encoder_parameters`, RLCP, 64 x 64 code-blocks, 5/3 lossless or 9/7 lossy with
+  layers by surface, `opj_image_create`, `opj_create_compress`, `opj_setup_encoder`, `opj_start_compress`, `opj_encode`, `opj_end_compress` into a memory stream) and resolves only those functions,
+  `opj_codec_set_threads` and `opj_version`. The CSV line (checksum of the codestream, peak memory) is that of the other backends, so identical output shows as an equal checksum. `--threads` is refused for
+  the linked `oracle` backend only.
+- Decode: `nj2k_large dec lib:<path>[=<name>] <file> [--threads N] [--repeat R]` decodes a codestream from memory through the library's `opj_*` calls (plain mode) and prints the line of the other
+  decoders, `ms <t> peak_mb <p> hash <h> ok`; with `--repeat R` the time is the median of R decodes in the process, and the hash (over the geometry and every sample, from one more, untimed decode)
+  is equal for two libraries when their samples are identical. `bench/nj2k_bench` times two `lib:` decoders side by side too, in one process and without a thread option; this one is a process
+  for each measurement, so a decode's peak memory is its own.
+- `bench/api_bench.py` runs the matrix. One fresh process for every measurement; each cell (operation, size, mode, thread count) is repeated `--rounds` times, the two libraries in turn, the order
+  alternating from round to round. Before every run it samples the load of other processes over 2 s: at most 10 %, else it waits 30 s and samples again, at most 20 times (runs that went ahead on
+  a busier machine are counted under the table). One table: median times, the change of neo-j2k against OpenJPEG in percent (minus is faster), Faster Yes or No, Identical Yes or No (every run of both
+  libraries gave one codestream, or one set of samples), and the highest peak memory with its change. The inputs of the decode rows are generated (three components, 9/7, one tile, six resolutions,
+  by OpenJPEG's encoder through `nj2k_large gen`), never a private corpus.
+
+The OpenJPEG DLL is built by `-DNJ2K_BENCH_OPENJP2_DLL=ON` (target `nj2k_oracle_openjp2`, bench only, off by default): the oracle's sources unchanged, with the oracle's flags and, with MSVC, the static runtime
+(`/MT`) as the module has, as `openjp2.dll` in `build/<preset>/oracle/openjp2-shared/<config>/` (`libopenjp2.so` there on Linux), away from the module's file of the same name.
+
+The whole matrix against a release's DLL (Windows; the release is extracted to a folder of its own, never run from the zip):
+
+```
+cmake --preset windows-msvc -DNJ2K_BENCH_OPENJP2_DLL=ON
+cmake --build --preset windows-msvc --config RelWithDebInfo --target nj2k_encode_bench nj2k_large nj2k_oracle_openjp2
+mkdir scratch\release && tar -xf neoj2k-viewer-0.1.3-win-x64.zip -C scratch\release
+python bench/api_bench.py --openjpeg build/windows-msvc/oracle/openjp2-shared/RelWithDebInfo/openjp2.dll ^
+    --neoj2k scratch/release/neoj2k-viewer.dll ^
+    --encode-exe build/windows-msvc/bench/RelWithDebInfo/nj2k_encode_bench.exe ^
+    --large-exe build/windows-msvc/bench/RelWithDebInfo/nj2k_large.exe ^
+    --sizes 4096,1024,64 --threads 1,8 --modes lossy,lossless --rounds 5 --csv api_bench.csv
+```
+
+The generated decode inputs are 4,096², 1,024² and 64² three-component 9/7 images of one tile (`g4096_97` is the image of `run_large.py`'s gate entry). By hand, one decode of each library at eight threads:
+
+```
+nj2k_large gen g4096_97.j2k 4096 4096 0 1
+nj2k_large gen g64_97.j2k 64 64 0 1
+nj2k_large dec "lib:<openjpeg>/openjp2.dll=openjpeg" g4096_97.j2k --threads 8
+nj2k_large dec "lib:<release>/neoj2k-viewer.dll=neoj2k" g4096_97.j2k --threads 8
+nj2k_large dec "lib:<release>/neoj2k-viewer.dll=neoj2k" g64_97.j2k --threads 1 --repeat 50
+nj2k_encode_bench --backend "lib:<release>/neoj2k-viewer.dll=neoj2k" --size 1024 --mode lossy --threads 8
+```
+
+The ctest `api_bench_harness` (`api_bench.py --check`) keeps the harness honest in CI: the encode through the module (and the shared OpenJPEG, when it is built) at 64 pixels, one and two threads, lossy and
+lossless, must give the linked oracle's checksum, and the two libraries' decodes of a 64-pixel image must give one hash.

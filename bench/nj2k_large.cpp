@@ -8,13 +8,18 @@
 //   nj2k_large gen <out.j2k> <w> <h> <tile|0> <lossy 0|1>
 //       a three-component 8-bit image with texture-like content, by the oracle's encoder (one rate
 //       layer, six resolutions, the colour transform; 9/7 at rate 20 when lossy, else 5/3)
-//   nj2k_large dec <oracle|oracle-mem|neo|neo-mem> <file> [--threads N] [--pin CORE]
+//   nj2k_large dec <oracle|oracle-mem|neo|neo-mem|lib:PATH[=NAME]> <file> [--threads N] [--pin CORE] [--repeat R]
 //       one decode: oracle and neo through a file stream, oracle-mem through a memory stream, neo-mem
 //       through nj2k_decode_memory into int32 planes (the file read before the timing, as a host holds
 //       it). N threads: OpenJPEG's opj_codec_set_threads(N) (its pool starts inside the timed call, as
 //       a host that uses it pays), neo-j2k a pool of N - 1 workers and the caller lent as its executor
 //       (started before). Prints "ms <t> peak_mb <p> hash <h> ok": the peak is the process's peak
 //       commit (Windows) or peak resident set (Linux), the hash an FNV-1a over every plane.
+//       lib:PATH is a library with OpenJPEG's ABI loaded by path (the shipped openjp2.dll, a shared
+//       OpenJPEG build): the same memory decode through its opj_* calls only (tests/common's backend, plain
+//       mode), N threads by its opj_codec_set_threads when N > 1, ms the median of R decodes (R is 1 by
+//       default), the hash over the geometry and every sample from one more, untimed decode. Two libraries
+//       decoding one file give one hash when their samples are identical.
 //   nj2k_large sat <file> <hosts> <decodes> <threads>
 //       the saturated host: <hosts> threads each decode the file <decodes> times through
 //       nj2k_decode_memory, each with a codec of its own; with <threads> 0 every decode is on its
@@ -56,6 +61,8 @@
 #include <vector>
 
 #include "../src/parallel.h"  // set_parallel_thresholds (the static library's, for split)
+#include "common.h"
+#include "decoder.h"
 #include "thread_pool.h"
 
 namespace {
@@ -253,8 +260,46 @@ NeoMemory neo_memory(const std::vector<unsigned char>& bytes, const nj2k_executo
     return r;
 }
 
-int dec(const std::string& which, const char* file, int threads)
+// A library with OpenJPEG's ABI, loaded by path and driven through its opj_* calls from memory
+int dec_library(const std::string& spec, const char* file, int threads, int repeat)
 {
+    const auto bytes = read_all(file);
+    std::string error;
+    const std::unique_ptr<nj2k::test::Backend> backend = nj2k::test::make_backend(spec, &error);
+    if (!backend) {
+        std::printf("%s\n", error.c_str());
+        return 2;
+    }
+    nj2k::test::Request rq;
+    rq.data = bytes.data();
+    rq.size = bytes.size();
+    rq.mode = nj2k::test::Mode::Plain;
+    rq.inspect = false;
+    rq.threads = threads > 1 ? threads : 0;
+    std::vector<double> ms;
+    bool ok = true;
+    for (int i = 0; i < repeat; ++i) {
+        const auto t0 = std::chrono::steady_clock::now();
+        const nj2k::test::Outcome o = backend->decode(rq);
+        const auto t1 = std::chrono::steady_clock::now();
+        ok = ok && o.ok;
+        ms.push_back(std::chrono::duration<double, std::milli>(t1 - t0).count());
+    }
+    const double peak = peak_mb();  // before the hashing decode
+    rq.inspect = true;
+    const nj2k::test::Outcome h = backend->decode(rq);
+    ok = ok && h.ok;
+    std::sort(ms.begin(), ms.end());
+    std::printf("ms %.3f peak_mb %.0f hash %016llx %s\n", ms[ms.size() / 2], peak,
+                static_cast<unsigned long long>(h.hash), ok ? "ok" : "FAILED");
+    return ok ? 0 : 1;
+}
+
+int dec(const std::string& which, const char* file, int threads, int repeat)
+{
+    if (which.rfind("lib:", 0) == 0) {
+        return dec_library(which, file, threads, repeat);
+    }
     if (which == "oracle") {
         const auto t0 = std::chrono::steady_clock::now();
         opj_stream_t* s = opj_stream_create_default_file_stream(file, OPJ_TRUE);
@@ -470,12 +515,14 @@ int clear()
 int main(int argc, char** argv)
 {
     clear_opj_threads();
-    int threads = 1, core = -1;
+    int threads = 1, core = -1, repeat = 1;
     std::vector<std::string> args;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         if (a == "--threads" && i + 1 < argc) {
             threads = std::max(1, std::atoi(argv[++i]));
+        } else if (a == "--repeat" && i + 1 < argc) {
+            repeat = std::max(1, std::atoi(argv[++i]));
         } else if (a == "--pin" && i + 1 < argc) {
             core = std::atoi(argv[++i]);
         } else {
@@ -490,7 +537,7 @@ int main(int argc, char** argv)
         if (threads == 1) {
             pin(core);
         }
-        return dec(args[1], args[2].c_str(), threads);
+        return dec(args[1], args[2].c_str(), threads, repeat);
     }
     if (args.size() == 5 && args[0] == "sat") {
         return sat(args[1].c_str(), std::atoi(args[2].c_str()), std::atoi(args[3].c_str()), std::atoi(args[4].c_str()));
@@ -503,7 +550,7 @@ int main(int argc, char** argv)
     }
     std::fprintf(stderr,
                  "usage: nj2k_large gen <out> <w> <h> <tile|0> <lossy 0|1>\n"
-                 "       nj2k_large dec <oracle|oracle-mem|neo|neo-mem> <file> [--threads N] [--pin CORE]\n"
+                 "       nj2k_large dec <oracle|oracle-mem|neo|neo-mem|lib:PATH[=NAME]> <file> [--threads N] [--pin CORE] [--repeat R]\n"
                  "       nj2k_large sat <file> <hosts> <decodes> <threads>\n"
                  "       nj2k_large split <file> <N> <rounds>\n"
                  "       nj2k_large clear\n");

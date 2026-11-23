@@ -178,6 +178,22 @@ struct UploadSpec {
 bool oracle_upload(const UploadSpec& spec, std::vector<std::uint8_t>& out);
 bool neoj2k_upload(const UploadSpec& spec, std::vector<std::uint8_t>& out);
 
+// An OpenJPEG-ABI library (the shipped openjp2.dll, the openjp2 module, a shared OpenJPEG) loaded by
+// path for the upload encode alone: only the opj_* functions the sequence uses are resolved, plus
+// opj_codec_set_threads (when threads > 1) and opj_version. upload() runs UploadSpec's sequence;
+// threads > 1 asks the encoder for that many (opj_codec_set_threads after the codec is created) and
+// replaces spec.configure_encoder, which is for the linked encoders. false when the library refuses.
+class UploadLibrary {
+public:
+    virtual ~UploadLibrary() = default;
+    virtual const std::string& name() const noexcept = 0;
+    virtual const char* version() const noexcept = 0;  // opj_version()
+    virtual bool upload(const UploadSpec& spec, int threads, std::vector<std::uint8_t>& out) = 0;
+};
+std::unique_ptr<UploadLibrary> make_upload_library(const std::string& path, const std::string& name, std::string* error);
+// "<path>[=<name>]" (what follows "lib:"): the path and the name the reports use (the file's base name by default).
+void split_library_spec(const std::string& spec, std::string& path, std::string& name);
+
 // Viewer behaviour shared by every backend (indra/llimage, llimagej2coj, release line).
 namespace viewer {
 constexpr std::uint64_t kMaxComponents = 8;      // MAX_IMAGE_COMPONENTS (llimage.h)

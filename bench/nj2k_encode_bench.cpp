@@ -6,8 +6,15 @@
 // process, so that the peak is its own (run it once for each encoder and size: bench/encode_bench.py
 // does, and compares the two). Stage 6a's report: correctness first, speed is stage 6b's.
 //
-//   nj2k_encode_bench --backend oracle|neoj2k --size N [--height H] [--comps C] [--mode lossy|lossless]
+//   nj2k_encode_bench --backend oracle|neoj2k|lib:<path>[=<name>] --size N [--height H] [--comps C] [--mode lossy|lossless]
 //                     [--threads N] [--budget-ms 6000] [--min-iters 3] [--max-iters 200]
+//
+// lib:<path> runs the same sequence through an OpenJPEG-ABI shared library loaded by path (the shipped
+// openjp2.dll, the openjp2 module, a shared OpenJPEG build), calling only opj_* functions through
+// pointers resolved from it, plus opj_codec_set_threads when --threads > 1 (OpenJPEG's own thread pool,
+// as an application that loads the library asks for it); its opj_version goes to stderr. --threads is
+// refused for the linked oracle only. The checksum is an FNV-1a of the codestream: equal across
+// backends when their output is byte-identical.
 //
 // One CSV line: backend,width,height,comps,mode,bytes,checksum,iters,median_ms,min_ms,peak_extra_mb.
 // peak_extra_mb is the process's peak commit (Windows; peak resident set elsewhere) above what it held
@@ -76,7 +83,7 @@ Memory memory_now()
 {
     std::fprintf(stderr, "nj2k_encode_bench: %s\n", why);
     std::fprintf(stderr,
-                 "usage: nj2k_encode_bench --backend oracle|neoj2k --size N [--height H] [--comps C]\n"
+                 "usage: nj2k_encode_bench --backend oracle|neoj2k|lib:<path>[=<name>] --size N [--height H] [--comps C]\n"
                  "       [--mode lossy|lossless] [--threads N] [--budget-ms 6000] [--min-iters 3] [--max-iters 200]\n");
     std::exit(2);
 }
@@ -131,9 +138,23 @@ int main(int argc, char** argv)
             usage("unknown option");
         }
     }
-    if ((backend != "oracle" && backend != "neoj2k") || width < 4 || comps < 1 || comps > 8 || threads < 1 ||
-        threads > 64 || (backend == "oracle" && threads != 1)) {
+    const bool library = backend.rfind("lib:", 0) == 0;
+    if ((backend != "oracle" && backend != "neoj2k" && !library) || width < 4 || comps < 1 || comps > 8 ||
+        threads < 1 || threads > 64 || (backend == "oracle" && threads != 1)) {
         usage("--backend and --size are needed");
+    }
+    std::unique_ptr<UploadLibrary> lib;
+    std::string label = backend;
+    if (library) {
+        std::string path, error;
+        split_library_spec(backend.substr(4), path, label);
+        lib = make_upload_library(path, label, &error);
+        if (!lib) {
+            std::fprintf(stderr, "nj2k_encode_bench: %s\n", error.c_str());
+            return 1;
+        }
+        std::fprintf(stderr, "nj2k_encode_bench: %s is %s, opj_version %s\n", label.c_str(), path.c_str(),
+                     lib->version());
     }
     if (height < 4) {
         height = width;
@@ -162,13 +183,16 @@ int main(int argc, char** argv)
     us.reversible = reversible;
     std::unique_ptr<ThreadPool> pool;
     nj2k_executor_t executor = {};
-    if (threads > 1) {
-        pool = std::make_unique<ThreadPool>(static_cast<unsigned>(threads - 1));
+    if (threads > 1 && !lib) {
+        pool =std::make_unique<ThreadPool>(static_cast<unsigned>(threads - 1));
         executor = pool->executor(static_cast<std::uint32_t>(threads));
         us.configure_encoder = lend_encoder;
         us.configure_user = &executor;
     }
     auto encode = [&](std::vector<std::uint8_t>& out) {
+        if (lib) {
+            return lib->upload(us, threads, out);
+        }
         return backend == "oracle" ? oracle_upload(us, out) : neoj2k_upload(us, out);
     };
 
@@ -196,7 +220,7 @@ int main(int argc, char** argv)
     std::sort(times.begin(), times.end());
     const double median = times[times.size() / 2];
     const Memory after = memory_now();
-    std::printf("%s,%d,%d,%d,%s,%zu,%s,%zu,%.3f,%.3f,%.1f\n", backend.c_str(), width, height, comps,
+    std::printf("%s,%d,%d,%d,%s,%zu,%s,%zu,%.3f,%.3f,%.1f\n", label.c_str(), width, height, comps,
                 reversible ? "lossless" : "lossy", bytes, hex64(hash.value()).c_str(), times.size(), median,
                 times.front(), after.peak_mb - before.current_mb);
     return 0;

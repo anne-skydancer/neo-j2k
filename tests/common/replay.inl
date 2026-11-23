@@ -33,6 +33,16 @@
     X(opj_start_compress) X(opj_encode) X(opj_end_compress) X(opj_image_create)                    \
     X(opj_codec_set_threads)
 
+// What the upload encode (replay_upload_ex) calls, and nothing else: a library loaded only to encode
+// resolves these (opj_codec_set_threads when it is asked for threads, opj_version for a report).
+#define REPLAY_UPLOAD_FUNCS(X)                                                                     \
+    X(opj_set_default_encoder_parameters) X(opj_image_create) X(opj_create_compress)               \
+    X(opj_destroy_codec) X(opj_image_destroy) X(opj_set_error_handler) X(opj_set_warning_handler)  \
+    X(opj_set_info_handler) X(opj_setup_encoder) X(opj_stream_create) X(opj_stream_destroy)        \
+    X(opj_stream_set_user_data) X(opj_stream_set_user_data_length) X(opj_stream_set_write_function) \
+    X(opj_stream_set_skip_function) X(opj_stream_set_seek_function) X(opj_start_compress)          \
+    X(opj_encode) X(opj_end_compress)
+
 // The decoder limits API of the fork's 1a hotfix, which OpenJPEG 2.5.4 as released lacks: a library
 // loaded at run time may not have it, and then takes no request with limits.
 #define REPLAY_LIMIT_FUNCS(X) X(opj_decoder_limits_init) X(opj_decoder_set_limits)

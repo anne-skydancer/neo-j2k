@@ -76,3 +76,23 @@ if(NJ2K_BUILD_BENCH AND NOT NJ2K_SANITIZE)
     target_link_options(nj2k_oracle_counting PRIVATE LINKER:-Bsymbolic)
   endif()
 endif()
+
+# Bench only, off by default (NJ2K_BENCH_OPENJP2_DLL): the oracle as OpenJPEG's own shared library, openjp2.dll
+# (libopenjp2.so), with the flags above and, with MSVC, the static runtime as the module has, so that an application's
+# view of the module (modules/openjp2) can be measured against OpenJPEG 2.5.4 through the same opj_* API
+# (bench/api_bench.py). Its sources are the oracle's, unchanged; it sits in its own folder, away from the module's file.
+if(NJ2K_BENCH_OPENJP2_DLL AND NOT NJ2K_SANITIZE)
+  add_library(nj2k_oracle_openjp2 SHARED ${NJ2K_ORACLE_SOURCES} openjp2/opj_malloc.c)
+  target_compile_definitions(nj2k_oracle_openjp2 PRIVATE OPJ_EXPORTS)
+  nj2k_oracle_flags(nj2k_oracle_openjp2)
+  set_target_properties(nj2k_oracle_openjp2 PROPERTIES
+    OUTPUT_NAME openjp2
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/openjp2-shared"
+    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/openjp2-shared"
+    PDB_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/openjp2-shared"
+    C_VISIBILITY_PRESET hidden
+    MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+  if(NOT WIN32)
+    target_link_options(nj2k_oracle_openjp2 PRIVATE LINKER:-Bsymbolic)
+  endif()
+endif()

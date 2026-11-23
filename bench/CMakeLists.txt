@@ -59,3 +59,25 @@ target_link_libraries(nj2k_enc_t1_ratio PRIVATE neoj2k_static)
 nj2k_fp_strict(nj2k_enc_t1_ratio)
 nj2k_simd(nj2k_enc_t1_ratio)
 nj2k_program_exceptions(nj2k_enc_t1_ratio)
+
+# The openjp2 module as an application sees it (bench/api_bench.py): the libraries it loads by path are built first
+if(TARGET neoj2k_openjp2)
+  add_dependencies(nj2k_encode_bench neoj2k_openjp2)
+  add_dependencies(nj2k_large neoj2k_openjp2)
+endif()
+if(TARGET nj2k_oracle_openjp2)
+  add_dependencies(nj2k_encode_bench nj2k_oracle_openjp2)
+  add_dependencies(nj2k_large nj2k_oracle_openjp2)
+endif()
+# The harness's own test: the encode through each library loaded by path gives the oracle's codestream, 1 and 2 threads
+# (and the two libraries' decodes give one set of samples when both are built)
+find_package(Python3 COMPONENTS Interpreter)
+if(NJ2K_BUILD_TESTS AND Python3_FOUND AND TARGET neoj2k_openjp2)
+  set(_nj2k_api_libs --lib "$<TARGET_FILE:neoj2k_openjp2>")
+  if(TARGET nj2k_oracle_openjp2)
+    list(APPEND _nj2k_api_libs --lib "$<TARGET_FILE:nj2k_oracle_openjp2>")
+  endif()
+  add_test(NAME api_bench_harness
+           COMMAND "${Python3_EXECUTABLE}" -I "${CMAKE_CURRENT_SOURCE_DIR}/api_bench.py" --check
+                   --encode-exe "$<TARGET_FILE:nj2k_encode_bench>" --large-exe "$<TARGET_FILE:nj2k_large>" ${_nj2k_api_libs})
+endif()
