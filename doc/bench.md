@@ -1741,3 +1741,31 @@ nj2k_encode_bench --backend "lib:<release>/neoj2k-viewer.dll=neoj2k" --size 1024
 ```
 
 The ctest `api_bench_harness` (`api_bench.py --check`) keeps the harness honest in CI: the encode through the module and the shared OpenJPEG at 64 pixels (1 and 2 threads) and 256 pixels (2 threads, above the module's parallel floor), lossy and lossless, must give the linked oracle's checksum, and the two libraries' decodes of 64 and 640 pixel images (the larger above the decoder's parallel floor) at 1 and 2 threads must give one hash.
+
+### Results: the shipped 0.1.3 DLL against OpenJPEG 2.5.4 (2026-11-23)
+
+The API bench run on the release zip's DLL (`neoj2k-viewer-0.1.3-win-x64.zip`, SHA-256 `ea44d5f6...7976031`; the extracted `neoj2k-viewer.dll`, 496,128 bytes, SHA-256 `957aeb3b...c6504a`, `opj_version()` "nj2k") against the shared build of the pinned OpenJPEG fork commit 66b16561 (`openjp2.dll`, 1,324,032 bytes, `opj_version()` "2.5.4"), from `main` at fedca0f. MSVC 19.51 (toolset 14.51), RelWithDebInfo bench executables, Ryzen 9 9950X3D, `opj_codec_set_threads` on both libraries. Six rounds a cell, a fresh process for every run, the two libraries alternating, one-thread runs pinned to logical CPU 7, eight-thread runs unpinned. The load gate (other-process load at most 10 % over the 2 s before a run) waited 15 times in all (30 s each, loads 11 % to 16 %) and no run went ahead on a busy machine. Change is neo-j2k's time against OpenJPEG's, minus is faster; every row was Faster and Identical (the encoded bytes or decoded samples equal). In the eight-thread rows the thread pool starts inside the timed call for both libraries, unlike the linked-library rows above.
+
+| Operation | Image | Mode | OpenJPEG ms, 1 thread | neo-j2k ms, 1 thread | Change, 1 thread | OpenJPEG ms, 8 threads | neo-j2k ms, 8 threads | Change, 8 threads | Faster |
+|---|---|---|---:|---:|---:|---:|---:|---:|---|
+| Encode | 64² | lossy | 1.27 | 0.79 | -37.9 % | 1.42 | 0.97 | -31.2 % | Yes |
+| Encode | 64² | lossless | 1.03 | 0.60 | -41.7 % | 1.09 | 0.79 | -27.7 % | Yes |
+| Encode | 1,024² | lossy | 236.27 | 156.87 | -33.6 % | 43.94 | 40.67 | -7.4 % | Yes |
+| Encode | 1,024² | lossless | 248.32 | 152.93 | -38.4 % | 38.31 | 31.15 | -18.7 % | Yes |
+| Encode | 4,096² | lossy | 3,880.04 | 2,598.40 | -33.0 % | 832.58 | 729.79 | -12.3 % | Yes |
+| Encode | 4,096² | lossless | 4,004.80 | 2,525.87 | -36.9 % | 631.43 | 508.19 | -19.5 % | Yes |
+| Decode | 64² | lossy 9/7, one tile | 0.08 | 0.06 | -25.4 % | 0.76 | 0.27 | -64.6 % | Yes |
+| Decode | 1,024² | lossy 9/7, one tile | 23.19 | 13.06 | -43.7 % | 10.16 | 3.18 | -68.7 % | Yes |
+| Decode | 4,096² | lossy 9/7, one tile | 405.86 | 236.65 | -41.7 % | 156.43 | 60.73 | -61.2 % | Yes |
+
+Round ranges (the lowest and highest change of the six rounds) were within about 2 points for every encode row and every one-thread decode row except the 1,024² decode (-44.0 % to -38.7 %, one thread; -69.4 % to -63.6 %, eight threads) and the 64² eight-thread decode (-65.5 % to -61.0 %). The 8-thread encode gain at 1,024² lossy is the smallest, -7.4 % (-7.9 % to -7.0 %).
+
+Peak memory (above a baseline taken before the first operation): lower for neo-j2k in 21 of the 22 rows, by 0.9 % to 57.9 %; the exception is the 1,024² one-thread decode, 13.1 MB against 12.8 MB (+2.3 %).
+
+Caveats:
+
+- The shipped DLL is the static-runtime build; the OpenJPEG DLL is built from the pinned fork commit with the oracle's own flags and `/MT`, without the module's hardening options (`/guard:cf`, `/CETCOMPAT`, no-IPO) and with `/Ob2`; it exports 53 of the 55 functions (`opj_get_jp2_index` and `opj_get_jp2_metadata` have no definition in the oracle), neither is called by the bench. It is not the stock release DLL.
+- The inputs are generated (a synthetic three-component texture; the decode images from `nj2k_large gen`), not real viewer uploads or textures. One machine, Windows, MSVC.
+- The eight-thread encode rows against OpenJPEG on its own pool are the like-for-like figures; the earlier eight-thread tables compared neo-j2k on eight threads with OpenJPEG on one.
+- The 4,096² encode rows ran several 30 s waits of the load gate (8 for the lossy rows, 1 for the lossless rows); every run that went ahead was within the gate.
+

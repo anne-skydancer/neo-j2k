@@ -317,6 +317,8 @@ With eight threads (the adaptive setting; below 256² the encode stays on one th
 
 The 64² row's eight-thread change is noise: the encode of a small image does not use the pool. `doc/bench.md` records the runs, the earlier tables and the crossover.
 
+The two eight-thread tables above compare neo-j2k on eight threads with OpenJPEG on one. Against OpenJPEG on its own eight-thread pool, through the shipped DLL, the encode gain is smaller: -7.4 % (1,024² lossy) to -19.5 % (4,096² lossless), and the decode gain stays large, -61.2 % to -68.7 % (`doc/bench.md`, "Results: the shipped 0.1.3 DLL against OpenJPEG 2.5.4").
+
 #### In the Vulkanstorm viewer
 
 1,200 real Second Life textures from a viewer cache, decoded through the viewer's own code with its 8-worker
