@@ -27,7 +27,7 @@ order alternating from round to round. Before every run the load of other proces
 10 % or it waits 30 s and samples again, at most 20 times (a run that still saw more, or whose load could not be
 read, is counted and said under the table). One-thread cells are pinned to one logical CPU (--pin; on Windows CPU 7
 by default, -1 for none), as bench/run_large.py does. One table: times are medians of the rounds, the change is a
-percent (minus is faster than the OpenJPEG DLL, which is the base), Range is the lowest and highest change of the
+percent (minus is faster than the OpenJPEG DLL, which is the base), Round range is the lowest and highest change of the
 rounds, Faster says Yes when every round was faster, No when every round was slower and Within noise otherwise,
 Identical says whether every run of both libraries gave one codestream (encode) or one set of samples (decode), and
 the peak columns are the highest of the rounds. The exit status is 1 when a cell failed or an Identical is No.

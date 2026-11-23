@@ -81,7 +81,11 @@ public:
             const DWORD code = GetLastError();
             FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS, nullptr, code, 0, text,
                            sizeof(text) - 1, nullptr);
-            *error = "cannot load " + path + " (error " + std::to_string(code) + ": " + text + ")";
+            std::string why(text);  // FormatMessage ends the text with "\r\n": trimmed, so the error ends with ")"
+            while (!why.empty() && (why.back() == '\r' || why.back() == '\n' || why.back() == ' ')) {
+                why.pop_back();
+            }
+            *error = "cannot load " + path + " (error " + std::to_string(code) + ": " + why + ")";
         }
 #else
         handle_ = dlopen(full.c_str(), RTLD_NOW | RTLD_LOCAL);
