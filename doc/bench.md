@@ -1544,7 +1544,7 @@ the other two alone gain -1.1 % to -2.6 % there:
    dependence of about ten cycles after every significance. Sigma now goes into the register at once and chi into a per-column
    local; the sign context of the row below reads `flags | chi`, and the column's closing store (and, for the partial stripe at
    the bottom, each row's step) writes `flags | chi`. The zero-coding and eligibility masks never cover the sign bits and no
-   other sample reads a column's own chi bits, so the flags every decision sees are the same.
+   other column reads them before the column's closing store (the row below reads the row above's chi through `flags | chi`), so the flags every decision sees are the same.
 3. **ZC-table pointer held in a local.** MSVC has no type-based alias analysis, so it reloaded `mqc->lut_ctxno_zc_orient` after
    every coefficient or flag store; the significance and cleanup passes take the pointer once.
 
@@ -1552,9 +1552,7 @@ Correctness first: the output is coefficient for coefficient the frozen decoder'
 code-blocks, overlong segments, raw segments, the state table, single decisions, the AGG runs) and the new test 6 (below) pass,
 `t1_unit` also on the 37,424 code-blocks of the full dump set (`NJ2K_T1_VECTORS`), `t1_exhaustive` (`--exhaustive-full`, 887
 million single decisions) unchanged and passing, and the whole ctest (122 tests, 2 skipped for want of the conformance data) on MSVC
-AVX2 and SCALAR; the Tier-1 tests and fuzz replays also under clang-cl and MSVC AddressSanitizer. A first run of the test
-programs after the mutation checks used a program that had not been relinked; every test program was deleted and rebuilt
-before the results here.
+AVX2 and SCALAR; the Tier-1 tests and fuzz replays also under clang-cl and MSVC AddressSanitizer.
 
 **The new test.** `t1_unit` test 6 (`--split` runs it alone) decodes 3,840,000 tiny code-blocks from random bytes (1 to 5
 columns, the stripe's four rows and the remainder rows of a partial stripe, every orientation, with and without vertically
@@ -1568,36 +1566,45 @@ placed one row down.
 **Method.** Ryzen 9 9950X3D, Windows 11, one thread pinned to CPU 7 (CPU 5 as well for 256² lossy), TSC cycles. Two library
 builds of `nj2k_t1_dec` (`bench/nj2k_t1_dec.cpp`, the library's own flags): `main` (`040a5f9`) and D2, each timing
 `t1_decode_cblk` against the same frozen reference in one process, 21 rounds, the order swapped every round; the figure is
-D2's ratio over main's ratio (the ratio of the two ratios), minus 1. A third build, an identical copy of main, runs in the same
-sweep as the control. Each timed unit repeats the dump so that it takes at least 30 Mcycles (10 times for 256² lossy, 3 for 256²
+the percent change of D2's time against the frozen reference's, relative to main's (minus is faster). A third build, an identical copy of main, runs in the same
+sweep as the control. Each timed unit repeats the dump (the bench's `--inner N`, with the six dumps of `tests/vectors/t1_bench`, both on the branch `bench-decoder-workflow`) so that it takes at least 30 Mcycles (10 times for 256² lossy, 3 for 256²
 lossless and 512², once for 1,024²). Five sweeps of the three processes for every configuration (the order reversed on odd
 sweeps); 256² lossy: two link orders (the frozen object before or after the bench's own) times two cores, five sweeps each
 (eight in a second run), the figure the median of all of them. Every block is checked against the frozen decoder before
 anything is timed. The gate: coefficient-identical, at least 3.0 % faster than main on every MSVC configuration, AVX2 and
 SCALAR, the control within +-1 %, and the code not larger.
 
-Change against main (minus is faster), D2 as a whole, with the control (main against its identical copy; the largest of the
-six cells in the last column but one):
+Change against main (minus is faster), D2 as a whole, with the control (main against its identical copy; the Control column is the largest of the six
+cells). MSVC AVX2 at 256² lossy gives two figures, from two separate runs:
 
 | Build | 256² lossy | 256² lossless | 512² lossy | 512² lossless | 1,024² lossy | 1,024² lossless | Control | Passes gate |
 |---|---|---|---|---|---|---|---|---|
-| MSVC AVX2 | -3.2 % / -3.6 % | -6.1 % | -5.6 % | -5.2 % | -5.6 % | -5.3 % | 0.3 % | Yes |
-| MSVC SCALAR | -4.0 % | -6.6 % | -5.6 % | -5.6 % | -5.1 % | -5.5 % | 0.1 % | Yes |
+| MSVC AVX2 | -3.2 % / -3.2 % | -6.1 % | -5.6 % | -5.2 % | -5.6 % | -5.3 % | 0.3 % | Yes |
+| MSVC SCALAR | -3.7 % | -6.6 % | -5.6 % | -5.6 % | -5.1 % | -5.5 % | 0.1 % | Yes |
 | clang-cl AVX2 (information) | -3.7 % | -6.5 % | -5.6 % | -6.0 % | -5.6 % | -6.0 % | 0.1 % | n/a |
 | MinGW GCC 13.2, `-O3`, AVX2 flags (information) | -2.3 % | -5.3 % | -4.0 % | -4.7 % | -3.7 % | -4.4 % | 0.3 % | n/a |
 
-MSVC AVX2 at 256² lossy is the cell on the gate: two runs of it, 20 pairs (-3.2 %, interquartile -4.2 % to -2.6 %) and 32
-pairs (-3.6 %, interquartile -3.9 % to -3.3 %); by link order and core the medians were -4.2 %, -2.6 %, -4.2 % and -2.4 %
-(first run, the second link order being the weaker) and -3.8 %, -3.3 %, -3.9 % and -3.3 % (second). So the figure is above 3.0 %,
-but one link order on a run can sit below it; the layout swing is about 0.6 points. The Windows machine was not otherwise idle.
+MSVC AVX2 at 256² lossy is the cell on the gate, and its margin over 3.0 % is about 0.2 points. The rule: the median over all
+the link orders and cores of a run. The table's two figures are two separate runs of 32 pairs each (a first sweep of the same
+cell, 20 and 32 pairs, before the last renames and comment changes, gave -3.2 % and -3.6 %): -3.2 % (interquartile -3.8 % to
+-2.7 %) and -3.2 % (-3.9 % to -2.7 %). By link order and core the medians were -3.8 %, -2.6 %, -3.9 % and -2.7 % (first
+run) and -3.8 %, -2.7 %, -4.0 % and -2.7 % (second): the second link order sits at -2.6 % to -2.7 % in both, below 3.0 %, so
+the cell passes on the median of all four combinations and not on every one of them. The layout swing is about 0.6 points. MSVC
+SCALAR at 256² lossy was re-measured too (-3.7 %, 20 pairs, every combination -3.4 % or better). The other cells are from
+the sweep before the last renames and comments (the code generated is the same but for `ci = sh / 3`; their margins are
+2 points or more). The Windows machine was not otherwise idle.
 
 Costs:
 
-- Code size, `.text` of `t1.obj`: MSVC AVX2 60,116 to 59,509 bytes (-1.0 %), MSVC SCALAR 60,131 to 59,384 bytes (-1.2 %),
-  clang-cl AVX2 66,689 to 64,021 bytes (-4.0 %). Leaner, not larger.
-- Scratch: none (a register for chi and one for the table pointer a column).
+- Code size, `.text` of `t1.obj`: MSVC AVX2 60,116 to 59,526 bytes (-1.0 %), MSVC SCALAR 60,131 to 59,409 bytes (-1.2 %),
+  clang-cl AVX2 66,689 to 64,021 bytes (-4.0 %). Measured by the auditor on `t1.o` `.text` with the AVX2 flags, main to D2:
+  g++ `-O2` 64,336 to 64,656 bytes (+0.5 %, larger), g++ `-O3` -1.2 %, clang++ `-O2` -2.5 %, clang++ `-O3` -3.8 %. Leaner with MSVC and
+  clang; GCC at `-O2` grows by 0.5 %.
+- Scratch: none (a register for chi a column and one for the table pointer per pass).
 - Decisions, their order, the flags written and the bytes read are the same; the encoder, `t1_mq.h` and the raw path are untouched.
-- Linux (GCC 14, GCC 15, Clang) is not measured here: `bench-decoder-compare.yml` (`doc/testing.md`) runs it; only same-job
-  ratios count.
+- Linux (GCC 14, GCC 15, Clang) is not measured here. The workflow `.github/workflows/bench-decoder-compare.yml` (`doc/testing.md`)
+  runs it on the six dumps in `tests/vectors/t1_bench`; both exist only on the branch `bench-decoder-workflow`, which lands first
+  (a workflow can be dispatched only once it is on main): `gh workflow run bench-decoder-compare.yml --ref main -f head_ref=<ref>`.
+  Only same-job ratios count.
 - One machine (Zen 5), one synthetic texture (gradients, edges, noise); real images may have a different share of refinement
   and significance decisions.
