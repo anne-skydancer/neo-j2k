@@ -13,6 +13,7 @@ read in the code and what was inferred. The owner's decisions are in the two dec
 | `mqng_study.md` | The MQ-NG decoder: state words, select decision, runs of the cleanup pass |
 | `ebcotng_study.md` | EBCOT-NG Tier-1: bit-packed state against targeted steps; encoder steps E1 to E3, decoder step D1 |
 | `e3_clang_study.md` | E3 on clang: variants of the refinement MQ loop (closed, no gain) |
+| `encoder-tier1-plan.md` | The survey and staged plan for the encoder Tier-1 (steps E1 to E3), as written before the steps were built |
 | `mq-encoder-redesign-decisions.md` | The decisions taken for the encoder MQ redesign |
 | `ngcodec-program-alternative.md` | The alternative program (the NG briefs) compared with the staged plan, and the decisions |
 
