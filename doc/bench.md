@@ -1665,3 +1665,27 @@ Caveats:
 - The 2,048² runs did only 3 to 4 encodes each and the 1,024² one-thread runs 13, so those medians rest on few samples; the spread is 1.1 points or less.
 - One machine (Zen 5), Windows and MSVC only; no GCC or clang whole-encode figure exists; the texture is synthetic; the viewer's real uploads were not measured.
 - The decode rows of the README's comparison table were not measured again.
+
+## Decode against OpenJPEG 2.5.4 on v0.1.3
+
+The decode rows of the README's comparison table, measured again on the code of the tag v0.1.3 (commit 00f273d, 2026-11-23), which has the MQ-NG decoder (stage 6d) and
+decoder step D2 (stage 6h). Only the two rows that use generated input could be measured: the 64² and 1,024² "whole" rows come from `nj2k_bench` in viewer mode on the
+owner's private corpus of real textures (stages 2 to 5b), which was not on the machine, and are left as they were (before MQ-NG and D2).
+
+Method: `nj2k_large` (`bench/nj2k_large.cpp`) with the commands and order of `bench/run_large.py` (`dec oracle-mem` and `dec neo-mem`, one process per decode, the order alternating every other
+round, OpenJPEG first in each group, `--threads 1` with `--pin 7`, or `--threads 8`); the 4,096² one-tile 9/7 image of `run_large.py`'s gate entry (`nj2k_large gen 4096 4096 0 1`, 2,516,435 bytes);
+RelWithDebInfo, MSVC 14.51, AVX2, OpenJPEG 2.5.4 (pin 66b16561) built by the same project; Ryzen 9 9950X3D. Five rounds. Every round was gated on the load of other processes over the
+2 s before it (at most 10 %; the readings had a median of 4.0 % and a maximum of 7.7 %; no run waited); during the runs the load of other processes had a median of 3.2 % and a maximum of 12.8 %.
+
+| Row | Threads | OpenJPEG ms | neo-j2k ms | Change | Per-round change | Samples identical | Faster |
+|---|---:|---:|---:|---:|---|---|---|
+| Decode 4,096², one-tile 9/7 | 1 | 405.6 [400.4 to 407.1] | 229.4 [229.0 to 231.1] | -43.4 % | -43.7 % to -42.8 % | Yes | Yes |
+| Decode 4,096², one-tile 9/7 | 8 | 154.7 [154.2 to 157.9] | 47.7 [47.2 to 48.0] | -69.2 % | -69.9 % to -69.0 % | Yes | Yes |
+
+All 20 decodes gave the same hash (f2db8e26a669573c) and status ok. Peak memory: OpenJPEG 205 MB (one thread) and 207 MB (eight), neo-j2k 200 MB and 201 MB.
+
+Caveats:
+
+- The OpenJPEG times are higher than the earlier rows' (392 ms one thread, 136 ms eight threads) and neo-j2k's lower (234 and 46 ms at one thread and eight) or close; the earlier runs had a mean load of 26 %, these 3 %, so the two sets are not directly comparable.
+- The 64² and 1,024² whole-image rows: not measured on v0.1.3 (see above).
+- One machine, one synthetic image, Windows and MSVC only.

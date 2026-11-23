@@ -138,12 +138,12 @@ outputs. Times are medians from the detailed tables (in this section and under "
 |---|---:|---:|---:|---:|---|
 | Decode 64² whole | 1 | 373 µs | 316 µs | -15.0 % | Yes |
 | Decode 1,024² whole | 1 | 37.176 ms | 26.158 ms | -30.0 % | Yes |
-| Decode 4,096², one-tile 9/7 | 1 | 392 ms | 234 ms | -40.0 % | Yes |
-| Decode 4,096², one-tile 9/7 | 8 | 136 ms | 46 ms | -66.0 % | Yes |
+| Decode 4,096², one-tile 9/7 | 1 | 405.6 ms | 229.4 ms | -43.4 % | Yes |
+| Decode 4,096², one-tile 9/7 | 8 | 154.7 ms | 47.7 ms | -69.2 % | Yes |
 | Encode 1,024² RGB, lossy | 1 | 242.4 ms | 162.8 ms | -32.8 % | Yes |
 | Encode 1,024² RGB, lossless | 1 | 256.3 ms | 158.8 ms | -38.2 % | Yes |
 
-The decode rows are from the decoder's earlier stages and have not been measured again since the MQ-NG decoder and decoder step D2 (`doc/bench.md`). The
+The two 4,096² decode rows were measured again on 2026-11-23 on the code of v0.1.3, which has the MQ-NG decoder and decoder step D2 (five rounds, medians, the decoded samples identical to OpenJPEG's in every run; `doc/bench.md`, "Decode against OpenJPEG 2.5.4 on v0.1.3"). The 64² and 1,024² decode rows are from before the MQ-NG decoder and D2 and have not been measured again: their inputs, a corpus of real textures, were not available for the new run, so both rows understate the decoder. The
 encode rows were measured on 2026-11-23 on the code after the MQ coder redesign and encoder steps E1 to E3, one thread,
 three repetitions, the encoded bytes identical to OpenJPEG's in every run ("The upload encode, one thread" under "Example
 implementations" has the other sizes, the peak memory and the eight-thread runs; `doc/bench.md`, "Encode against OpenJPEG 2.5.4 after E1 to E3").
