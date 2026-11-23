@@ -364,7 +364,7 @@ static inline void opj_t1_dec_sigpass_step_raw(
         opj_mqc_decode_macro(v, mqc, curctx, a, c, ct); \
         if (v) { \
             OPJ_UINT32 lu = opj_t1_getctxtno_sc_or_spb_index( \
-                                flags | chi, \
+                                flags | chi, /* the chi of the rows above in this column is still in the local */ \
                                 flagsp[-1], flagsp[1], \
                                 ci); \
             OPJ_UINT32 ctxt2 = opj_t1_getctxno_sc(lu); \
@@ -678,14 +678,14 @@ static void opj_t1_dec_refpass_raw(
                 for (i = 0; i < l_w; ++i, ++data, ++flagsp) { \
                         opj_flag_t flags = *flagsp; \
                         /* The samples of the column that the pass refines (significant, not yet visited in this */ \
-                        /* bit-plane): the sigma bits 4, 7, 10 and 13 (0x2490) without those whose pi bit (17 above) */ \
+                        /* bit-plane): the sigma bits 4, 7, 10 and 13 (0x2490) without those whose pi bit (17 bits higher) */ \
                         /* is set. They are taken lowest first, as ci = 0 to 3 would be; sh = 3 * ci. */ \
                         const OPJ_UINT32 refm = flags & ~(flags >> 17) & 0x2490U; \
                         if( refm != 0 ) { \
                             OPJ_UINT32 bits = refm; \
                             do { \
-                                const OPJ_UINT32 sh = nj2k::detail::mq_ctz(bits) - 4U; /* 3 * ci */ \
-                                const OPJ_UINT32 ci = (sh * 11U) >> 5; \
+                                const OPJ_UINT32 sh = nj2k::detail::ctz32(bits) - 4U; /* 3 * ci */ \
+                                const OPJ_UINT32 ci = sh / 3U; \
                                 const OPJ_UINT32 ctxt = opj_t1_getctxno_mag(flags >> sh); \
                                 opj_t1_setcurctx(curctx, ctxt); \
                                 opj_mqc_decode_macro(v, mqc, curctx, a, c, ct); \
@@ -748,7 +748,7 @@ static void opj_t1_dec_refpass_mqc(
             } \
             { \
                 OPJ_UINT32 lu = opj_t1_getctxtno_sc_or_spb_index( \
-                                    flags | chi, flagsp[-1], flagsp[1], \
+                                    flags | chi, flagsp[-1], flagsp[1], /* the chi of the rows above is in the local */ \
                                     ci); \
                 opj_t1_setcurctx(curctx, opj_t1_getctxno_sc(lu)); \
                 opj_mqc_decode_macro(v, mqc, curctx, a, c, ct); \

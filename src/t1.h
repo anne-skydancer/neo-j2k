@@ -77,7 +77,7 @@ inline std::uint32_t mq_shifts(std::uint32_t a) noexcept
 
 // The index of the lowest set bit of a non-zero word. Only the decoder's Tier-1 passes use it (the refinement pass walks the
 // samples of a mask with it); it is not part of the MQ coder, nor of the encoder.
-inline std::uint32_t mq_ctz(std::uint32_t x) noexcept
+inline std::uint32_t ctz32(std::uint32_t x) noexcept
 {
 #if defined(_MSC_VER) && !defined(__clang__)
 #if defined(__AVX2__)
