@@ -1217,7 +1217,7 @@ The output is identical; nothing in the code is left for a Clang-specific form t
   runs them). The E1 numbers for GCC and clang come from Windows (MinGW GCC 13.2, clang-cl), kernel only; the Linux CI
   bench of stage 6c measures the stage-2 MQ coder, not E1. No GCC or clang whole-encode figure exists, and
   `nj2k_enc_t1_unit` was not run locally with them.
-- The comparison with OpenJPEG 2.5.4 (`nj2k_encode_bench`) was not repeated: the README's and stage 6c's encode rows
+- The comparison with OpenJPEG 2.5.4 (`nj2k_encode_bench`) was not repeated here (it was repeated after E3: "Encode against OpenJPEG 2.5.4 after E1 to E3"): the README's and stage 6c's encode rows
   are before E1; with MSVC E1 takes about 3 to 4 % off the one-thread encode time (-4.4 % to -3.3 % of it). No GCC or clang
   whole-encode figure exists.
 - One machine (Zen 5), one synthetic texture; the machine was not quiet. The harness is archived at the tag `archive/studies` (`doc/studies/README.md`).
@@ -1366,7 +1366,7 @@ included, unlike E1, which had nothing to gain with clang. gcc-15 SCALAR on that
   without finishing); every encoder test, `enc_t1_unit` among them, ran. The ASan preset registers 128 tests with the
   openjpeg-data checkout (124 without it) against the MSVC preset's 133 (129 without it), because the five library checks (`exports`, `openjp2_exports`, `openjp2_forwarders`, `global_state`,
   `oracle_known_resources`) are not registered when `NJ2K_SANITIZE` is set (`tests/CMakeLists.txt`).
-- The comparison with OpenJPEG 2.5.4 (`nj2k_encode_bench`) was not repeated: the README's rows are before E1 and E2.
+- The comparison with OpenJPEG 2.5.4 (`nj2k_encode_bench`) was not repeated here (it was repeated after E3: "Encode against OpenJPEG 2.5.4 after E1 to E3"): the README's rows are before E1 and E2.
 - One machine (Zen 5), one synthetic texture; the machine was not quiet. The partial stripe (height not a multiple of
   4) and the run-mode columns are not changed; the share of columns outside run mode on real images is not measured.
 
@@ -1619,3 +1619,46 @@ Costs:
   lossy column (-2.0 % to -3.7 %). The three runs of a cell agree within 2 points.
 - One machine (Zen 5), one synthetic texture (gradients, edges, noise); real images may have a different share of refinement
   and significance decisions.
+
+## Encode against OpenJPEG 2.5.4 after E1 to E3
+
+The comparison of stage 6c repeated on the code after the MQ coder redesign and encoder steps E1, E2 and E3 (`main` at 378a7b7, 2026-11-23),
+for the README's "The upload encode, one thread" and the encode rows of "OpenJPEG 2.5.4 versus neo-j2k C++".
+
+Method: `nj2k_encode_bench` run directly (`--budget-ms 2000 --min-iters 3`, the settings of `bench/encode_bench.py`, which has no thread option and
+no load figure), a fresh process for every run, the synthetic three-component viewer-upload texture with the viewer's settings (RLCP, 64 x 64 code-blocks,
+5/3 lossless or 9/7 lossy with layers), OpenJPEG 2.5.4 (pin 66b16561) built with the same flags as the library, MSVC 14.51 RelWithDebInfo, AVX2, Ryzen 9
+9950X3D. Three repetitions of 18 runs (six cells, OpenJPEG, neo-j2k with one thread, neo-j2k with eight threads), each run's median taken, then the median of the
+three repetitions. The machine was checked before every repetition (8.9 %, 7.5 %, 6.6 %); the load of other processes during the runs had a median of 7.9 %
+and a maximum of 20.2 % (64² lossy, OpenJPEG, repetition 2); 12 of the 54 runs had more than 10 %, mostly the small sizes and the eight-thread runs. All
+54 runs exited 0 and every encoded stream, one thread and eight threads, was identical to OpenJPEG's in bytes and checksum.
+
+One thread (change of neo-j2k against OpenJPEG, minus is faster; Faster: Yes means the change is below 0):
+
+| Size | Mode | OpenJPEG ms | neo-j2k ms | Change | Spread, points | Faster | Peak MB, OpenJPEG / neo-j2k |
+|---|---|---:|---:|---:|---:|---|---|
+| 64² | lossy | 1.3 | 0.7 | -41.5 % | 0.8 | Yes | 0.7 / 0.3 |
+| 256² | lossy | 12.9 | 8.6 | -33.5 % | 0.2 | Yes | 2.8 / 2.4 |
+| 512² | lossy | 59.8 | 39.7 | -33.6 % | 0.6 | Yes | 9.9 / 9.4 |
+| 1,024² | lossy | 242.4 | 162.8 | -32.8 % | 0.6 | Yes | 38.9 / 37.2 |
+| 1,024² | lossless | 256.3 | 158.8 | -38.2 % | 0.3 | Yes | 38.9 / 37.5 |
+| 2,048² | lossy | 978.7 | 664.6 | -32.1 % | 1.1 | Yes | 153.9 / 148.0 |
+
+Eight threads, the adaptive setting (`--threads 8`; the encode stays on one thread below 256²):
+
+| Size | Mode | neo-j2k ms, 8 threads | Change vs OpenJPEG, 1 thread | Change vs neo-j2k, 1 thread | Spread, points | Faster than OpenJPEG |
+|---|---|---:|---:|---:|---:|---|
+| 64² | lossy | 0.7 | -41.7 % | -0.3 % | 0.8 | Yes |
+| 256² | lossy | 3.0 | -77.1 % | -65.7 % | 0.5 | Yes |
+| 512² | lossy | 11.2 | -81.3 % | -71.8 % | 0.2 | Yes |
+| 1,024² | lossy | 42.4 | -82.5 % | -73.9 % | 0.7 | Yes |
+| 1,024² | lossless | 32.5 | -87.4 % | -79.5 % | 0.7 | Yes |
+| 2,048² | lossy | 175.4 | -82.1 % | -73.6 % | 1.5 | Yes |
+
+Caveats:
+
+- The 1,024² lossy figure is -32.8 % against stage 6c's -24.0 % (183.7 against 240.4 ms). Stage 6c was measured before E1, E2 and E3; the OpenJPEG time is
+  within 1 % of the earlier 240.4 ms. The 64² row's eight-thread change is noise (the encode of a small image is serial).
+- The 2,048² runs did only 3 to 4 encodes each and the 1,024² one-thread runs 13, so those medians rest on few samples; the spread is 1.1 points or less.
+- One machine (Zen 5), Windows and MSVC only; no GCC or clang whole-encode figure exists; the texture is synthetic; the viewer's real uploads were not measured.
+- The decode rows of the README's comparison table were not measured again.
