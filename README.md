@@ -226,7 +226,7 @@ clang-cl -24.0 % to -23.0 % and -19.0 % to -14.0 %; `doc/bench.md`, "Stage 6d").
 Stage 6h (D2), a step on the decoder's Tier-1 passes (not on the MQ coder), with the same coefficients: the refinement pass driven
 by the flag-word mask, a newly significant sample's sign kept out of the significance flag until it is read, and the zero-coding
 table pointer held in a local. One-thread Tier-1 time against the MQ-NG decoder: -3.2 % to -6.6 % with MSVC AVX2 and SCALAR on
-the six dumps of the synthetic texture (`tests/vectors/t1_bench`, on the branch that lands first with the Linux comparison workflow), and the code 1 % smaller with MSVC and 4 % with clang-cl (`doc/bench.md`, "Stage 6h (D2)").
+the six dumps of the synthetic texture (`tests/vectors/t1_bench`, on the branch that lands first with the Linux comparison workflow), and the code 1 % smaller with MSVC and 4 % with clang-cl (0.5 % larger with GCC -O2) (`doc/bench.md`, "Stage 6h (D2)").
 
 The encoder (stages 6a-6b, with 6c, 6e and 6f): the settings of "What it covers", byte for byte OpenJPEG's; its
 speed is in the OpenJPEG versus neo-j2k table above and in "The upload encode, one thread" under "Example

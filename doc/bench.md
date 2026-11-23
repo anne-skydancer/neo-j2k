@@ -1572,7 +1572,7 @@ lossless and 512², once for 1,024²). Five sweeps of the three processes for ev
 sweeps); 256² lossy: two link orders (the frozen object before or after the bench's own) times two cores, five sweeps each
 (eight in a second run), the figure the median of all of them. Every block is checked against the frozen decoder before
 anything is timed. The gate: coefficient-identical, at least 3.0 % faster than main on every MSVC configuration, AVX2 and
-SCALAR, the control within +-1 %, and the code not larger.
+SCALAR, the control within +-1 %, and the code not larger with MSVC (GCC -O2 grows by 0.5 %; see Costs).
 
 Change against main (minus is faster), D2 as a whole, with the control (main against its identical copy; the Control column is the largest of the six
 cells). MSVC AVX2 at 256² lossy gives two figures, from two separate runs:
