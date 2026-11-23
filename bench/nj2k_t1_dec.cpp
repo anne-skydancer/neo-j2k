@@ -8,7 +8,13 @@
 // the median of the rounds' new / frozen ratios (new_Mcycles per round and frozen's are printed too). Every block is
 // checked equal before anything is timed.
 //
-//   nj2k_t1_dec [--rounds 11] [--pin 7] FILE.blk ...
+//   nj2k_t1_dec [--rounds 11] [--pin 7] [--inner N|auto] FILE.blk ...
+//
+// --inner N: one timed unit decodes the file's blocks N times over (N = auto: enough for the frozen decoder's unit to
+// take at least 30 Mcycles, found with one calibration run), so a small file is not timed in a few hundred thousand
+// cycles. Besides the line of the figures (with the quartiles of the ratio) each file prints a machine-readable
+//   RESULT set=<file name without its extension> ratio_median=.. ratio_q1=.. ratio_q3=.. old_mcyc=.. new_mcyc=.. inner=..
+// which .github/workflows/bench-decoder-compare.yml reads. The dumps of the decoder bench are in tests/vectors/t1_bench/.
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
@@ -90,12 +96,16 @@ bool load(const char* path, std::vector<Blk>& out)
 int main(int argc, char** argv)
 {
     int rounds = 11, pin = 7;
+    long inner = 1;  // 0: auto
     std::vector<const char*> files;
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--rounds") == 0 && i + 1 < argc) {
             rounds = std::atoi(argv[++i]);
         } else if (std::strcmp(argv[i], "--pin") == 0 && i + 1 < argc) {
             pin = std::atoi(argv[++i]);
+        } else if (std::strcmp(argv[i], "--inner") == 0 && i + 1 < argc) {
+            ++i;
+            inner = std::strcmp(argv[i], "auto") == 0 ? 0 : std::max(1L, std::atol(argv[i]));
         } else {
             files.push_back(argv[i]);
         }
@@ -132,6 +142,15 @@ int main(int argc, char** argv)
                 break;
             }
         }
+        long reps = inner;
+        if (reps == 0) {  // auto: the frozen decoder's unit takes at least 30 Mcycles
+            const std::uint64_t t0 = __rdtsc();
+            for (const Blk& b : blocks) {
+                fz::t1_decode_cblk(ref.t, b.b, quiet);
+            }
+            const double one = double(__rdtsc() - t0);
+            reps = one > 0 ? std::max(1L, static_cast<long>(30e6 / one + 0.999)) : 1;
+        }
         std::vector<double> ratio, told, tnew;
         for (int r = 0; r < rounds + 1; ++r) {  // the first round warms up
             std::uint64_t cyc[2] = {};
@@ -140,12 +159,16 @@ int main(int argc, char** argv)
                 const bool use_new = (k == 0) == new_first;
                 const std::uint64_t t0 = __rdtsc();
                 if (use_new) {
-                    for (const Blk& b : blocks) {
-                        d::t1_decode_cblk(lib, b.b, quiet);
+                    for (long n = 0; n < reps; ++n) {
+                        for (const Blk& b : blocks) {
+                            d::t1_decode_cblk(lib, b.b, quiet);
+                        }
                     }
                 } else {
-                    for (const Blk& b : blocks) {
-                        fz::t1_decode_cblk(ref.t, b.b, quiet);
+                    for (long n = 0; n < reps; ++n) {
+                        for (const Blk& b : blocks) {
+                            fz::t1_decode_cblk(ref.t, b.b, quiet);
+                        }
                     }
                 }
                 cyc[use_new ? 1 : 0] = __rdtsc() - t0;
@@ -159,8 +182,18 @@ int main(int argc, char** argv)
         std::sort(ratio.begin(), ratio.end());
         std::sort(told.begin(), told.end());
         std::sort(tnew.begin(), tnew.end());
-        std::printf("%s: %zu blocks, frozen %.2f Mcycles, new %.2f Mcycles, ratio %.3f (min %.3f max %.3f)\n", path, blocks.size(),
-                    told[told.size() / 2], tnew[tnew.size() / 2], ratio[ratio.size() / 2], ratio.front(), ratio.back());
+        const double q1 = ratio[ratio.size() / 4], q3 = ratio[(ratio.size() * 3) / 4];
+        std::printf("%s: %zu blocks x %ld, frozen %.2f Mcycles, new %.2f Mcycles, ratio %.3f (min %.3f max %.3f, quartiles %.3f %.3f)\n",
+                    path, blocks.size(), reps, told[told.size() / 2], tnew[tnew.size() / 2], ratio[ratio.size() / 2], ratio.front(),
+                    ratio.back(), q1, q3);
+        std::string set = path;  // the file's name without its directory and extension
+        const std::size_t slash = set.find_last_of("/\\");
+        if (slash != std::string::npos) {
+            set.erase(0, slash + 1);
+        }
+        set = set.substr(0, set.find_last_of('.'));
+        std::printf("RESULT set=%s ratio_median=%.4f ratio_q1=%.4f ratio_q3=%.4f old_mcyc=%.3f new_mcyc=%.3f inner=%ld\n", set.c_str(),
+                    ratio[ratio.size() / 2], q1, q3, told[told.size() / 2], tnew[tnew.size() / 2], reps);
     }
     lib.release(alloc);
     return bad ? 1 : 0;
