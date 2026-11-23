@@ -667,20 +667,23 @@ static void opj_t1_dec_refpass_raw(
         for (k = 0; k < (h & ~3u); k += 4, data += 3*l_w, flagsp += 2) { \
                 for (i = 0; i < l_w; ++i, ++data, ++flagsp) { \
                         opj_flag_t flags = *flagsp; \
-                        if( flags != 0 ) { \
-                            opj_t1_dec_refpass_step_mqc_macro( \
-                                flags, data, l_w, 0, \
-                                mqc, curctx, v, a, c, ct, poshalf); \
-                            opj_t1_dec_refpass_step_mqc_macro( \
-                                flags, data, l_w, 1, \
-                                mqc, curctx, v, a, c, ct, poshalf); \
-                            opj_t1_dec_refpass_step_mqc_macro( \
-                                flags, data, l_w, 2, \
-                                mqc, curctx, v, a, c, ct, poshalf); \
-                            opj_t1_dec_refpass_step_mqc_macro( \
-                                flags, data, l_w, 3, \
-                                mqc, curctx, v, a, c, ct, poshalf); \
-                            *flagsp = flags; \
+                        /* The samples of the column that the pass refines (significant, not yet visited in this */ \
+                        /* bit-plane): the sigma bits 4, 7, 10 and 13 (0x2490) without those whose pi bit (17 above) */ \
+                        /* is set. They are taken lowest first, as ci = 0 to 3 would be; sh = 3 * ci. */ \
+                        const OPJ_UINT32 refm = flags & ~(flags >> 17) & 0x2490U; \
+                        if( refm != 0 ) { \
+                            OPJ_UINT32 bits = refm; \
+                            do { \
+                                const OPJ_UINT32 sh = nj2k::detail::mq_ctz(bits) - 4U; /* 3 * ci */ \
+                                const OPJ_UINT32 ci = (sh * 11U) >> 5; \
+                                const OPJ_UINT32 ctxt = opj_t1_getctxno_mag(flags >> sh); \
+                                opj_t1_setcurctx(curctx, ctxt); \
+                                opj_mqc_decode_macro(v, mqc, curctx, a, c, ct); \
+                                OPJ_INT32 *dp = data + ci * l_w; \
+                                *dp += (v ^ (*dp < 0)) ? poshalf : -poshalf; \
+                                bits &= bits - 1U; \
+                            } while (bits != 0); \
+                            *flagsp = flags | (refm << 16); \
                         } \
                 } \
         } \
