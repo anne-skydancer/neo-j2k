@@ -53,10 +53,7 @@ neo-j2k is faster at every thread count on every image, and needs no more memory
 (-36 % and -43 % against -8 % and -14 %); OpenJPEG's own time is about the same here as in the README (3,386 ms against 3,203 ms), so
 the difference is on neo-j2k's side, and nothing here says why.
 
-## The idle host: one decode at a time (the README's former "Busy or idle" table, stage 5b)
-
-The README no longer carries this table (removed on 2026-11-24 as provisional); `doc/bench.md` keeps the Windows runs, and the Linux
-rows below are kept here.
+## The idle host: one decode at a time (README "Busy or idle", stage 5b)
 
 One host thread decoding the same RGB 9/7 one-tile image again and again: no executor, or a pool of 4 or 8 lent (the library's own
 thresholds). Decodes a second; in brackets the change in time per decode (minus is faster). The "no executor" column is the mean of
@@ -68,7 +65,7 @@ the two runs of that side; the last column is the README's (no executor / 4 lent
 | 1,024² RGB | 48.3 | 70.8 (-31.6 %) | 75.3 (-36.1 %) | 43.7 / 51.9 / 74.8 |
 | 2,048² RGB | 12.0 | 19.1 (-37.2 %) | 21.0 (-43.0 %) | 9.7 / 15.5 / 19.0 |
 
-The former README cell "1,024² with 4 threads lent: too noisy to claim" is a clear gain here (70.8 against 48.4 decodes a second, one
+The README's cell "1,024² with 4 threads lent: too noisy to claim" is a clear gain here (70.8 against 48.4 decodes a second, one
 run of three rounds). The no-executor side repeated within 1 % between the pool-of-4 and the pool-of-8 runs (48.4 and 48.2). The 512² gain is smaller than the README's
 (-23 % against -31 % and -37 %).
 
