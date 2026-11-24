@@ -191,7 +191,7 @@ One thread decoding the same RGB 9/7 image again and again. Figures are decodes 
 | 1,024² | 48.3 | 70.8 (-31.6 %, 1.46x) | 75.3 (-36.1 %, 1.56x) |
 | 2,048² | 12.0 | 19.1 (-37.2 %, 1.59x) | 21.0 (-43.0 %, 1.75x) |
 
-**Under load** (the earlier run, with other jobs sharing the machine, so some runs were disturbed):
+**Under load** (same machine, with other jobs saturating the CPU, so some runs were disturbed):
 
 | Image | No threads lent | 4 lent | 8 lent |
 |---|---:|---:|---:|
