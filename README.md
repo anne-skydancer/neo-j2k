@@ -125,7 +125,7 @@ Every decode and encode in these tables gives the oracle's output. The machine i
 threads used), Windows, MSVC 14.51 RelWithDebInfo, AVX2. It was not quiet: other jobs shared it, so the ratios
 are more reliable than the milliseconds. Each section names its load. The full tables, with every run and how
 to reproduce them, are in `doc/bench.md`. The tables of the viewers' request mixes and texture cache are under
-"Example implementations", "Performance".
+"Example implementations", "Performance". Columns and tables headed "Linux" were added on 2026-11-24: the same machine under Linux (Arch in WSL2, GCC 16.2, AVX2, 8 logical CPUs), local runs, three rounds or runs each. `doc/local-linux-bench-2026-11-24.md` has their load, their raw rows and what was not repeated on Linux (the small-image tables and the viewer's request mixes).
 
 ### OpenJPEG 2.5.4 versus neo-j2k C++
 
@@ -134,14 +134,14 @@ JPEG 2000 implementation; neo-j2k C++ is measured against the pinned OpenJPEG 2.
 outputs. Times are medians from the detailed tables (in this section and under "Example implementations",
 "Performance"); lower is faster. The change is neo-j2k C++'s time against OpenJPEG's (minus is faster).
 
-| Operation | Threads | OpenJPEG | neo-j2k C++ | Change vs OpenJPEG | Faster |
-|---|---:|---:|---:|---:|---|
-| Decode 64² whole | 1 | 373 µs | 316 µs | -15.0 % | Yes |
-| Decode 1,024² whole | 1 | 37.176 ms | 26.158 ms | -30.0 % | Yes |
-| Decode 4,096², one-tile 9/7 | 1 | 405.6 ms | 229.4 ms | -43.4 % | Yes |
-| Decode 4,096², one-tile 9/7 | 8 | 154.7 ms | 47.7 ms | -69.2 % | Yes |
-| Encode 1,024² RGB, lossy | 1 | 242.4 ms | 162.8 ms | -32.8 % | Yes |
-| Encode 1,024² RGB, lossless | 1 | 256.3 ms | 158.8 ms | -38.2 % | Yes |
+| Operation | Threads | OpenJPEG | neo-j2k C++ | Change vs OpenJPEG | Faster | Change on Linux |
+|---|---:|---:|---:|---:|---|---:|
+| Decode 64² whole | 1 | 373 µs | 316 µs | -15.0 % | Yes | - |
+| Decode 1,024² whole | 1 | 37.176 ms | 26.158 ms | -30.0 % | Yes | - |
+| Decode 4,096², one-tile 9/7 | 1 | 405.6 ms | 229.4 ms | -43.4 % | Yes | -42.3 % |
+| Decode 4,096², one-tile 9/7 | 8 | 154.7 ms | 47.7 ms | -69.2 % | Yes | -70.7 % |
+| Encode 1,024² RGB, lossy | 1 | 242.4 ms | 162.8 ms | -32.8 % | Yes | -36.5 % |
+| Encode 1,024² RGB, lossless | 1 | 256.3 ms | 158.8 ms | -38.2 % | Yes | -38.3 % |
 
 The two 4,096² decode rows were measured again on 2026-11-23 on the code of v0.1.3, which has the MQ-NG decoder and decoder step D2 (five rounds, medians, the decoded samples identical to OpenJPEG's in every run; `doc/bench.md`, "Decode against OpenJPEG 2.5.4 on v0.1.3"). The 64² and 1,024² decode rows are from before the MQ-NG decoder and D2 and have not been measured again: their inputs, a corpus of real textures, were not available for the new run, so both rows understate the decoder. The
 encode rows were measured on 2026-11-23 on the code after the MQ coder redesign and encoder steps E1 to E3, one thread,
@@ -153,20 +153,26 @@ implementations" has the other sizes, the peak memory and the eight-thread runs;
 Time (change: minus is faster) and peak memory against OpenJPEG `opj_codec_set_threads(N)`, from memory. Three rounds (two for 16,384²),
 medians and the highest peak. Load 26 % mean.
 
-| Image | N | OpenJPEG ms / MB | neo-j2k ms / MB | Change |
-|---|---|---|---|---|
-| 4,096², one tile, 9/7 | 1 | 392 / 205 | 234 / 200 | -40.0 % |
-| | 8 | 136 / 207 | 46 / 201 | -66.0 % |
-| 4,096², 16 tiles, 5/3 | 1 | 3,203 / 248 | 2,948 / 244 | -8.0 % |
-| | 8 | 488 / 249 | 418 / 245 | -14.0 % |
-| 8,192², one tile, 9/7 | 1 | 1,584 / 813 | 946 / 792 | -40.0 % |
-| | 8 | 567 / 817 | 238 / 793 | -58.0 % |
-| 16,384², 256 tiles, 9/7 | 1 | 5,731 / 3,134 | 3,615 / 3,131 | -37.0 % |
-| | 8 | 2,002 / 3,135 | 747 / 3,131 | -63.0 % |
+| Image | N | OpenJPEG ms / MB | neo-j2k ms / MB | Change | Change on Linux |
+|---|---|---|---|---|---|
+| 4,096², one tile, 9/7 | 1 | 392 / 205 | 234 / 200 | -40.0 % | -42.3 % |
+| | 8 | 136 / 207 | 46 / 201 | -66.0 % | -70.7 % |
+| 4,096², 16 tiles, 5/3 | 1 | 3,203 / 248 | 2,948 / 244 | -8.0 % | -36.1 % |
+| | 8 | 488 / 249 | 418 / 245 | -14.0 % | -42.6 % |
+| 8,192², one tile, 9/7 | 1 | 1,584 / 813 | 946 / 792 | -40.0 % | -43.0 % |
+| | 8 | 567 / 817 | 238 / 793 | -58.0 % | -64.3 % |
+| 16,384², 256 tiles, 9/7 | 1 | 5,731 / 3,134 | 3,615 / 3,131 | -37.0 % | -45.1 % |
+| | 8 | 2,002 / 3,135 | 747 / 3,131 | -63.0 % | -69.6 % |
 
 neo-j2k is faster at every thread count and needs no more memory. One exception: the stream API's peak on
 multi-tile images is higher, 238 MB against 209 at 4,096² in 16 tiles and 3,131 against 3,096 at 16,384² in
 256 tiles. The j2k-tile module's low-memory stream closes that. The memory API is not affected.
+
+The Linux column is from the local Linux runs of 2026-11-24 (load 21 % to 24 % mean, three rounds): neo-j2k is faster on every
+row, with equal or lower peak memory (201 against 208 MB at 4,096², 791 against 813 at 8,192², 3,127 against 3,132 at 16,384²).
+At 4 threads, which the Windows table does not have: -72.7 % (4,096², one tile), -43.0 % (4,096², 16 tiles), -71.5 % (8,192²),
+-70.7 % (16,384²). The 16-tile 5/3 image gains much more on Linux than on Windows (-36 % and -43 % against -8 % and -14 %); OpenJPEG's own
+time on that image is about the same on both systems (3,386 ms against 3,203), so the gain is on neo-j2k's side, and its cause is not known.
 
 ### Busy or idle: the host decides (stage 5b)
 
@@ -182,6 +188,15 @@ idle cores. One decode at a time on an otherwise idle host, decodes a second (in
 On a saturated host (8 threads, each decoding 1,024² RGB), lending the pool gains no throughput: the median is
 1.02 (time -2.0 %), within noise. It costs about 3 % more CPU, so a busy host should not lend. A tile is split only when its
 largest component has at least 2^18 samples (512 x 512).
+
+On Linux (the same machine, 2026-11-24, one decoding thread, three rounds, decodes a second; in brackets the change in time per
+decode, minus is faster), the cell that is too noisy to claim on Windows is a clear gain:
+
+| Image | No executor | 4 threads lent | 8 threads lent |
+|---|---|---|---|
+| 512² RGB | 192.6 | 250.8 (-23.1 %) | 249.7 (-23.0 %) |
+| 1,024² RGB | 48.3 | 70.8 (-31.6 %) | 75.3 (-36.1 %) |
+| 2,048² RGB | 12.0 | 19.1 (-37.2 %) | 21.0 (-43.0 %) |
 
 ### Stage history
 
@@ -293,14 +308,18 @@ The Second Life viewer's upload settings (RLCP, 64 x 64 code-blocks, 5/3 lossles
 (Ryzen 9 9950X3D, Windows, MSVC 14.51 RelWithDebInfo, AVX2, OpenJPEG built with the same flags). Three repetitions of a fresh process each, median; the three agree within 1.1 points in every row. Other load on the machine: median 8 %, up to 20 % in
 a few runs, mostly the small sizes. Change is neo-j2k's time against OpenJPEG's (minus is faster).
 
-| Size | Mode | OpenJPEG ms | neo-j2k ms | Change | Faster | Peak MB, OpenJPEG / neo-j2k |
-|---|---|---:|---:|---:|---|---|
-| 64² | lossy | 1.3 | 0.7 | -41.5 % | Yes | 0.7 / 0.3 |
-| 256² | lossy | 12.9 | 8.6 | -33.5 % | Yes | 2.8 / 2.4 |
-| 512² | lossy | 59.8 | 39.7 | -33.6 % | Yes | 9.9 / 9.4 |
-| 1,024² | lossy | 242.4 | 162.8 | -32.8 % | Yes | 38.9 / 37.2 |
-| 1,024² | lossless | 256.3 | 158.8 | -38.2 % | Yes | 38.9 / 37.5 |
-| 2,048² | lossy | 978.7 | 664.6 | -32.1 % | Yes | 153.9 / 148.0 |
+| Size | Mode | OpenJPEG ms | neo-j2k ms | Change | Faster | Peak MB, OpenJPEG / neo-j2k | Change on Linux |
+|---|---|---:|---:|---:|---|---|---:|
+| 64² | lossy | 1.3 | 0.7 | -41.5 % | Yes | 0.7 / 0.3 | -40.0 % |
+| 256² | lossy | 12.9 | 8.6 | -33.5 % | Yes | 2.8 / 2.4 | -37.4 % |
+| 512² | lossy | 59.8 | 39.7 | -33.6 % | Yes | 9.9 / 9.4 | -37.6 % |
+| 1,024² | lossy | 242.4 | 162.8 | -32.8 % | Yes | 38.9 / 37.2 | -36.5 % |
+| 1,024² | lossless | 256.3 | 158.8 | -38.2 % | Yes | 38.9 / 37.5 | -38.3 % |
+| 2,048² | lossy | 978.7 | 664.6 | -32.1 % | Yes | 153.9 / 148.0 | -36.8 % |
+
+The Linux column: the same sizes and modes on Linux (2026-11-24, one thread, a fresh process for each library, three runs, the median of
+the runs' own changes, the same bytes as OpenJPEG's in every run); every size from 64² to 2,048², lossy and lossless, is -35 % to -44 %
+(`doc/local-linux-bench-2026-11-24.md`). Its peak memory is lower up to 1,024² and higher at 2,048² (122 against 113 MB lossy).
 
 The encoded bytes were identical to OpenJPEG's in every cell. The 2,048² runs each did only 3 to 4 encodes, so their medians rest on few samples. A second batch of five repetitions gave the same rows within 1 point (-37.5 % to -31.8 %); the 64² row, an encode of about 1 ms, varies by about 5 points between runs (-41.2 % to -35.8 %), so read it as about -38 %.
 
