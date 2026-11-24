@@ -201,7 +201,7 @@ decode, minus is faster), the cell that is too noisy to claim on Windows is a cl
 ### Stage history
 
 The stage-by-stage speedups below were measured relative to the two applications that use the library, Firestorm
-and Vulkanstorm (see "Example implementations"): the requests, textures and upload settings are theirs. The
+and an app using this library (see "Example implementations"): the requests, textures and upload settings are theirs. The
 plan, the owner's decisions and the stage table are in `doc/stages.md`; the full tables are in `doc/bench.md`.
 
 Stage 0, the skeleton: the build, the draft API (OpenJPEG's API under `nj2k_` names, with a compile-time `opj_*`
@@ -246,7 +246,7 @@ implementations".
 
 ## Example implementations
 
-Viewers are the first applications that use the library: Firestorm and Vulkanstorm, which load OpenJPEG for
+Viewers are the first applications that use the library: Firestorm and an app using this library, which load OpenJPEG for
 Second Life and OpenSim textures. The openjp2 module, the decoder limit profiles and the encoder settings below
 are the ones they use, and the stage history above was measured against them.
 
@@ -277,7 +277,7 @@ encoder API, with codestreams byte for byte OpenJPEG's (`encode_unit`, the encod
 
 ### Performance
 
-The viewers' request mixes and the Vulkanstorm texture-cache run.
+The viewers' request mixes, and an example run scenario: an app using this library.
 
 #### Small images, one thread (stages 2-4)
 
@@ -338,9 +338,9 @@ The 64² row's eight-thread change is noise: the encode of a small image does no
 
 The two eight-thread tables above compare neo-j2k on eight threads with OpenJPEG on one. Against OpenJPEG on its own eight-thread pool, through the shipped DLL, the encode gain is smaller: -7.4 % (1,024² lossy) to -19.5 % (4,096² lossless), and the decode gain stays large, -61.2 % to -68.7 % (`doc/bench.md`, "Results: the shipped 0.1.3 DLL against OpenJPEG 2.5.4").
 
-#### In the Vulkanstorm viewer
+#### Example run scenario: an app using this library
 
-1,200 real Second Life textures from a viewer cache, decoded through the viewer's own code with its 8-worker
+1,200 real Second Life textures from a viewer cache, decoded through the app's own code with its 8-worker
 decode pool. RelWithDebInfo, one run each, about 15 % run-to-run noise. Mean ms per request:
 
 | Class | OpenJPEG | neo-j2k, one thread | neo-j2k, idle pool lent |
