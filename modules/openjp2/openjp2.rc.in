@@ -24,8 +24,8 @@ BEGIN
             VALUE "CompanyName", "neo-j2k"
             VALUE "FileVersion", "@PROJECT_VERSION@"
             VALUE "ProductVersion", "@PROJECT_VERSION@"
-            VALUE "InternalName", "neoj2k-viewer"
-            VALUE "OriginalFilename", "neoj2k-viewer.dll"
+            VALUE "InternalName", "neoj2k"
+            VALUE "OriginalFilename", "neoj2k.dll"
             VALUE "LegalCopyright", "Copyright (c) 2026 Anne Skydancer (neo-j2k). BSD-2-Clause. Contains code ported from OpenJPEG (LICENSE.OpenJPEG)."
         END
     END

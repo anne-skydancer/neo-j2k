@@ -4,8 +4,8 @@
 """Package the openjp2 module's library as a zip that stands alone: the library, its install instructions, its
 checksum and the licences, nothing else.
 
-Nothing in the download is called OpenJPEG or openjp2: the library is shipped as neoj2k-viewer.dll
-(libneoj2k-viewer.so on Linux), and the instructions rename it to openjp2.dll when it goes into the viewer's
+Nothing in the download is called OpenJPEG or openjp2: the library is shipped as neoj2k.dll
+(libneoj2k.so on Linux), and the instructions rename it to openjp2.dll when it goes into the viewer's
 folder, the one place where the viewer's own name for it matters.
 
 usage: package_openjp2.py --library build/.../openjp2.dll [--out dist] [--platform win-x64]
@@ -122,7 +122,7 @@ def main():
     if problems:
         return 1
     platform = a.platform or ("win-x64" if data[:2] == b"MZ" else "linux-x64")
-    member = "neoj2k-viewer.dll" if data[:2] == b"MZ" else "libneoj2k-viewer.so"
+    member = "neoj2k.dll" if data[:2] == b"MZ" else "libneoj2k.so"
     digest = hashlib.sha256(data).hexdigest()
     members = [(member, data), ("INSTALL.md", open(INSTALL, "rb").read()),
                ("SHA256SUMS", ("%s  %s\n" % (digest, member)).encode("ascii"))]

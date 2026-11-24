@@ -13,7 +13,7 @@ usage: api_bench.py --openjpeg PATH --neoj2k PATH --encode-exe nj2k_encode_bench
 --openjpeg is any build of OpenJPEG's openjp2.dll: the "OpenJPEG" column is whatever DLL is passed. cmake
 -DNJ2K_BENCH_OPENJP2_DLL=ON builds one, nj2k_oracle_openjp2: our pinned fork commit of OpenJPEG 2.5.4 (oracle/PIN,
 66b16561), not the stock release DLL, with the oracle's own flags and, with MSVC, the static runtime (/MT); it does not
-have the module's hardening or no-IPO settings, and it is /Ob2. --neoj2k is the module under test: neoj2k-viewer.dll
+have the module's hardening or no-IPO settings, and it is /Ob2. --neoj2k is the module under test: neoj2k.dll
 of a release (built with -DNJ2K_MSVC_STATIC_RUNTIME=ON, so both are /MT then) or the neoj2k_openjp2 target (/MD by
 default); never run from inside a zip. Neither is linked into a program here: bench/nj2k_encode_bench (--backend
 lib:<path>) and bench/nj2k_large (dec lib:<path>) load them by path and call opj_* through resolved pointers, the encode
@@ -253,7 +253,7 @@ def check(a):
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--openjpeg", help="an OpenJPEG openjp2.dll (the base of every change)")
-    p.add_argument("--neoj2k", help="the module under test (neoj2k-viewer.dll, openjp2.dll of the module)")
+    p.add_argument("--neoj2k", help="the module under test (neoj2k.dll, openjp2.dll of the module)")
     p.add_argument("--encode-exe")
     p.add_argument("--large-exe")
     p.add_argument("--sizes", default="4096,1024,64")
