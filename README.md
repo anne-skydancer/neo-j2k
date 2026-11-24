@@ -174,29 +174,30 @@ At 4 threads, which the Windows table does not have: -72.7 % (4,096², one tile)
 -70.7 % (16,384²). The 16-tile 5/3 image gains much more on Linux than on Windows (-36 % and -43 % against -8 % and -14 %); OpenJPEG's own
 time on that image is about the same on both systems (3,386 ms against 3,203), so the gain is on neo-j2k's side, and its cause is not known.
 
-### Busy or idle: the host decides (stage 5b)
+### Lending threads to a decode
 
-The library owns no threads. The host lends an executor before a decode, and should lend it only when it has
-idle cores. One decode at a time on an otherwise idle host, decodes a second (in brackets: the change in time per decode, minus is faster; then the speed-up factor):
+The library starts no threads of its own. An application can lend it a pool of threads (an executor) before a decode. Lend it only
+when the machine has idle cores. An image is split across the lent threads only when its largest component has at least 2^18 samples
+(512 x 512), so smaller images gain nothing.
 
-| Image | No executor | 4 threads lent | 8 threads lent |
-|---|---|---|---|
-| 512² RGB | 174.2 | 254.6 (-31.5 %, 1.46x) | 278.5 (-37.5 %, 1.60x) |
-| 1,024² RGB | 43.7 | 51.9 (too noisy to claim) | 74.8 (-41.5 %, 1.71x) |
-| 2,048² RGB | 9.7 | 15.5 (-37.5 %, 1.60x) | 19.0 (-49.0 %, 1.96x) |
+One thread decoding the same RGB 9/7 image again and again. Figures are decodes a second; in brackets the change in time per decode
+(minus is faster) and the speed-up factor.
 
-On a saturated host (8 threads, each decoding 1,024² RGB), lending the pool gains no throughput: the median is
-1.02 (time -2.0 %), within noise. It costs about 3 % more CPU, so a busy host should not lend. A tile is split only when its
-largest component has at least 2^18 samples (512 x 512).
+**Idle machine** (Linux, WSL2, 2026-11-24, nothing else running; `doc/local-linux-bench-2026-11-24.md`):
 
-On Linux (the same machine, 2026-11-24, one decoding thread, three rounds, decodes a second; in brackets the change in time per
-decode, minus is faster), the cell that is too noisy to claim on Windows is a clear gain:
+| Image | No threads lent | 4 lent | 8 lent |
+|---|---:|---:|---:|
+| 512² | 192.6 | 250.8 (-23.1 %, 1.30x) | 249.7 (-23.0 %, 1.30x) |
+| 1,024² | 48.3 | 70.8 (-31.6 %, 1.46x) | 75.3 (-36.1 %, 1.56x) |
+| 2,048² | 12.0 | 19.1 (-37.2 %, 1.59x) | 21.0 (-43.0 %, 1.75x) |
 
-| Image | No executor | 4 threads lent | 8 threads lent |
-|---|---|---|---|
-| 512² RGB | 192.6 | 250.8 (-23.1 %) | 249.7 (-23.0 %) |
-| 1,024² RGB | 48.3 | 70.8 (-31.6 %) | 75.3 (-36.1 %) |
-| 2,048² RGB | 12.0 | 19.1 (-37.2 %) | 21.0 (-43.0 %) |
+**Under load** (the earlier run, with other jobs sharing the machine, so some runs were disturbed):
+
+| Image | No threads lent | 4 lent | 8 lent |
+|---|---:|---:|---:|
+| 512² | 174.2 | 254.6 (-31.5 %, 1.46x) | 278.5 (-37.5 %, 1.60x) |
+| 1,024² | 43.7 | too noisy to claim | 74.8 (-41.5 %, 1.71x) |
+| 2,048² | 9.7 | 15.5 (-37.5 %, 1.60x) | 19.0 (-49.0 %, 1.96x) |
 
 ### Stage history
 
