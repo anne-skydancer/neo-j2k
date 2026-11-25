@@ -69,7 +69,7 @@ Options, given at configure time (`-D<option>=<value>`):
 | `NJ2K_SIMD` | `AVX2` | `AVX2` (x86-64-v3) or `SCALAR` (x86-64). Both give identical output |
 | `NJ2K_MSVC_STATIC_RUNTIME` | `OFF` | link the static C runtime (`/MT`) instead of `/MD` |
 | `NJ2K_PROFILE_OPENSIM` | `ON` | the OpenSim decoder limit profile (see "Example implementations") |
-| `NJ2K_MODULE_OPENJP2` | `OFF` | the openjp2 module: OpenJPEG's API over neo-j2k, as `openjp2.dll` / `libopenjp2.so.7` (see "Example implementations"; on in the CMake presets) |
+| `NJ2K_MODULE_OPENJP2` | `ON` | the openjp2 module: OpenJPEG's API over neo-j2k, as `openjp2.dll` / `libopenjp2.so.7` (see "Example implementations"); set it OFF for a build without it |
 | `NJ2K_WERROR` | `OFF` | treat warnings in neo-j2k's own code as errors |
 | `NJ2K_INSTALL` | on as the top-level project | generate install rules |
 | `NJ2K_BUILD_TESTS`, `NJ2K_BUILD_BENCH`, `NJ2K_BUILD_TOOLS` | on as the top-level project | tests, oracle and harness; the bench; the tools |
@@ -359,6 +359,6 @@ were identical to OpenJPEG's in every case.
 ## Scope and roadmap
 
 Part 1 is the core today. Other parts of JPEG 2000 arrive bit by bit as build modules, compiled in or out and
-selected with `NJ2K_MODULE_<NAME>` CMake options that default to OFF (`NJ2K_MODULE_OPENJP2` is the existing
-one). HTJ2K (Part 15) is a candidate first module. A default build, with the modules off, carries none of a
-module's code; a function of a module that is not built gives `NJ2K_E_UNSUPPORTED` (`doc/stages.md`).
+selected with `NJ2K_MODULE_<NAME>` CMake options that default to OFF. The one exception is
+`NJ2K_MODULE_OPENJP2`, the existing module, which defaults to ON: the library's purpose is to replace OpenJPEG's.
+HTJ2K (Part 15) is a candidate first spec module. A default build carries none of an off module's code; a function of a module that is not built gives `NJ2K_E_UNSUPPORTED` (`doc/stages.md`).

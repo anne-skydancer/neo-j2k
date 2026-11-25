@@ -64,7 +64,7 @@ contents as proposed):
 
 | Module | What |
 |---|---|
-| openjp2 | OpenJPEG's API as the library a viewer already loads (`openjp2.dll`, `libopenjp2.so.7`), neo-j2k inside (done, `modules/openjp2`, `doc/api.md` "The openjp2 module"; `NJ2K_MODULE_OPENJP2`, on in the presets) |
+| openjp2 | OpenJPEG's API as the library a viewer already loads (`openjp2.dll`, `libopenjp2.so.7`), neo-j2k inside (done, `modules/openjp2`, `doc/api.md` "The openjp2 module"; `NJ2K_MODULE_OPENJP2`, on by default) |
 | j2k-extra | the full encoder |
 | j2k-tile | decoding by tile, decode areas, the low-memory stream for large multi-tile images |
 | j2k-htj | HTJ2K (Part 15) decode and encode |
