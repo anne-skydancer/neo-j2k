@@ -8,7 +8,7 @@
 # (fuzz/make_inputs.py), fuzz/seeds/roundtrip and fuzz/seeds/encode; dictionary: fuzz/j2k.dict.
 cmake -S "$SRC/neo-j2k" -B "$WORK/build" -G Ninja -DCMAKE_BUILD_TYPE=Release \
   -DNJ2K_BUILD_FUZZERS=ON -DNJ2K_BUILD_TESTS=OFF -DNJ2K_BUILD_TOOLS=OFF -DNJ2K_BUILD_BENCH=OFF \
-  -DNJ2K_BUILD_SHARED=OFF -DNJ2K_INSTALL=OFF
+  -DNJ2K_BUILD_SHARED=OFF -DNJ2K_MODULE_OPENJP2=OFF -DNJ2K_INSTALL=OFF
 cmake --build "$WORK/build" --parallel
 for t in header decode roundtrip encode; do
   cp "$WORK/build/fuzz/nj2k_fuzz_$t" "$OUT/"
