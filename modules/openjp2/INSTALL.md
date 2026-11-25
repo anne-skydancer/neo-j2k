@@ -5,7 +5,7 @@
 
 neo-j2k is a JPEG 2000 codec that decodes (and encodes) Second Life textures exactly as your viewer's current
 library does, bit for bit, and faster. This zip holds it in the form your viewer can use without being changed,
-rebuilt or told: `neoj2k-viewer.dll` answers to the file name and the calls the viewer already makes for
+rebuilt or told: `neoj2k.dll` answers to the file name and the calls the viewer already makes for
 textures. You put it in the viewer's folder under the name the viewer looks for, and you can put the old file
 back at any time.
 
@@ -44,7 +44,7 @@ different program with different internals, tests and fixes.) To see it for your
 3. **Find the viewer's folder**: the one that holds the viewer's program and an `openjp2.dll`
    (usually under `C:\Program Files`). Each viewer, and each install of it, has its own.
 4. **Keep the old file.** In that folder, rename `openjp2.dll` to `openjp2.dll.original`. Do not delete it.
-5. **Copy in the new one** and **name it `openjp2.dll`**: copy `neoj2k-viewer.dll` from this zip into that folder,
+5. **Copy in the new one** and **name it `openjp2.dll`**: copy `neoj2k.dll` from this zip into that folder,
    then rename the copy to `openjp2.dll`. The name is only what the viewer looks for; the file is neo-j2k. A folder under
    *Program Files* asks for administrator permission.
 6. **Check the copy** (optional): in PowerShell, in that folder,
@@ -53,7 +53,7 @@ different program with different internals, tests and fixes.) To see it for your
    Get-FileHash .\openjp2.dll -Algorithm SHA256
    ```
 
-   The hash must equal the line for `neoj2k-viewer.dll` in this zip's `SHA256SUMS`.
+   The hash must equal the line for `neoj2k.dll` in this zip's `SHA256SUMS`.
 7. **Start the viewer.** The first start downloads textures again: the viewer keys its texture cache on the
    decoder's name, and neo-j2k's is a new one. Later neo-j2k versions do not refresh it. In Firestorm's *About*
    box, the line *J2C Decoder Version* should now read `OpenJPEG: 2.5.4, Runtime: nj2k`. The first part,

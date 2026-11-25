@@ -360,7 +360,7 @@ core's; the core is the same code as `neoj2k.dll` (the module links the static l
   (`lib:`), the way a viewer loads it; `openjp2_unit` checks the version, the thread lifecycle (the pool's
   threads, named `openjp2-worker`, counted), decodes at 0 to 64 threads, decoders at once and the upload encode (`doc/testing.md`).
 - **The release zip.** `tools/package_openjp2.py --library <openjp2.dll>` writes `neoj2k-viewer-<version>-win-x64.zip`:
-  the library as `neoj2k-viewer.dll`, `INSTALL.md` (`modules/openjp2/INSTALL.md`: the swap, the check, the way back),
+  the library as `neoj2k.dll`, `INSTALL.md` (`modules/openjp2/INSTALL.md`: the swap, the check, the way back),
   `SHA256SUMS` and the licences, with fixed timestamps so the same library gives the same zip. **Nothing in the
   download says OpenJPEG or openjp2** (owner, 2026-11-21: a download named for OpenJPEG is written off by the people
   who would install it): the instructions rename the file to `openjp2.dll` when it goes into the viewer's folder,

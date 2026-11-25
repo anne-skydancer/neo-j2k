@@ -191,7 +191,7 @@ from job to job, so only the ratios inside one job count; do not compare numbers
 
 ## The openjp2 DLL as an application loads it (API bench)
 
-`bench/api_bench.py` times the module (`neoj2k-viewer.dll`) against an OpenJPEG `openjp2.dll`, both loaded by path and driven through the same `opj_*` calls, decode and encode, at one and eight threads, a fresh process for every measurement, gated on the load of other processes. How it is run, what it matches and what it does not: `doc/bench.md`, "The API bench".
+`bench/api_bench.py` times the module (`neoj2k.dll`) against an OpenJPEG `openjp2.dll`, both loaded by path and driven through the same `opj_*` calls, decode and encode, at one and eight threads, a fresh process for every measurement, gated on the load of other processes. How it is run, what it matches and what it does not: `doc/bench.md`, "The API bench".
 
 ## The corpora
 
