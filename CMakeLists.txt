@@ -23,7 +23,7 @@ option(NJ2K_WERROR "Treat warnings in neo-j2k's own code as errors" OFF)
 option(NJ2K_MSVC_STATIC_RUNTIME "Link the static C runtime (/MT) instead of the DLL one (/MD)" OFF)
 option(NJ2K_INSTALL "Generate install rules" ${PROJECT_IS_TOP_LEVEL})
 option(NJ2K_PROFILE_OPENSIM "Build the OpenSim decoder limit profile (NJ2K_DECODER_LIMITS_OPENSIM_TEXTURE)" ON)
-option(NJ2K_MODULE_OPENJP2 "Build the openjp2 module: OpenJPEG's API over neo-j2k, as openjp2.dll / libopenjp2.so.7" OFF)
+option(NJ2K_MODULE_OPENJP2 "Build the openjp2 module: OpenJPEG's API over neo-j2k, as openjp2.dll / libopenjp2.so.7" ON)
 option(NJ2K_BENCH_OPENJP2_DLL "Also build the oracle as a shared openjp2.dll (libopenjp2.so), the bench's OpenJPEG to load by path (bench/api_bench.py)" OFF)
 set(NJ2K_SIMD "AVX2" CACHE STRING "Instruction-set floor of neo-j2k's own code: AVX2 (x86-64-v3) or SCALAR (x86-64)")
 set_property(CACHE NJ2K_SIMD PROPERTY STRINGS AVX2 SCALAR)
@@ -64,7 +64,8 @@ function(nj2k_program_exceptions target)
 endfunction()
 
 add_subdirectory(src)
-# The modules (doc/stages.md): each a configure-time option, off by default; the core never depends on one.
+# The modules (doc/stages.md): each a configure-time option, off by default except openjp2, which is on because
+# the shared library's purpose is to replace OpenJPEG's; the core never depends on one.
 if(NJ2K_MODULE_OPENJP2)
   add_subdirectory(modules/openjp2)
 endif()
