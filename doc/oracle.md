@@ -4,13 +4,14 @@
 # The oracle
 
 neo-j2k's decoded pixels are defined by OpenJPEG 2.5.4 as the viewer ships it (owner decision D2):
-whole files bit-identical at every reduce level, lossy included, and cut files identical to the fork's
-stage 1a hotfix, which keeps every delivered byte (D1). The oracle is exactly that hotfix's source (plan
-audit B4: one definition), built into the tests.
+whole files bit-identical at every reduce level, lossy included. Partial downloads follow upstream
+OpenJPEG by discarding accumulated chunks of code-blocks whose contribution is cut. The oracle
+retains the fork's bounded parsing and packed-header safety fixes, with that reconstruction policy
+restored by `upstream-partial-blocks.patch`.
 
 ## What it is
 
-- `oracle/PIN` names the fork (`anne-skydancer/openjpeg`), the commit and the patches (none today).
+- `oracle/PIN` names the fork (`anne-skydancer/openjpeg`), the commit and the patches (`upstream-partial-blocks.patch`).
 - The pin: `66b16561`, the head of the fork's `vkstorm-2.5.4-hotfix` branch, as the package `3p-openjpeg`
   `v2.5.4-cpu-avx2.6` builds it (its recipe commit `1ad8ff6`); `841b2de4` is the head of `v2.5.4-cpu-avx2.5` (tag `dc27a45`). It is OpenJPEG 2.5.4 as the package `v2.5.4-cpu-avx2.3`
   ships it (`3b1a6a96`) with the 1a decoder fixes:
