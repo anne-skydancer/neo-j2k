@@ -465,6 +465,7 @@ inline nj2k::test::Outcome replay_viewer(const Api& A, const nj2k::test::Request
         nj2k::test::Fnv64 h8;
         h8.bytes(raw.data(), raw.size());
         out.u8_hash = h8.value();
+        out.viewer_raster = {w, h, static_cast<std::uint32_t>(channels), f};
     } else {
         nj2k::test::keep_alive(raw.data(), raw.size());  // the copy is the viewer's work: keep it timed
     }

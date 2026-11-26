@@ -235,7 +235,15 @@ bool same(const Outcome& x, const Outcome& y, Mode m)
     if (!x.ok) {
         return true;  // both refused
     }
-    return x.hash == y.hash && (m != Mode::Viewer || x.u8_hash == y.u8_hash);
+    if (m == Mode::Viewer) {
+        if (x.viewer_raster != y.viewer_raster || x.u8_hash != y.u8_hash) {
+            return false;
+        }
+        if (x.viewer_raster_only || y.viewer_raster_only) {
+            return true;  // the viewer raster is the common output
+        }
+    }
+    return x.hash == y.hash;
 }
 
 // first differing sample, for the report
@@ -247,6 +255,19 @@ std::string describe(const Outcome& x, const Outcome& y)
         if (!x.ok && !x.last_error.empty()) s << " (a: " << x.last_error << ")";
         if (!y.ok && !y.last_error.empty()) s << " (b: " << y.last_error << ")";
         return s.str();
+    }
+    if (x.viewer_raster != y.viewer_raster) {
+        const auto write_raster = [&](const ViewerRaster& raster) {
+            s << raster.width << "x" << raster.height << " x" << raster.channels << " reduce " << raster.reduce;
+        };
+        s << "viewer raster ";
+        write_raster(x.viewer_raster);
+        s << " vs ";
+        write_raster(y.viewer_raster);
+        return s.str();
+    }
+    if (x.viewer_raster_only || y.viewer_raster_only) {
+        return "viewer 8-bit pixels differ";
     }
     if (x.comps.size() != y.comps.size()) {
         s << "components " << x.comps.size() << " vs " << y.comps.size();
@@ -361,9 +382,12 @@ int cmd_compare(const Args& a)
                             }
                         }
                         if (csv) {
+                            const bool raster_only = mode == Mode::Viewer && (x.viewer_raster_only || y.viewer_raster_only);
+                            const auto x_hash = raster_only ? x.u8_hash : x.hash;
+                            const auto y_hash = raster_only ? y.u8_hash : y.hash;
                             std::fprintf(csv, "%s,%s,%s,%zu,%d,%d,%s,%s,%d,%s,%s,%d\n", in.name.c_str(), mode_name(mode),
-                                         kind.c_str(), n, r, int(x.ok), x.stage.c_str(), hex64(x.hash).c_str(), int(y.ok),
-                                         y.stage.c_str(), hex64(y.hash).c_str(), int(eq));
+                                         kind.c_str(), n, r, int(x.ok), x.stage.c_str(), hex64(x_hash).c_str(), int(y.ok),
+                                         y.stage.c_str(), hex64(y_hash).c_str(), int(eq));
                         }
                     }
                 }
