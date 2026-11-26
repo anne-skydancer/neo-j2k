@@ -5,7 +5,7 @@
 // and the five progression orders, POC included), its bit reader (bio.c, with the stage 1a
 // overrun flag), its tag trees (tgt.c) and its packet reader (t2.c: opj_t2_decode_packets,
 // opj_t2_read_packet_header, opj_t2_read_packet_data, opj_t2_skip_packet_data) at the oracle's
-// pin, which keeps every complete codeword segment of a cut tile, treats a cut packet header as
+// pin, which drops code-blocks with cut contributions, treats a cut packet header as
 // an absent packet, keeps packed packet headers in step and stops visiting packets once the
 // tile's data has run out. Rewritten on neo-j2k's flat layout with the same order and the same
 // arithmetic, so every packet header is read as OpenJPEG reads it. Departures: the exhaustion exit
@@ -1005,8 +1005,9 @@ bool read_packet_data(T2& t2, const PacketPos& pi, const std::uint8_t* p_src_dat
             Segment* l_seg = first_new_seg(l_cblk);
             if (partial_buffer || l_cblk->corrupted) {
                 // the packet's data ended before this contribution, or the code-block lost passes
-                // of an earlier packet: these passes are left out, everything earlier packets gave
-                // stays, and the passes count in the header state so packed headers stay in step
+                // of an earlier packet: discard its accumulated chunks as upstream OpenJPEG does.
+                // The passes count in the header state so packed headers stay in step
+                l_cblk->nchunks = 0;
                 skip_cblk_passes(l_cblk, l_seg);
                 l_cblk->corrupted = true;
                 continue;
@@ -1027,10 +1028,10 @@ bool read_packet_data(T2& t2, const PacketPos& pi, const std::uint8_t* p_src_dat
                                      "c=%u)\n",
                                      l_seg->newlen, p_max_length, cblkno, pi.precno, bandno, pi.resno, pi.compno);
                     }
-                    // the data ended inside this contribution: keep the segments it completed
-                    // before the cut and everything earlier packets gave; the code-block takes no
-                    // more passes
+                    // Discard the cut code-block, including earlier layers, as upstream OpenJPEG
+                    // does. Keep header state in step for packed packet headers.
                     partial_buffer = true;
+                    l_cblk->nchunks = 0;
                     l_cblk->real_num_segs = l_cblk->numsegs - (l_seg->numpasses == 0U ? 1U : 0U);
                     skip_cblk_passes(l_cblk, l_seg);
                     l_cblk->corrupted = true;
