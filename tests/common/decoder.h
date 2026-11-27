@@ -94,6 +94,11 @@ struct Component {
     std::uint32_t w = 0, h = 0, dx = 0, dy = 0, x0 = 0, y0 = 0, prec = 0, sgnd = 0, factor = 0, resno_decoded = 0;
 };
 
+struct ViewerRaster {
+    std::uint32_t width = 0, height = 0, channels = 0, reduce = 0;
+    bool operator==(const ViewerRaster&) const = default;
+};
+
 struct Outcome {
     bool ok = false;
     std::string stage;  // where a failure happened: codec, header, guard, decode, geometry
@@ -105,6 +110,8 @@ struct Outcome {
     std::uint64_t hash = 0;
     // viewer mode: FNV-1a of the viewer's 8-bit raw image (the checksum of the earlier benches)
     std::uint64_t u8_hash = 0;
+    ViewerRaster viewer_raster;
+    bool viewer_raster_only = false;  // the viewer wrote U8 directly without materializing I32 planes
     std::uint32_t warnings = 0, errors = 0;
     std::string last_error;     // every error message, oldest first
     std::string warning_kinds;  // each kind of warning once

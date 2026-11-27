@@ -100,6 +100,8 @@ endfunction()
 
 nj2k_add_test(api_unit nj2k_api_unit)
 nj2k_add_test(decode_unit nj2k_decode_unit "${NJ2K_CORPUS}")
+nj2k_add_test(viewer_memory_prefixes nj2k_diff compare --a neoj2k --b neoj2k-memory
+  --files "${NJ2K_CORPUS}/sl_32_rgba_53.j2k" --mode viewer --reduce 5 --kinds full,cuts --cut-step 400)
 # stage 5: threads in one image (one thread against 2-16 parts; the ThreadSanitizer job runs it)
 nj2k_add_test(decode_threads nj2k_decode_unit "${NJ2K_CORPUS}" --threads)
 nj2k_add_test(encode_unit nj2k_encode_unit "${NJ2K_CORPUS}")

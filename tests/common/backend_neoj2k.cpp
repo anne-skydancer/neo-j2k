@@ -193,6 +193,8 @@ public:
             Fnv64 h8;
             h8.bytes(raw_.data(), raw_.size());
             out.u8_hash = h8.value();
+            out.viewer_raster = {w, h, static_cast<std::uint32_t>(channels), f};
+            out.viewer_raster_only = true;
         } else {
             keep_alive(raw_.data(), raw_.size());
         }
