@@ -15,6 +15,11 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      replace_standalone:
+        description: Replace the existing version's Windows standalone release download after CI succeeds
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -92,6 +97,43 @@ jobs:
         run: cmake --build --preset ${{ matrix.preset }} --parallel
       - name: Test
         run: ctest --preset ${{ matrix.preset }}
+      - name: Build and verify standalone release archive
+        if: matrix.preset == 'windows-msvc'
+        shell: pwsh
+        run: |
+          cmake -S . -B build/standalone -G "Visual Studio 17 2022" -A x64 -DNJ2K_BUILD_STATIC=ON -DNJ2K_BUILD_SHARED=OFF -DNJ2K_MODULE_OPENJP2=ON -DNJ2K_MSVC_STATIC_RUNTIME=ON -DNJ2K_BUILD_TESTS=OFF -DNJ2K_BUILD_TOOLS=OFF -DNJ2K_BUILD_BENCH=OFF -DNJ2K_BUILD_FUZZERS=OFF
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          cmake --build build/standalone --config Release --target neoj2k_openjp2 --parallel
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          python -I tools/package_openjp2.py --library build/standalone/modules/openjp2/Release/openjp2.dll --out dist --platform win-x64
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          git rev-parse HEAD | Set-Content dist/SOURCE_REVISION.txt
+      - name: Save CI-built standalone
+        if: matrix.preset == 'windows-msvc'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: standalone-win-x64
+          path: dist/
+          if-no-files-found: error
+
+  replace-standalone:
+    name: Replace standalone release download
+    if: github.event_name == 'workflow_dispatch' && inputs.replace_standalone
+    needs: [lint, windows, linux, linux-lts]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Fetch and publish verified CI artifact
+        run: |
+          gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" --name standalone-win-x64 --dir standalone
+          python3 -I tools/publish_standalone.py standalone
 
   linux:
     name: linux (${{ matrix.preset }}, ${{ matrix.cc }})
