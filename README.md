@@ -120,6 +120,97 @@ accepting invalid input, neo-j2k follows the standard and lists the departure wi
 
 ## Performance
 
+Measured on **2026-11-27**, after the partial-download correction, on an AMD Ryzen 9
+9950X3D with one thread pinned to one logical CPU. The three-way tables use Linux/WSL2
+and AVX2 builds. Rust is `0cb2f3f`, C++ is `0535cc9`, both version 0.1.3. The timed
+OpenJPEG reference is **unmodified upstream 2.5.4**, commit `6c4a29b`, built independently
+of the patched correctness oracle. Inputs are deterministic synthetic images.
+
+Each timing cell gives **milliseconds / megapixels per second**. Lower latency and
+higher throughput are faster. Decode throughput counts output pixels after reduction.
+Encode throughput counts input pixels. Speedup is OpenJPEG time divided by the
+candidate time. Values use the median of three process medians.
+
+### Decode with strict mode off
+
+| Input | OpenJPEG | neo-j2k C++ | neoj2k-rust | C++ speedup | Rust speedup |
+|---|---:|---:|---:|---:|---:|
+| 32 × 32 RGBA, 5/3 | 0.3843 / 2.7 | 0.1720 / 6.0 | 0.1694 / 6.0 | 2.23× | 2.27× |
+| 64 × 64 RGB, 9/7 | 0.0918 / 44.6 | 0.0536 / 76.4 | 0.0577 / 71.0 | 1.71× | 1.59× |
+| 128 × 128 RGBA, 9/7 | 0.3617 / 45.3 | 0.1114 / 147.0 | 0.1204 / 136.1 | 3.25× | 3.00× |
+| 64 × 64 RGB → 16 × 16, 9/7 | 0.0289 / 8.8 | 0.0207 / 12.4 | 0.0267 / 9.6 | 1.40× | 1.08× |
+| 1,024 × 1,024 RGB, 9/7 | 13.2922 / 78.9 | 4.3805 / 239.4 | 4.2669 / 245.7 | 3.03× | 3.12× |
+| 4,096 × 4,096 grayscale, 9/7 | 81.3905 / 206.1 | 12.9250 / 1,298.0 | 12.0861 / 1,388.1 | 6.30× | 6.73× |
+| 2,048 × 64 RGBA, 5/3 | 1.7817 / 73.6 | 1.1832 / 110.8 | 1.3153 / 99.7 | 1.51× | 1.35× |
+| 1,024² RGB, 32 KiB prefix → 32², 9/7 | 0.1538 / 6.7 | 0.1173 / 8.7 | 0.1148 / 8.9 | 1.31× | 1.34× |
+
+### Decode with strict mode on
+
+| Input | OpenJPEG | neo-j2k C++ | neoj2k-rust | C++ speedup | Rust speedup |
+|---|---:|---:|---:|---:|---:|
+| 32 × 32 RGBA, 5/3 | 0.3803 / 2.7 | 0.1690 / 6.1 | 0.1681 / 6.1 | 2.25× | 2.26× |
+| 64 × 64 RGB, 9/7 | 0.0936 / 43.8 | 0.0545 / 75.2 | 0.0563 / 72.7 | 1.72× | 1.66× |
+| 128 × 128 RGBA, 9/7 | 0.2970 / 55.2 | 0.1098 / 149.3 | 0.1167 / 140.4 | 2.71× | 2.54× |
+| 64 × 64 RGB → 16 × 16, 9/7 | 0.0283 / 9.0 | 0.0207 / 12.4 | 0.0265 / 9.7 | 1.37× | 1.07× |
+| 1,024 × 1,024 RGB, 9/7 | 13.2544 / 79.1 | 4.2937 / 244.2 | 4.0631 / 258.1 | 3.09× | 3.26× |
+| 4,096 × 4,096 grayscale, 9/7 | 80.9836 / 207.2 | 13.0672 / 1,283.9 | 12.2120 / 1,373.8 | 6.20× | 6.63× |
+| 2,048 × 64 RGBA, 5/3 | 1.7653 / 74.2 | 1.2031 / 108.9 | 1.3103 / 100.0 | 1.47× | 1.35× |
+
+The 32 KiB prefix uses reduce 5 and Clamp. All three non-strict decoders returned
+identical samples. All three strict decoders rejected that prefix, so strict mode
+has no successful partial-image throughput row.
+
+### Encode
+
+**Strict mode is a decoder setting.** These three encoder APIs have no strict-on or
+strict-off option, so the encode table has one measurement per configuration.
+All three produced identical codestream bytes. Settings are one tile, RLCP, six
+resolutions, 64 × 64 codeblocks, MCT, and one layer retaining every coding pass.
+
+| Input | OpenJPEG | neo-j2k C++ | neoj2k-rust | C++ speedup | Rust speedup |
+|---|---:|---:|---:|---:|---:|
+| 32 × 32 RGB, 5/3 | 0.2801 / 3.7 | 0.1251 / 8.2 | 0.1110 / 9.2 | 2.24× | 2.52× |
+| 32 × 32 RGB, 9/7 | 0.3209 / 3.2 | 0.1129 / 9.1 | 0.1159 / 8.8 | 2.84× | 2.77× |
+| 64 × 64 RGB, 5/3 | 0.9892 / 4.1 | 0.6278 / 6.5 | 0.6241 / 6.6 | 1.58× | 1.59× |
+| 64 × 64 RGB, 9/7 | 1.1716 / 3.5 | 0.6468 / 6.3 | 0.6809 / 6.0 | 1.81× | 1.72× |
+| 128 × 128 RGB, 5/3 | 3.4779 / 4.7 | 2.4384 / 6.7 | 2.4172 / 6.8 | 1.43× | 1.44× |
+| 128 × 128 RGB, 9/7 | 4.3060 / 3.8 | 2.5334 / 6.5 | 2.6090 / 6.3 | 1.70× | 1.65× |
+
+Rust 1.100.0 uses release optimization, fat LTO and one codegen unit. C++ and
+OpenJPEG use GCC/G++ 16.2.1 Release builds with strict floating-point settings.
+Each decode creates a fresh codec and writes caller-owned I32 planes. OpenJPEG
+allocates internal planes and copies them out. Encode timings include codec
+creation, pixel conversion, allocation, owned output and teardown. File I/O and
+caller decode-buffer allocation are excluded. Every workload's samples or encoded
+bytes are compared before and after timing.
+
+### neo-j2k, neoj2k-rust and KDU
+
+Separate **Windows** measurements use the same current C++ and Rust sources,
+caller-owned interleaved U8 output and fresh serial decoders. C++ uses MSVC Release
+AVX2, Rust uses release x86-64-v3/fat LTO, and KDU is the recovered Kakadu 8.6.1
+`set_fast` path from Firestorm 81788. The adapter supports whole-file lossless
+decoding. Every output byte and both output guards matched in every timed batch.
+Cells again give **milliseconds / megapixels per second**. Speedup compares KDU time
+with each neo-j2k implementation's time.
+
+| Lossless 5/3 input | KDU 8.6.1 | neo-j2k C++ | neoj2k-rust | C++ speedup | Rust speedup |
+|---|---:|---:|---:|---:|---:|
+| 32 × 32 RGB | 0.3434 / 3.0 | 0.1294 / 7.9 | 0.1274 / 8.0 | 2.65× | 2.69× |
+| 128 × 128 RGB | 3.6867 / 4.4 | 2.9245 / 5.6 | 2.6944 / 6.1 | 1.26× | 1.37× |
+| 512 × 512 RGB | 47.4046 / 5.5 | 34.1487 / 7.7 | 33.7239 / 7.8 | 1.39× | 1.41× |
+| 1,024 × 1,024 RGB | 185.1226 / 5.7 | 128.0617 / 8.2 | 127.5871 / 8.2 | 1.45× | 1.45× |
+| 2,048 × 64 RGBA | 2.1553 / 60.8 | 1.8688 / 70.1 | 1.7509 / 74.9 | 1.15× | 1.23× |
+
+
+The [benchmark report](doc/benchmarks/2026-11-27-strict-modes/README.md) contains
+source/build provenance, raw measurements, process variation and reproduction
+commands. The [three-way driver](https://github.com/anne-skydancer/neoj2k-rust/tree/814430b/tools/bench_three_way/README.md) and
+[KDU driver](https://github.com/anne-skydancer/neoj2k-rust/tree/814430b/tools/kdu_bench/README.md) describe the timed work. Historical figures
+remain in the dated reports under `doc/benchmarks/`.
+
+## Historical performance
+
 All numbers are measured, against OpenJPEG 2.5.4 at the oracle pin (`doc/oracle.md`), built with the same flags.
 Every decode and encode in these tables gives the oracle's output. The machine is a Ryzen 9 9950X3D (8 cores, 8
 threads used), Windows, MSVC 14.51 RelWithDebInfo, AVX2. It was not quiet: other jobs shared it, so the ratios
