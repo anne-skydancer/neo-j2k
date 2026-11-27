@@ -1,11 +1,14 @@
 # SPDX-License-Identifier: BSD-2-Clause
 # Copyright (c) 2026, Anne Skydancer (neo-j2k)
-#
-# Known defects of the oracle (oracle/PIN) that the layer-boundary check finds:
-#   <file> <reduce|*> <layers kept|*>
-# nj2k_diff layers fails on any other mismatch, and on a listed case that matches again, so the
-# list follows the pin. Each entry names its finding in doc/oracle.md.
-#
-# None at the pin (841b2de4). OD-1, a cut packed-header stream with EPH refused, was listed here
-# until the fork's 1a review round fixed it (06efaa3c, 5c869d3a): packed_ppm_sop_eph_97.j2k now
-# decodes the layers that arrived at every layer boundary (doc/oracle.md).
+# Packed headers announce later contributions even at these layer cuts. Upstream
+# reconstruction drops the affected code-blocks, including earlier layers.
+# Exact cases are checked for mismatches and stale entries by nj2k_diff layers.
+packed_ppm_sop_eph_97.j2k 0 1
+packed_ppm_sop_eph_97.j2k 0 2
+packed_ppm_sop_eph_97.j2k 1 1
+packed_ppm_sop_eph_97.j2k 1 2
+packed_ppm_sop_eph_97.j2k 2 1
+packed_ppm_sop_eph_97.j2k 2 2
+packed_ppm_sop_eph_97.j2k 3 1
+packed_ppm_sop_eph_97.j2k 3 2
+packed_ppm_sop_eph_97.j2k 4 2

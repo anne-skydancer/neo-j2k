@@ -9,6 +9,22 @@ OpenJPEG by discarding accumulated chunks of code-blocks whose contribution is c
 retains the fork's bounded parsing and packed-header safety fixes, with that reconstruction policy
 restored by `upstream-partial-blocks.patch`.
 
+## Partial texture reconstruction
+
+The upstream partial reconstruction patch discards accumulated chunks of a code-block
+when a later contribution is cut, and also discards earlier chunks of following
+code-blocks in that packet. Complete inputs and explicitly strict rejection keep their
+existing behavior. The implementation changes only the existing cut paths.
+
+The packed-header synthetic stream `packed_ppm_sop_eph_97.j2k` announces later
+contributions before their bodies arrive. Its cuts at 484 and 836 bytes therefore
+exercise the discard policy even at a layer boundary. The layer-boundary check records
+nine exact cases in `tests/oracle-known-defects.txt`, with stale-entry detection. The
+frozen cut tables verify the resulting pixels. Upstream OpenJPEG 2.5.3 gives the same
+layer-two sample differences at reduce 0 through 4. At the layer-one cut upstream
+rejects a missing EPH marker, while the existing bounded packed-header handling still
+returns partial pixels. The historical OD-1 notes below describe that header fix.
+
 ## What it is
 
 - `oracle/PIN` names the fork (`anne-skydancer/openjpeg`), the commit and the patches (`upstream-partial-blocks.patch`).

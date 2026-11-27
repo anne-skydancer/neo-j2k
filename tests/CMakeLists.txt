@@ -212,7 +212,8 @@ foreach(_file IN LISTS _nj2k_cut_files)
   nj2k_add_test(neoj2k_cuts.${_name} nj2k_diff verify --a neoj2k --ref "${_nj2k_ref}" --root "${NJ2K_CORPUS}"
                 --no-whole --only "${_file}" --cut-steps ${NJ2K_TEST_CUT_STEP})
 endforeach()
-nj2k_add_test(neoj2k_layers nj2k_diff layers --a neoj2k --files "${NJ2K_CORPUS}")
+nj2k_add_test(neoj2k_layers nj2k_diff layers --a neoj2k --files "${NJ2K_CORPUS}"
+              --ref "${CMAKE_CURRENT_SOURCE_DIR}/oracle-known-defects.txt")
 if(NJ2K_TEST_NIGHTLY)
   nj2k_add_test(neoj2k_cuts_nightly nj2k_diff verify --a neoj2k --ref "${_nj2k_ref_nightly}" --root "${NJ2K_CORPUS}")
 endif()
@@ -240,7 +241,8 @@ if(TARGET neoj2k_openjp2)
                 --no-cuts --departures "${_nj2k_departures}")
   nj2k_add_test(openjp2_whole_threads nj2k_diff verify --a "${_nj2k_openjp2}" --ref "${_nj2k_ref}"
                 --root "${NJ2K_CORPUS}" --no-cuts --departures "${_nj2k_departures}" --threads 4)
-  nj2k_add_test(openjp2_layers nj2k_diff layers --a "${_nj2k_openjp2}" --files "${NJ2K_CORPUS}")
+  nj2k_add_test(openjp2_layers nj2k_diff layers --a "${_nj2k_openjp2}" --files "${NJ2K_CORPUS}"
+                --ref "${CMAKE_CURRENT_SOURCE_DIR}/oracle-known-defects.txt")
   nj2k_add_test(openjp2_header nj2k_diff header --a oracle --b "${_nj2k_openjp2}" --files "${NJ2K_CORPUS}"
                 --root "${NJ2K_CORPUS}" --modes plain,viewer --reduce 0-5 --bytes 4096)
   nj2k_add_test(openjp2_unit nj2k_openjp2_unit "$<TARGET_FILE:neoj2k_openjp2>" "${NJ2K_CORPUS}")
