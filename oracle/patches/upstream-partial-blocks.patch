@@ -1,3 +1,7 @@
+# SPDX-License-Identifier: BSD-2-Clause
+# Copyright (c) 2026, Anne Skydancer (neo-j2k)
+# Restore upstream reconstruction of cut code-block contributions.
+
 --- a/src/lib/openjp2/t2.c
 +++ b/src/lib/openjp2/t2.c
 @@ -1661,9 +1661,10 @@
