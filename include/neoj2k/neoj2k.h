@@ -1411,6 +1411,7 @@ NJ2K_API NJ2K_BOOL NJ2K_CALLCONV nj2k_setup_decoder(nj2k_codec_t *p_codec,
 
 /**
  * Set strict decoding parameter for this decoder.
+ * New decoders start in non-strict mode so they can decode partial downloads.
  * If strict decoding is enabled, partial bit streams will fail to decode, and
  * the check for invalid TPSOT values added in https://github.com/uclouvain/openjpeg/pull/514
  * will be disabled.

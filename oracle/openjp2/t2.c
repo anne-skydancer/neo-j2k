@@ -1661,9 +1661,10 @@ static OPJ_BOOL opj_t2_read_packet_data(opj_t2_t* p_t2,
                 /* The packet's data ended before this code-block's contribution, or
                  * the code-block lost passes of an earlier packet, after which these
                  * would decode out of place: this packet's passes are left out, and
-                 * everything earlier packets gave the code-block stays. The passes
+                 * accumulated chunks are discarded as upstream OpenJPEG does. The passes
                  * still count in its header state, as for a skipped packet, so that
                  * packed packet headers (PPM, PPT) are parsed in step */
+                l_cblk->numchunks = 0;
                 opj_t2_skip_cblk_passes(l_cblk, l_seg);
                 l_cblk->corrupted = OPJ_TRUE;
                 continue;
@@ -1689,16 +1690,11 @@ static OPJ_BOOL opj_t2_read_packet_data(opj_t2_t* p_t2,
                                           l_seg->newlen, p_max_length, cblkno, p_pi->precno, bandno, p_pi->resno,
                                           p_pi->compno);
                         }
-                        /* The data ended inside this code-block's contribution. Keep
-                         * the codeword segments this packet completed before the cut
-                         * and everything earlier packets gave; leave out the cut
-                         * segment and the passes after it, and add no more passes to
-                         * the code-block. real_num_segs counts only the segments with
-                         * data (the cut one if earlier packets gave it passes); the
-                         * header state takes in all the passes this packet announced.
-                         * The code-blocks after this one get no new passes from this
-                         * packet */
+                        /* Discard accumulated chunks of a cut code-block, including
+                         * earlier layers, as upstream OpenJPEG does. Keep the header
+                         * state in step for packed packet headers. */
                         partial_buffer = OPJ_TRUE;
+                        l_cblk->numchunks = 0;
                         l_cblk->real_num_segs = l_cblk->numsegs -
                                                 (l_seg->numpasses == 0U ? 1U : 0U);
                         opj_t2_skip_cblk_passes(l_cblk, l_seg);

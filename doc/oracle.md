@@ -4,13 +4,30 @@
 # The oracle
 
 neo-j2k's decoded pixels are defined by OpenJPEG 2.5.4 as the viewer ships it (owner decision D2):
-whole files bit-identical at every reduce level, lossy included, and cut files identical to the fork's
-stage 1a hotfix, which keeps every delivered byte (D1). The oracle is exactly that hotfix's source (plan
-audit B4: one definition), built into the tests.
+whole files bit-identical at every reduce level, lossy included. Partial downloads follow upstream
+OpenJPEG by discarding accumulated chunks of code-blocks whose contribution is cut. The oracle
+retains the fork's bounded parsing and packed-header safety fixes, with that reconstruction policy
+restored by `upstream-partial-blocks.patch`.
+
+## Partial texture reconstruction
+
+The upstream partial reconstruction patch discards accumulated chunks of a code-block
+when a later contribution is cut, and also discards earlier chunks of following
+code-blocks in that packet. Complete inputs and explicitly strict rejection keep their
+existing behavior. The implementation changes only the existing cut paths.
+
+The packed-header synthetic stream `packed_ppm_sop_eph_97.j2k` announces later
+contributions before their bodies arrive. Its cuts at 484 and 836 bytes therefore
+exercise the discard policy even at a layer boundary. The layer-boundary check records
+nine exact cases in `tests/oracle-known-defects.txt`, with stale-entry detection. The
+frozen cut tables verify the resulting pixels. Upstream OpenJPEG 2.5.3 gives the same
+layer-two sample differences at reduce 0 through 4. At the layer-one cut upstream
+rejects a missing EPH marker, while the existing bounded packed-header handling still
+returns partial pixels. The historical OD-1 notes below describe that header fix.
 
 ## What it is
 
-- `oracle/PIN` names the fork (`anne-skydancer/openjpeg`), the commit and the patches (none today).
+- `oracle/PIN` names the fork (`anne-skydancer/openjpeg`), the commit and the patches (`upstream-partial-blocks.patch`).
 - The pin: `66b16561`, the head of the fork's `vkstorm-2.5.4-hotfix` branch, as the package `3p-openjpeg`
   `v2.5.4-cpu-avx2.6` builds it (its recipe commit `1ad8ff6`); `841b2de4` is the head of `v2.5.4-cpu-avx2.5` (tag `dc27a45`). It is OpenJPEG 2.5.4 as the package `v2.5.4-cpu-avx2.3`
   ships it (`3b1a6a96`) with the 1a decoder fixes:

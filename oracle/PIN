@@ -6,4 +6,4 @@
 # also verifies the copy in CI. What the commit is and why it is the pin: doc/oracle.md.
 repo=https://github.com/anne-skydancer/openjpeg.git
 commit=66b1656192fc621a4b26aa86d05b6a00514a7cee
-patches=
+patches=upstream-partial-blocks.patch

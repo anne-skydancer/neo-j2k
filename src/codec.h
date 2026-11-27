@@ -109,7 +109,7 @@ struct Decoder {
     std::uint32_t layers = 0;  // cp_layer: layers to decode, 0 for all
     bool dump = false;         // NJ2K_DPARAMETERS_DUMP_FLAG
     bool ignore_pclr = false;  // NJ2K_DPARAMETERS_IGNORE_PCLR_CMAP_CDEF_FLAG
-    bool strict = true;        // OpenJPEG's default
+    bool strict = false;       // Texture viewers decode prefixes while downloading.
     // strict mode was set through the API at some point: OpenJPEG then never applies its TNsot
     // correction (opj_j2k_decoder_set_strict_mode sets m_nb_tile_parts_correction_checked)
     bool tnsot_check_off = false;
