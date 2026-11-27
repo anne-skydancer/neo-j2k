@@ -101,7 +101,7 @@ jobs:
         if: matrix.preset == 'windows-msvc'
         shell: pwsh
         run: |
-          cmake -S . -B build/standalone -G "Visual Studio 17 2022" -A x64 -DNJ2K_BUILD_STATIC=ON -DNJ2K_BUILD_SHARED=OFF -DNJ2K_MODULE_OPENJP2=ON -DNJ2K_MSVC_STATIC_RUNTIME=ON -DNJ2K_BUILD_TESTS=OFF -DNJ2K_BUILD_TOOLS=OFF -DNJ2K_BUILD_BENCH=OFF -DNJ2K_BUILD_FUZZERS=OFF
+          cmake --preset windows-msvc -B build/standalone -DNJ2K_BUILD_STATIC=ON -DNJ2K_BUILD_SHARED=OFF -DNJ2K_MODULE_OPENJP2=ON -DNJ2K_MSVC_STATIC_RUNTIME=ON -DNJ2K_BUILD_TESTS=OFF -DNJ2K_BUILD_TOOLS=OFF -DNJ2K_BUILD_BENCH=OFF -DNJ2K_BUILD_FUZZERS=OFF
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           cmake --build build/standalone --config Release --target neoj2k_openjp2 --parallel
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
