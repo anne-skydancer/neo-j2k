@@ -26,7 +26,7 @@ permissions:
 
 concurrency:
   group: ci-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   OPENJPEG_DATA_COMMIT: 39524bd3a601d90ed8e0177559400d23945f96a9
@@ -118,12 +118,15 @@ jobs:
 
   replace-standalone:
     name: Replace standalone release download
-    if: github.event_name == 'workflow_dispatch' && inputs.replace_standalone
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && inputs.replace_standalone)
     needs: [lint, windows, linux, linux-lts]
     runs-on: ubuntu-latest
     permissions:
       contents: write
       actions: read
+    concurrency:
+      group: standalone-release
+      cancel-in-progress: false
     env:
       GH_TOKEN: ${{ github.token }}
     steps:

@@ -23,6 +23,11 @@ def main():
     folder = Path(sys.argv[1])
     repo = os.environ['GITHUB_REPOSITORY']
     revision = os.environ['GITHUB_SHA']
+    if os.environ.get('GITHUB_EVENT_NAME') == 'push':
+        current = gh('api', f'repos/{repo}/git/ref/heads/main', '--jq', '.object.sha').strip()
+        if current != revision:
+            print('A newer main revision will publish its own build')
+            return
     assert (folder / 'SOURCE_REVISION.txt').read_text(encoding='utf-8-sig').strip() == revision
     archives = list(folder.glob('neoj2k-viewer-*-win-x64.zip'))
     assert len(archives) == 1, 'Expected one standalone ZIP'
@@ -35,20 +40,26 @@ def main():
         for name, digest in sums.items():
             assert sha(z.read(name)) == digest, 'ZIP member checksum mismatch'
         dll_hash = sha(z.read('neoj2k.dll'))
+    releases = json.loads(gh('release', 'list', '--repo', repo, '--limit', '100', '--json', 'tagName'))
+    if tag not in {r['tagName'] for r in releases}:
+        gh('release', 'create', tag, '--repo', repo, '--target', revision, '--title', f'neo-j2k {tag}',
+           '--notes', f'Standalone built by GitHub Actions from {revision}.')
     release = json.loads(gh('release', 'view', tag, '--repo', repo, '--json', 'body,assets'))
     previous = [a for a in release['assets'] if a['name'] == archive.name]
-    assert len(previous) == 1, 'Expected one existing versioned asset'
+    assert len(previous) <= 1, 'Expected at most one existing versioned asset'
     backup = folder / 'previous'
     backup.mkdir()
-    gh('release', 'download', tag, '--repo', repo, '--pattern', archive.name, '--dir', str(backup))
-    old_hash = sha((backup / archive.name).read_bytes())
-    assert previous[0]['digest'] == 'sha256:' + old_hash
     (backup / 'release.json').write_text(json.dumps(release, indent=2))
     new_hash = sha(archive.read_bytes())
-    body = release['body'].replace(old_hash, new_hash)
-    with zipfile.ZipFile(backup / archive.name) as old_zip:
-        body = body.replace(sha(old_zip.read('neoj2k.dll')), dll_hash)
-    body = body.replace(f"{previous[0]['size']:,} bytes", f"{archive.stat().st_size:,} bytes")
+    body = release['body'] or ''
+    if previous:
+        gh('release', 'download', tag, '--repo', repo, '--pattern', archive.name, '--dir', str(backup))
+        old_hash = sha((backup / archive.name).read_bytes())
+        assert previous[0]['digest'] == 'sha256:' + old_hash
+        body = body.replace(old_hash, new_hash)
+        with zipfile.ZipFile(backup / archive.name) as old_zip:
+            body = body.replace(sha(old_zip.read('neoj2k.dll')), dll_hash)
+        body = body.replace(f"{previous[0]['size']:,} bytes", f"{archive.stat().st_size:,} bytes")
     body += f'\n\nCI-built standalone from `{revision}`. Build and verification https://github.com/{repo}/actions/runs/{os.environ["GITHUB_RUN_ID"]}.\n'
     notes = folder / 'release-body.md'
     notes.write_text(body)
