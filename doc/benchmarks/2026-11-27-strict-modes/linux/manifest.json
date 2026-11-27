@@ -1,4 +1,5 @@
 {
+  "_license": "SPDX-License-Identifier: BSD-2-Clause",
   "date_utc": "2026-11-27",
   "rust_commit": "0cb2f3f07a06aae7fa73a2cbabb738df05923a64",
   "cpp_commit": "0535cc9b9c68909c6244dca95db3ec9123f20d06",

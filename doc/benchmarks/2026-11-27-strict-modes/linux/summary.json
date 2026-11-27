@@ -1,4 +1,5 @@
 {
+  "_license": "SPDX-License-Identifier: BSD-2-Clause",
   "decode/sl_32_rgba_53.j2k/reduce0/strictfalse/cut0": {
     "neo-j2k": {
       "median_us": 171.955812,

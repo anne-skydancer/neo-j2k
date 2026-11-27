@@ -1,3 +1,6 @@
+<!-- SPDX-License-Identifier: BSD-2-Clause -->
+<!-- Copyright (c) 2026, Anne Skydancer (neo-j2k) -->
+
 # Strict-mode and KDU benchmark rerun
 
 Measured 2026-11-27 using Rust source `0cb2f3f07a06aae7fa73a2cbabb738df05923a64`

@@ -1,5 +1,6 @@
 [
   {
+    "_license": "SPDX-License-Identifier: BSD-2-Clause",
     "case": "rgb_32_53",
     "width": 32,
     "height": 32,
