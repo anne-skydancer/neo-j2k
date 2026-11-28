@@ -213,6 +213,62 @@ void lift97(float* w, std::uint32_t n, bool even, std::uint32_t stride, std::uin
     }
 }
 
+template <std::uint32_t stride, std::uint32_t nl>
+void step2_fixed(float* w, std::uint32_t a, std::uint32_t b, std::uint32_t end,
+           std::uint32_t m, float cst) noexcept
+{
+    const std::uint32_t imax = end < m ? end : m;
+    for (std::uint32_t i = 0; i < imax; ++i) {
+        const std::uint32_t p = b + 2 * i;
+        const float* left = w + std::size_t(i == 0 ? a : p - 1) * stride;
+        const float* right = w + std::size_t(p + 1) * stride;
+        float* dst = w + std::size_t(p) * stride;
+        for (std::uint32_t c = 0; c < nl; c++) {
+            dst[c] += (left[c] + right[c]) * cst;
+        }
+    }
+    if (m < end) {
+        const std::uint32_t p = b + 2 * imax;
+        const float* prev = w + std::size_t(p - 1) * stride;
+        float* dst = w + std::size_t(p) * stride;
+        for (std::uint32_t c = 0; c < nl; c++) {
+            dst[c] += (2 * prev[c]) * cst;
+        }
+    }
+}
+
+// opj_dwt_encode_1_real, for n > 1: the four lifting steps and the scaling
+template <std::uint32_t stride, std::uint32_t nl>
+void lift97_fixed(float* w, std::uint32_t n, bool even) noexcept
+{
+    const std::int32_t sn = static_cast<std::int32_t>((n + (even ? 1 : 0)) >> 1);
+    const std::int32_t dn = static_cast<std::int32_t>(n) - sn;
+    const std::uint32_t a = even ? 0 : 1;
+    const std::uint32_t b = even ? 1 : 0;
+    auto imin = [](std::int32_t x, std::int32_t y) { return x < y ? x : y; };
+    step2_fixed<stride, nl>(w, a, b, static_cast<std::uint32_t>(dn), static_cast<std::uint32_t>(imin(dn, sn - std::int32_t(b))),
+          kAlpha);
+    step2_fixed<stride, nl>(w, b, a, static_cast<std::uint32_t>(sn), static_cast<std::uint32_t>(imin(sn, dn - std::int32_t(a))),
+          kBeta);
+    step2_fixed<stride, nl>(w, a, b, static_cast<std::uint32_t>(dn), static_cast<std::uint32_t>(imin(dn, sn - std::int32_t(b))),
+          kGamma);
+    step2_fixed<stride, nl>(w, b, a, static_cast<std::uint32_t>(sn), static_cast<std::uint32_t>(imin(sn, dn - std::int32_t(a))),
+          kDelta);
+    // the low-pass samples by 1/K, the high-pass ones by K
+    for (std::int32_t i = 0; i < sn; ++i) {
+        float* x = w + std::size_t(a + 2 * static_cast<std::uint32_t>(i)) * stride;
+        for (std::uint32_t c = 0; c < nl; c++) {
+            x[c] *= kInvK;
+        }
+    }
+    for (std::int32_t i = 0; i < dn; ++i) {
+        float* x = w + std::size_t(b + 2 * static_cast<std::uint32_t>(i)) * stride;
+        for (std::uint32_t c = 0; c < nl; c++) {
+            x[c] *= kK;
+        }
+    }
+}
+
 // The wavelet of one resolution step, 5-3 and 9-7 alike (the type decides the lifting).
 template <class T>
 void encode_level(T* data, std::uint32_t w, std::uint32_t rw, std::uint32_t rh, std::uint32_t rw1, std::uint32_t rh1,
@@ -237,7 +293,8 @@ void encode_level(T* data, std::uint32_t w, std::uint32_t rw, std::uint32_t rh, 
                 }
             }
             if constexpr (is_float) {
-                lift97(tmp, rh, even, kLanes, cols);
+                if (cols == kLanes) lift97_fixed<kLanes, kLanes>(tmp, rh, even);
+                else lift97(tmp, rh, even, kLanes, cols);
             } else {
                 lift53(tmp, rh, even, kLanes, cols);
             }
@@ -267,7 +324,7 @@ void encode_level(T* data, std::uint32_t w, std::uint32_t rw, std::uint32_t rh, 
         }
         std::memcpy(tmp, row, std::size_t(rw) * sizeof(T));
         if constexpr (is_float) {
-            lift97(tmp, rw, even, 1, 1);
+            lift97_fixed<1, 1>(tmp, rw, even);
         } else {
             lift53(tmp, rw, even, 1, 1);
         }
