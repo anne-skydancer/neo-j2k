@@ -530,6 +530,39 @@ NJ2K_NOINLINE bool decode_blocks(Tile& t, T1& t1, const Messages& msg) noexcept
     });
 }
 
+// Clear a large sparse owned component in one sequential pass, then keep the original
+// block-validation order while avoiding redundant strided stores for its empty blocks.
+NJ2K_NOINLINE bool decode_sparse_zeroed_component(Tile& t, T1& t1, const Messages& msg, bool& used) noexcept
+{
+    used = false;
+    if (!t.owned_coefficients || t.numcomps != 1 || t.in->selected ||
+        t.comps[0].params.style->qmfbid == 1 ||
+        std::uint64_t(t.comps[0].data_w) * t.comps[0].data_h < (1u << 18)) {
+        return true;
+    }
+    std::uint64_t empty_area = 0, all_area = 0;
+    if (!for_each_cblk(t, [&](const T1Block& b, std::int32_t*, std::uint32_t, bool, float) noexcept {
+        const std::uint64_t area = std::uint64_t(b.w) * b.h;
+        all_area += area;
+        if (b.nchunks == 0) {
+            empty_area += area;
+        }
+        return true;
+    })) return false;
+    // Use the tested sparse policy only at 75% or more empty coefficient area.
+    if (!all_area || empty_area < all_area - all_area / 4) {
+        return true;
+    }
+    std::memset(t.comps[0].data, 0, std::size_t(t.comps[0].data_w) * t.comps[0].data_h * sizeof(std::int32_t));
+    used = true;
+    return for_each_cblk(t, [&](const T1Block& b, std::int32_t* dst, std::uint32_t stride, bool reversible, float stepsize) noexcept {
+        if (b.nchunks == 0) {
+            return t1_empty_cblk_ok(b, msg);
+        }
+        return decode_store(t1, b, dst, stride, reversible, stepsize, msg);
+    });
+}
+
 // Tier-1 of the code-blocks [first, last) of the walk, for one part of a threaded tile; false at a block
 // OpenJPEG refuses (plan_t1 stopped before it, so this does not happen). A function of its own, with the
 // counters the run needs: the shared library is built with link-time code generation, which compiles a
@@ -658,8 +691,11 @@ nj2k_status_t Tile::decode_samples(T1& t1, void* dwt_scratch, const std::uint32_
         if (const nj2k_status_t st = t1_jobs(*this, *tj, msg); st != NJ2K_OK) {
             return st;
         }
-    } else if (!decode_blocks(*this, t1, msg)) {
-        return NJ2K_E_DATA;
+    } else {
+        bool used = false;
+        if (!decode_sparse_zeroed_component(*this, t1, msg, used) || (!used && !decode_blocks(*this, t1, msg))) {
+            return NJ2K_E_DATA;
+        }
     }
 
     // the inverse wavelet up to the resolution decoded (opj_tcd_dwt_decode)

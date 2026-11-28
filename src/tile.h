@@ -188,6 +188,7 @@ public:
     TileComp* comps = nullptr;
     const TileInput* in = nullptr;
     PackedCursor ppt{nullptr, 0};  // the PPT headers being consumed
+    bool owned_coefficients = false;  // private coefficient storage, never the caller's direct planes
     Mct mct = Mct::kNone;          // the colour transform decode_samples left to the output pass
 };
 

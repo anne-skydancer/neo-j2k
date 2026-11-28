@@ -1416,6 +1416,7 @@ struct Walk {
             }
         }
         if (st == NJ2K_OK) {
+            t.owned_coefficients = whole_image && !sink.image_planes && !direct_tile;
             st = t.decode_samples(d.t1, d.dwt.p, resno, msg, tile_exec ? &tj : nullptr);
         }
         // a tile that is the image's planes is finished where it is; any other goes into the image

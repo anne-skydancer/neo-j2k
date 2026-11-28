@@ -1918,6 +1918,36 @@ void test_need_data()
     }
 }
 
+// A sparse large component must not retain coefficients from an earlier full decode.
+void test_sparse_owned_reuse()
+{
+    const Bytes full = corpus_file("large_4096_g_97.j2k");
+    if (full.empty()) {
+        return;
+    }
+    const Bytes prefix(full.begin(), full.begin() + full.size() / 2);
+    auto fresh = [](const Bytes& data) {
+        nj2k_codec_t* codec = memory_codec(0);
+        nj2k_decoder_set_strict_mode(codec, NJ2K_FALSE);
+        MemoryImage result = memory_decode(codec, data, data.size(), NJ2K_SAMPLE_U8, Layout::Guarded);
+        nj2k_destroy_codec(codec);
+        return result;
+    };
+    const MemoryImage complete = fresh(full), partial = fresh(prefix);
+    CHECK(complete.ok && partial.ok && complete.guards_ok && partial.guards_ok);
+    CHECK(complete.buffer != partial.buffer);
+    nj2k_codec_t* codec = memory_codec(0);
+    nj2k_decoder_set_strict_mode(codec, NJ2K_FALSE);
+    nj2k_decoder_set_retained_bytes(codec, 128ull << 20);
+    for (const Bytes* data : {&full, &prefix, &full}) {
+        const MemoryImage actual = memory_decode(codec, *data, data->size(), NJ2K_SAMPLE_U8, Layout::Guarded);
+        const MemoryImage& expected = data == &prefix ? partial : complete;
+        CHECK(actual.ok == expected.ok && actual.status == expected.status && actual.guards_ok);
+        CHECK(actual.buffer == expected.buffer);
+    }
+    nj2k_destroy_codec(codec);
+}
+
 // A component selection made after nj2k_read_header_memory() holds for the decodes of that header:
 // a plane for a component not selected is refused, the selected one is decoded (the alpha of an
 // RGBA texture: as in the whole decode, which no colour transform touches). The next header read
@@ -3039,6 +3069,7 @@ int main(int argc, char** argv)
     test_tile_part_markers();
     test_need_data();
     test_memory_selection();
+    test_sparse_owned_reuse();
     test_tile_memory_limit();
     test_viewer_path();
     test_zero_heap();
